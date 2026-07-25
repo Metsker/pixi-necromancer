@@ -7,6 +7,7 @@ import {
   chooseStat,
   clearSave,
   commandCap,
+  hexAround,
   load,
   moveTo,
   neighbors,
@@ -48,7 +49,8 @@ ok(
   neighbors(g0, 0).every((id) => g0.nodes[id].state === "open"),
 );
 ok("exactly one boss", g0.nodes.filter((n) => n.kind === "boss").length === 1);
-ok("the boss is deepest", g0.nodes.find((n) => n.kind === "boss")!.layer === TUNING.layers - 1);
+ok("the boss is deepest", g0.nodes.find((n) => n.kind === "boss")!.row === TUNING.mapRows - 1);
+ok("the gate is at the top", g0.nodes[0].row === 0 && g0.nodes[0].kind === "gate");
 
 for (let seed = 1; seed <= 40; seed++) {
   const g = newGame(seed * 7919);
@@ -61,8 +63,29 @@ for (let seed = 1; seed <= 40; seed++) {
     g.nodes.every((n) => n.kind === "gate" || n.foes.length > 0),
   );
   ok(
-    `seed ${seed}: no edge skips a layer`,
-    g.nodes.every((n) => n.links.every((id) => g.nodes[id].layer === n.layer + 1)),
+    `seed ${seed}: every link joins two hexes that actually touch`,
+    g.nodes.every((n) =>
+      n.links.every((id) =>
+        hexAround(n.col, n.row).some((h) => h.col === g.nodes[id].col && h.row === g.nodes[id].row),
+      ),
+    ),
+  );
+  ok(
+    `seed ${seed}: links are recorded at both ends`,
+    g.nodes.every((n) => n.links.every((id) => g.nodes[id].links.includes(n.id))),
+  );
+  ok(
+    `seed ${seed}: no room shares a hex with another`,
+    new Set(g.nodes.map((n) => `${n.col},${n.row}`)).size === g.nodes.length,
+  );
+  ok(`seed ${seed}: the map is worth panning over`, g.nodes.length >= 20);
+  ok(
+    `seed ${seed}: there is more than one way down`,
+    g.nodes.filter((n) => n.links.length > 2).length > g.nodes.length / 3,
+  );
+  ok(
+    `seed ${seed}: difficulty stays inside its band`,
+    g.nodes.every((n) => n.tier >= 0 && n.tier < TUNING.tiers),
   );
 }
 
@@ -199,7 +222,7 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   resolveBattle(g);
   ok("the room is cleared", g.nodes[first].state === "cleared");
   ok("you are standing in it", g.at === first);
-  ok("what lies beyond is open", g.nodes[first].links.every((id) => g.nodes[id].state === "open"));
+  ok("nothing beside it stays sealed", g.nodes[first].links.every((id) => g.nodes[id].state !== "locked"));
   ok("spoils are waiting", g.pending !== null);
   ok("xp was paid", g.pending!.xp > 0);
   ok("something was found", RES_IDS.some((k) => g.pending!.res[k] > 0));
@@ -211,22 +234,51 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // A squad that dies is gone, and the room stays open
+  // A squad is a one-way expedition: it resolves on dispatch and never returns
   const g = newGame(555);
   const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
   const ids = g.army.map((u) => u.id);
   ok("a squad needs somebody in it", sendSquad(g, first, []) === false);
   ok("a squad can be sent", sendSquad(g, first, ids) === true);
-  ok("the hero stays home", g.battle!.units.every((u) => u.creature !== "hero"));
-  g.battle!.units.forEach((u) => {
-    if (u.faction === "player") u.hp = 0;
-  });
-  g.battle!.done = "loss";
-  resolveBattle(g);
-  ok("the fallen do not come back", g.army.length === 0);
-  ok("the room is still waiting", g.nodes[first].state === "open");
+  ok("nothing is left to watch", g.battle === null);
+  ok("the sent do not come back", g.army.every((u) => !ids.includes(u.id)));
+  ok("a report comes back", g.pending !== null && g.pending.side === "squad");
+  ok("the report counts who went", g.pending!.lost === ids.length);
   ok("you are alive", g.over === "");
   ok("you have not moved", g.at === 0);
+}
+
+{
+  // A squad that keeps winning keeps walking, and every room it takes is taken
+  let chained = 0;
+  let doomed = 0;
+  for (let seed = 0; seed < 30; seed++) {
+    const g = newGame(9100 + seed * 13);
+    while (raise(g, "knight")) {
+      /* the sturdiest squad the cap allows */
+    }
+    const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
+    const sent = g.army.map((u) => u.id);
+    const before = g.nodes.filter((n) => n.state === "cleared").length;
+    sendSquad(g, first, sent);
+    const after = g.nodes.filter((n) => n.state === "cleared").length;
+    ok(`chain ${seed}: the report matches the map`, after - before === g.pending!.rooms);
+    ok(`chain ${seed}: nobody who went comes home`, g.army.every((u) => !sent.includes(u.id)));
+    ok(`chain ${seed}: the hero never moves`, g.at === 0);
+    ok(
+      `chain ${seed}: they never walk into the boss`,
+      g.nodes.every((n) => n.kind !== "boss" || n.state !== "cleared"),
+    );
+    if (g.pending!.rooms > 1) chained += 1;
+
+    // One rat is not an expedition, it is a delivery
+    const lone = newGame(9100 + seed * 13);
+    const alone = neighbors(lone, 0).find((id) => lone.nodes[id].state === "open")!;
+    sendSquad(lone, alone, [lone.army[0].id]);
+    if (lone.pending!.rooms === 0) doomed += 1;
+  }
+  ok("squads do chain rooms together", chained > 5);
+  ok("a squad too small dies where it stands", doomed > 5);
 }
 
 {
@@ -241,21 +293,23 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // A squad win pays less than walking in yourself
-  const g = newGame(777);
-  const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
+  // A room taken by proxy pays less of the lesson than one you walked into
+  const squad = newGame(777);
   const solo = newGame(777);
-  sendSquad(g, first, g.army.map((u) => u.id));
-  g.battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
-  g.battle!.done = "win";
-  resolveBattle(g);
+  const first = neighbors(solo, 0).find((id) => solo.nodes[id].state === "open")!;
+
+  for (let i = 0; i < 6; i++) raise(squad, "knight");
+  sendSquad(squad, first, squad.army.map((u) => u.id));
+
   advance(solo, first);
   solo.battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
   solo.battle!.done = "win";
   resolveBattle(solo);
-  ok("a squad brings back half the lesson", g.pending!.xp < solo.pending!.xp);
-  ok("a squad still clears the room", g.nodes[first].state === "cleared");
-  ok("but you stay where you were", g.at === 0);
+
+  ok("a squad still clears the room", squad.nodes[first].state === "cleared");
+  ok("but you stay where you were", squad.at === 0);
+  ok("walking in pays the full lesson", solo.pending!.xp > 0);
+  ok("the hero rests in a room he took", solo.at === first);
 }
 
 // ---------------------------------------------------------------- persistence
@@ -331,7 +385,7 @@ function autoplay(seedValue: number) {
       continue;
     }
     open.sort(
-      (x, y) => g.nodes[y].layer - g.nodes[x].layer || g.nodes[x].foes.length - g.nodes[y].foes.length,
+      (x, y) => g.nodes[y].row - g.nodes[x].row || g.nodes[x].foes.length - g.nodes[y].foes.length,
     );
     advance(g, open[0]);
     runBattle(g);

@@ -1,10 +1,11 @@
-import { Application } from "pixi.js";
+import { Application, type FederatedPointerEvent } from "pixi.js";
 import { loadGlyphs } from "./gfx/glyphs.ts";
 import { Grid } from "./gfx/grid.ts";
 import { computeLayout } from "./layout.ts";
 import { drawBattle } from "./screens/battle.ts";
-import { drawMap } from "./screens/map.ts";
+import { centerOn, clampCam, drawMap } from "./screens/map.ts";
 import { drawPanel, shownPanel, type Ui } from "./screens/panels.ts";
+import type { Point } from "./sim/data.ts";
 import {
   advance,
   chooseStat,
@@ -21,6 +22,8 @@ import {
 import { C, Hits, type Act } from "./ui.ts";
 
 const TICK_MS = 420;
+// A finger never holds perfectly still, so a tap is allowed to wander this far
+const DRAG_SLOP = 10;
 
 const host = document.getElementById("stage")!;
 const safe = document.getElementById("safe")!;
@@ -37,7 +40,7 @@ async function main() {
     preference: "webgl",
     width: 256,
     height: 256,
-    eventFeatures: { move: true, globalMove: false, click: true, wheel: false },
+    eventFeatures: { move: true, globalMove: true, click: true, wheel: false },
   });
   host.appendChild(app.canvas);
 
@@ -47,8 +50,14 @@ async function main() {
   let g = load() ?? newGame(Math.floor(Math.random() * 1e9));
   const ui: Ui = { panel: "", node: 0, pick: [], speed: 1 };
   const hits = new Hits();
+  let cam: Point = { x: 0, y: 0 };
   let dirty = true;
   let since = 0;
+  let drag: { x: number; y: number; cam: Point; moved: boolean } | null = null;
+
+  const recenter = () => {
+    cam = centerOn(g, grid.cols, grid.rows);
+  };
 
   function fit() {
     const l = computeLayout({
@@ -60,6 +69,7 @@ async function main() {
     app.renderer.resize(l.cssW, l.cssH);
     grid.resize(l.cols, l.rows, l.cssCell);
     app.stage.hitArea = app.screen;
+    recenter();
     dirty = true;
   }
 
@@ -67,7 +77,7 @@ async function main() {
     hits.clear();
     grid.clear(C.bg);
     if (g.battle) drawBattle(grid, g, ui, hits);
-    else drawMap(grid, g, hits);
+    else drawMap(grid, g, cam, hits);
     const panel = shownPanel(g, ui);
     if (panel) drawPanel(grid, g, ui, hits, panel);
     grid.flush();
@@ -79,6 +89,7 @@ async function main() {
     ui.panel = "";
     ui.pick = [];
     ui.node = 0;
+    recenter();
     save(g);
   }
 
@@ -91,6 +102,7 @@ async function main() {
       case "move":
         moveTo(g, ui.node);
         ui.panel = "";
+        recenter();
         break;
       case "advance":
         advance(g, ui.node);
@@ -102,15 +114,13 @@ async function main() {
         ui.panel = "roster";
         break;
       case "toggle":
-        ui.pick = ui.pick.includes(a.id)
-          ? ui.pick.filter((i) => i !== a.id)
-          : [...ui.pick, a.id];
+        ui.pick = ui.pick.includes(a.id) ? ui.pick.filter((i) => i !== a.id) : [...ui.pick, a.id];
         break;
       case "send":
+        // The expedition runs to its end here; what comes back is a report
         if (sendSquad(g, ui.node, ui.pick)) {
           ui.panel = "";
           ui.pick = [];
-          since = 0;
         }
         break;
       case "army":
@@ -143,6 +153,7 @@ async function main() {
         break;
       case "resolve":
         resolveBattle(g);
+        recenter();
         break;
       default:
         break;
@@ -152,12 +163,36 @@ async function main() {
     dirty = true;
   }
 
+  const panning = () => !g.battle && !shownPanel(g, ui);
+
   app.stage.eventMode = "static";
   app.stage.hitArea = app.screen;
-  app.stage.on("pointertap", (e) => {
-    const c = grid.cellAt(e.global.x, e.global.y);
-    onAct(hits.at(c.x, c.y));
+  app.stage.on("pointerdown", (e: FederatedPointerEvent) => {
+    drag = { x: e.global.x, y: e.global.y, cam: { ...cam }, moved: false };
   });
+  app.stage.on("globalpointermove", (e: FederatedPointerEvent) => {
+    if (!drag) return;
+    const dx = e.global.x - drag.x;
+    const dy = e.global.y - drag.y;
+    if (!drag.moved && Math.abs(dx) < DRAG_SLOP && Math.abs(dy) < DRAG_SLOP) return;
+    drag.moved = true;
+    if (!panning()) return;
+    cam = clampCam(
+      { x: drag.cam.x - dx / grid.cssCell, y: drag.cam.y - dy / grid.cssCell },
+      grid.cols,
+      grid.rows,
+    );
+    dirty = true;
+  });
+  const release = () => {
+    if (drag && !drag.moved) {
+      const c = grid.cellAt(drag.x, drag.y);
+      onAct(hits.at(c.x, c.y));
+    }
+    drag = null;
+  };
+  app.stage.on("pointerup", release);
+  app.stage.on("pointerupoutside", release);
 
   window.addEventListener("resize", fit);
   window.addEventListener("orientationchange", fit);

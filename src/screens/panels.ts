@@ -199,19 +199,23 @@ function rosterSpec(g: GameState, ui: Ui, wide: number, select: boolean): Spec {
 
 function rewardSpec(g: GameState, wide: number): Spec {
   const r = g.pending!;
-  const lines: Line[] = [{ text: `+${r.xp} xp`, fg: C.gold }];
+  const squad = r.side === "squad";
+  const lines: Line[] = [];
   const say = (s: string, fg: number) => {
     for (const text of wrap(s, wide)) lines.push({ text, fg });
   };
+
+  // An expedition reports on rooms; a room you took yourself needs no headline
+  if (squad) say(r.rooms ? `took ${r.rooms} rooms` : "took nothing", r.rooms ? C.pale : C.dim);
+  lines.push({ text: `+${r.xp} xp`, fg: C.gold });
 
   const spoils = RES_IDS.filter((k) => r.res[k] > 0)
     .map((k) => `${RESOURCES[k].glyph}${r.res[k]}`)
     .join("  ");
   if (spoils) lines.push({ text: spoils, fg: C.cyan });
   if (r.raised.length) say(`rose: ${r.raised.map((c) => CREATURES[c].short).join(", ")}`, C.green);
-  if (r.lost) lines.push({ text: `lost ${r.lost}`, fg: C.red });
-  if (r.side === "squad") say("half share, no you", C.dim);
+  if (r.lost) say(squad ? `${r.lost} never came back` : `lost ${r.lost}`, C.red);
 
   lines.push({ text: "" }, { text: "continue", act: { t: "ok" } });
-  return { title: "SPOILS", minWidth: Math.min(wide, 16), lines };
+  return { title: squad ? "THE EXPEDITION" : "SPOILS", minWidth: Math.min(wide, 16), lines };
 }

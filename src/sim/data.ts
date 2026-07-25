@@ -1,4 +1,5 @@
 // Numbers and templates only - behaviour lives in game.ts
+export type Point = { x: number; y: number };
 export type Stat = "might" | "ward" | "will";
 export type Resource = "bone" | "ash" | "salt";
 export type Faction = "player" | "enemy";
@@ -30,11 +31,13 @@ export type BattleUnit = {
   withered: number;
 };
 
+export type Hit = { id: number; n: number };
+
 export type Battle = {
   node: number;
   side: "hero" | "squad";
   units: BattleUnit[];
-  hit: number[];
+  hit: Hit[];
   tick: number;
   log: string[];
   done: "" | "win" | "loss";
@@ -43,9 +46,8 @@ export type Battle = {
 
 export type MapNode = {
   id: number;
-  layer: number;
-  slot: number;
-  of: number; // how many nodes share this layer, so the view can place it
+  col: number;
+  row: number; // offset hex coordinates; odd rows sit half a hex to the right
   kind: NodeKind;
   tier: number;
   foes: CreatureId[];
@@ -60,6 +62,7 @@ export type Reward = {
   raised: CreatureId[];
   side: "hero" | "squad";
   lost: number;
+  rooms: number;
 };
 
 export type GameState = {
@@ -85,10 +88,12 @@ export type GameState = {
 };
 
 export const TUNING = {
-  layers: 7,
-  minPerLayer: 2,
-  maxPerLayer: 3,
-  crossEdgeChance: 0.45,
+  mapRows: 12,
+  mapCols: 7,
+  minPerRow: 2,
+  maxPerRow: 4,
+  tiers: 6,
+  squadRoomCap: 40,
 
   heroHp: 34,
   heroDmg: 5,

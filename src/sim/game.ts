@@ -1,4 +1,4 @@
-import { pick, randInt, rnd, rngState, seed as seedRng, setRngState } from "./rng.ts";
+import { pick, randInt, rnd, rngState, seed as seedRng, setRngState, shuffle } from "./rng.ts";
 import { LORE } from "./lore.ts";
 import {
   CREATURES,
@@ -17,6 +17,7 @@ import {
   type Resource,
   type Reward,
   type Stat,
+  type Unit,
 } from "./data.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
@@ -31,68 +32,83 @@ export function log(g: GameState, line: string) {
   if (g.log.length > TUNING.logLines) g.log.shift();
 }
 
-// Both directions: links are stored one way, but the map is walked both ways
-export function neighbors(g: GameState, id: number): number[] {
-  const out = [...g.nodes[id].links];
-  for (const n of g.nodes) if (n.links.includes(id) && !out.includes(n.id)) out.push(n.id);
-  return out;
-}
+export const neighbors = (g: GameState, id: number): number[] => g.nodes[id].links;
 
 // ---------------------------------------------------------------- map
 
+// odd-r offset hexes: odd rows sit half a hex to the right, so a cell touches
+// two above, two below, and one either side
+const HEX_STEPS = [
+  [[-1, 0], [1, 0], [-1, -1], [0, -1], [-1, 1], [0, 1]],
+  [[-1, 0], [1, 0], [0, -1], [1, -1], [0, 1], [1, 1]],
+];
+
+export const hexAround = (col: number, row: number) =>
+  HEX_STEPS[row & 1].map(([dc, dr]) => ({ col: col + dc, row: row + dr }));
+
+// Difficulty is spread over the descent rather than tied to the row, so the map
+// can get taller without the last rooms becoming impossible
+export const tierForRow = (row: number) =>
+  clamp(Math.floor(((row - 1) * TUNING.tiers) / Math.max(1, TUNING.mapRows - 2)), 0, TUNING.tiers - 1);
+
 function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
-  if (kind === "boss") return ["ossuary", "warden"];
+  if (kind === "boss") return ["ossuary", "warden", "knight"];
   const n = kind === "elite" ? randInt(3, 4) : kind === "crypt" ? randInt(1, 2) : randInt(2, 3);
   const pool = tier < 2 ? EARLY_POOL : LATE_POOL;
   return Array.from({ length: n }, () => pick(pool));
 }
 
-const connect = (g: GameState, a: number, b: number) => {
-  if (!g.nodes[a].links.includes(b)) g.nodes[a].links.push(b);
-};
-
-// Proportional pairing, so edges fan out instead of knotting in the middle
-const slot = (i: number, from: number, to: number) =>
-  to <= 1 ? 0 : Math.min(to - 1, Math.round((i * (to - 1)) / Math.max(1, from - 1)));
-
-function link(g: GameState, top: number[], bottom: number[]) {
-  for (let i = 0; i < top.length; i++) connect(g, top[i], bottom[slot(i, top.length, bottom.length)]);
-  // Nothing below may be unreachable, whichever way the proportional pass fell
-  for (let j = 0; j < bottom.length; j++) {
-    if (top.some((t) => g.nodes[t].links.includes(bottom[j]))) continue;
-    connect(g, top[slot(j, bottom.length, top.length)], bottom[j]);
-  }
-  if (top.length > 1 && bottom.length > 1 && rnd() < TUNING.crossEdgeChance) {
-    connect(g, pick(top), pick(bottom));
-  }
-}
-
 function buildMap(g: GameState) {
-  const layers: number[][] = [];
-  for (let l = 0; l < TUNING.layers; l++) {
-    const last = l === TUNING.layers - 1;
-    const count = l === 0 || last ? 1 : randInt(TUNING.minPerLayer, TUNING.maxPerLayer);
-    const row: number[] = [];
-    for (let s = 0; s < count; s++) {
-      const kind: NodeKind = l === 0 ? "gate" : last ? "boss" : pick(KIND_ROLL);
-      const tier = Math.max(0, l - 1) + (kind === "elite" ? 1 : 0);
-      g.nodes.push({
-        id: g.nodes.length,
-        layer: l,
-        slot: s,
-        of: count,
-        kind,
-        tier,
-        foes: kind === "gate" ? [] : rollFoes(kind, tier),
-        links: [],
-        state: "locked",
-        lore: null,
-      });
-      row.push(g.nodes.length - 1);
-    }
-    layers.push(row);
+  const { mapRows, mapCols } = TUNING;
+  const key = (col: number, row: number) => col * 1000 + row;
+  const at = new Map<number, number>();
+
+  const put = (col: number, row: number, kind: NodeKind) => {
+    const tier = clamp(tierForRow(row) + (kind === "elite" ? 1 : 0), 0, TUNING.tiers - 1);
+    at.set(key(col, row), g.nodes.length);
+    g.nodes.push({
+      id: g.nodes.length,
+      col,
+      row,
+      kind,
+      tier,
+      foes: kind === "gate" ? [] : rollFoes(kind, tier),
+      links: [],
+      state: "locked",
+      lore: null,
+    });
+  };
+
+  put(mapCols >> 1, 0, "gate");
+  let above = [{ col: mapCols >> 1, row: 0 }];
+
+  for (let row = 1; row < mapRows; row++) {
+    const last = row === mapRows - 1;
+    // Only cells that touch the row above, so the map is connected by construction
+    const open = [
+      ...new Set(
+        above.flatMap((p) =>
+          hexAround(p.col, p.row)
+            .filter((h) => h.row === row && h.col >= 0 && h.col < mapCols)
+            .map((h) => h.col),
+        ),
+      ),
+    ];
+    if (!open.length) break;
+    const want = last ? 1 : Math.min(open.length, randInt(TUNING.minPerRow, TUNING.maxPerRow));
+    const taken = shuffle(open).slice(0, want);
+    for (const col of taken) put(col, row, last ? "boss" : pick(KIND_ROLL));
+    above = taken.map((col) => ({ col, row }));
   }
-  for (let l = 0; l < layers.length - 1; l++) link(g, layers[l], layers[l + 1]);
+
+  // Adjacency is symmetric, so both ends record the edge and neighbours are one lookup
+  for (const n of g.nodes) {
+    for (const h of hexAround(n.col, n.row)) {
+      const other = at.get(key(h.col, h.row));
+      if (other !== undefined && !n.links.includes(other)) n.links.push(other);
+    }
+  }
+
   assignLore(g);
   g.nodes[0].state = "cleared";
   unlock(g);
@@ -110,10 +126,27 @@ function assignLore(g: GameState) {
 function unlock(g: GameState) {
   for (const n of g.nodes) {
     if (n.state !== "cleared") continue;
-    for (const id of neighbors(g, n.id)) {
-      if (g.nodes[id].state === "locked") g.nodes[id].state = "open";
+    for (const id of n.links) if (g.nodes[id].state === "locked") g.nodes[id].state = "open";
+  }
+}
+
+// Nearest by hops, walking only ground already taken. The boss is skipped: a
+// squad wanders into rooms, it does not pick a fight with that on its own.
+export function nearestOpen(g: GameState, from: number): number | null {
+  const seen = new Set([from]);
+  const queue = [from];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const id of g.nodes[cur].links) {
+      const n = g.nodes[id];
+      if (n.state === "open" && n.kind !== "boss") return id;
+      if (n.state === "cleared" && !seen.has(id)) {
+        seen.add(id);
+        queue.push(id);
+      }
     }
   }
+  return null;
 }
 
 // ---------------------------------------------------------------- army
@@ -219,7 +252,7 @@ function blog(b: Battle, line: string) {
 function damage(b: Battle, u: BattleUnit, amount: number) {
   if (u.hp <= 0) return;
   u.hp = Math.max(0, u.hp - amount);
-  b.hit.push(u.id);
+  b.hit.push({ id: u.id, n: amount });
   if (u.hp > 0) return;
   blog(b, `${CREATURES[u.creature].short} falls.`);
   hooks(u).onDeath?.(u, b);
@@ -243,9 +276,8 @@ function targetFor(b: Battle, u: BattleUnit): BattleUnit | undefined {
   return foes.sort((a, z) => a.hp - z.hp || a.id - z.id)[0];
 }
 
-export function tickBattle(g: GameState) {
-  const b = g.battle;
-  if (!b || b.done) return;
+export function tick(b: Battle) {
+  if (b.done) return;
   b.hit = [];
   const order = [...b.units].sort((a, z) => z.speed - a.speed || a.id - z.id);
   for (const u of order) {
@@ -260,19 +292,30 @@ export function tickBattle(g: GameState) {
   else if (!living(b, "player").length) b.done = "loss";
   // A fight that will not end is a fight you lost slowly
   else if (b.tick >= TUNING.maxTicks) b.done = "loss";
+}
+
+export function fight(b: Battle) {
+  let guard = TUNING.maxTicks + 2;
+  while (!b.done && guard-- > 0) tick(b);
+}
+
+export function tickBattle(g: GameState) {
+  if (!g.battle) return;
+  tick(g.battle);
   g.rng = rngState();
 }
 
 export function runBattle(g: GameState) {
-  let guard = TUNING.maxTicks + 2;
-  while (g.battle && !g.battle.done && guard-- > 0) tickBattle(g);
+  if (!g.battle) return;
+  fight(g.battle);
+  g.rng = rngState();
 }
 
 function makeBattle(
   g: GameState,
   target: number,
   side: "hero" | "squad",
-  unitIds: number[],
+  roster: Unit[],
 ): Battle {
   const n = g.nodes[target];
   const b: Battle = { node: target, side, units: [], hit: [], tick: 0, log: [], done: "", nextId: 0 };
@@ -291,9 +334,7 @@ function makeBattle(
       withered: 0,
     });
   }
-  for (const id of unitIds) {
-    const u = g.army.find((a) => a.id === id);
-    if (!u) continue;
+  for (const u of roster) {
     const t = CREATURES[u.creature];
     b.units.push({
       id: b.nextId++,
@@ -345,14 +386,47 @@ export function moveTo(g: GameState, id: number): boolean {
 
 export function advance(g: GameState, id: number): boolean {
   if (!canAdvance(g, id)) return false;
-  g.battle = makeBattle(g, id, "hero", g.army.map((u) => u.id));
+  g.battle = makeBattle(g, id, "hero", g.army);
   g.rng = rngState();
   return true;
 }
 
+// A squad is a one-way expedition. It fights where you point it, and if it wins
+// it walks to the nearest room still worth taking and fights again, until there
+// is nothing left of it. You do not watch and you do not get to call it back.
 export function sendSquad(g: GameState, id: number, unitIds: number[]): boolean {
   if (!canSend(g, id) || !unitIds.length) return false;
-  g.battle = makeBattle(g, id, "squad", unitIds);
+  const roster = g.army.filter((u) => unitIds.includes(u.id)).map((u) => ({ ...u }));
+  if (!roster.length) return false;
+  g.army = g.army.filter((u) => !unitIds.includes(u.id));
+
+  const spoils: Reward = {
+    xp: 0,
+    res: { bone: 0, ash: 0, salt: 0 },
+    raised: [],
+    side: "squad",
+    lost: roster.length,
+    rooms: 0,
+  };
+
+  let at: number | null = id;
+  let alive = roster;
+  for (let guard = 0; guard < TUNING.squadRoomCap && at !== null; guard++) {
+    const b = makeBattle(g, at, "squad", alive);
+    fight(b);
+    if (b.done !== "win") break;
+    // Wounds carry to the next room; nothing heals out there
+    alive = b.units
+      .filter((u) => u.faction === "player" && u.hp > 0 && u.src > 0)
+      .map((u) => ({ id: u.src, creature: u.creature, hp: u.hp, maxHp: u.maxHp }));
+    clearRoom(g, b, g.nodes[at], spoils);
+    spoils.rooms += 1;
+    if (!alive.length) break;
+    at = nearestOpen(g, at);
+  }
+
+  g.pending = spoils;
+  log(g, spoils.rooms ? `They took ${spoils.rooms}.` : "They did not last.");
   g.rng = rngState();
   return true;
 }
@@ -366,31 +440,37 @@ function loot(n: MapNode): Record<Resource, number> {
   return out;
 }
 
-function grantRewards(g: GameState, b: Battle, n: MapNode): Reward {
+// Everything a won room pays, whoever won it. Totals accumulate into `into`,
+// because an expedition takes several rooms and reports once.
+function clearRoom(g: GameState, b: Battle, n: MapNode, into: Reward) {
+  n.state = "cleared";
+  g.cleared += 1;
+  unlock(g);
+
   // Split spawns are not corpses anybody left behind, so they pay nothing
   const fallen = b.units.filter((u) => u.faction === "enemy" && u.hp <= 0 && u.tier === 0);
   const raw = fallen.reduce((s, u) => s + CREATURES[u.creature].xp, 0);
   const xp = b.side === "squad" ? Math.max(1, Math.round(raw * TUNING.squadXpCut)) : raw;
+  into.xp += xp;
   gainXp(g, xp);
 
   const res = loot(n);
-  for (const k of RES_IDS) g.res[k] += res[k];
+  for (const k of RES_IDS) {
+    g.res[k] += res[k];
+    into.res[k] += res[k];
+  }
 
-  const raised: CreatureId[] = [];
   for (const u of fallen) {
     if (u.creature === "ossuary") continue;
     if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance) continue;
     if (!raise(g, u.creature)) break;
-    raised.push(u.creature);
+    into.raised.push(u.creature);
   }
 
-  const lore = n.lore !== null && !g.seenLore.includes(n.lore) ? n.lore : null;
-  if (lore !== null) {
-    g.seenLore.push(lore);
-    g.pendingLore = lore;
+  if (n.lore !== null && !g.seenLore.includes(n.lore)) {
+    g.seenLore.push(n.lore);
+    if (g.pendingLore === null) g.pendingLore = n.lore;
   }
-  const lost = b.units.filter((u) => u.faction === "player" && u.src > 0 && u.hp <= 0).length;
-  return { xp, res, raised, side: b.side, lost };
 }
 
 export function resolveBattle(g: GameState) {
@@ -416,26 +496,26 @@ export function resolveBattle(g: GameState) {
 
   g.battle = null;
   if (!won) {
-    if (b.side === "hero") {
-      g.over = "dead";
-      log(g, "The dark has you.");
-    } else {
-      log(g, "The squad is lost.");
-    }
+    g.over = "dead";
+    log(g, "The dark has you.");
     g.rng = rngState();
     return;
   }
 
-  n.state = "cleared";
-  g.cleared += 1;
+  const spoils: Reward = {
+    xp: 0,
+    res: { bone: 0, ash: 0, salt: 0 },
+    raised: [],
+    side: "hero",
+    lost: b.units.filter((u) => u.faction === "player" && u.src > 0 && u.hp <= 0).length,
+    rooms: 1,
+  };
   // A room you took yourself is a room you can rest in
-  if (b.side === "hero") {
-    g.at = n.id;
-    g.hero.hp = Math.min(g.hero.maxHp, g.hero.hp + TUNING.restHeal);
-    for (const m of g.army) m.hp = Math.min(m.maxHp, m.hp + TUNING.minionHeal);
-  }
-  unlock(g);
-  g.pending = grantRewards(g, b, n);
+  g.at = n.id;
+  g.hero.hp = Math.min(g.hero.maxHp, g.hero.hp + TUNING.restHeal);
+  clearRoom(g, b, n, spoils);
+  for (const m of g.army) m.hp = Math.min(m.maxHp, m.hp + TUNING.minionHeal);
+  g.pending = spoils;
   log(g, n.kind === "boss" ? "It is finished." : "The room is quiet.");
   if (n.kind === "boss") g.over = "won";
   g.rng = rngState();

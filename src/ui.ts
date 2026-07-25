@@ -91,10 +91,22 @@ export function wrap(s: string, width: number): string[] {
   });
 }
 
-// Half-height blocks, so bars on neighbouring rows stay separate bars
-export function bar(grid: Grid, x: number, y: number, w: number, frac: number, on: number) {
+// Half-height blocks, so bars on neighbouring rows stay separate bars. Mirrored
+// bars fill from the right, so both sides drain towards the middle.
+export function bar(
+  grid: Grid,
+  x: number,
+  y: number,
+  w: number,
+  frac: number,
+  on: number,
+  mirrored = false,
+) {
   const n = frac > 0 ? Math.max(1, Math.round(frac * w)) : 0;
-  for (let i = 0; i < w; i++) grid.put(x + i, y, i < n ? "▄" : "▁", i < n ? on : C.frame);
+  for (let i = 0; i < w; i++) {
+    const full = mirrored ? i >= w - n : i < n;
+    grid.put(x + i, y, full ? "▄" : "▁", full ? on : C.frame);
+  }
 }
 
 export function box(grid: Grid, x: number, y: number, w: number, h: number) {

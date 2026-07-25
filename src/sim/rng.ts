@@ -19,3 +19,13 @@ export function rnd(): number {
 
 export const randInt = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
 export const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)];
+
+// Fisher-Yates on a copy, so a caller's array is never reordered underneath it
+export function shuffle<T>(a: readonly T[]): T[] {
+  const out = [...a];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
