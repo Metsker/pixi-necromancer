@@ -11,19 +11,19 @@ import {
   chooseStat,
   clearSave,
   load,
-  moveTo,
   newGame,
-  resolveBattle,
-  runBattle,
+  orderHero,
   save,
   sendSquad,
-  tickBattle,
 } from "./sim/game.ts";
 import { C, Hits, type Act } from "./ui.ts";
 
-const TICK_MS = 420;
+// One tick of game time. The speed control multiplies how many run per second.
+const TICK_MS = 110;
+const SPEEDS = [1, 2, 4, 0];
 // A finger never holds perfectly still, so a tap is allowed to wander this far
 const DRAG_SLOP = 10;
+const SAVE_EVERY = 4000;
 
 const host = document.getElementById("stage")!;
 const safe = document.getElementById("safe")!;
@@ -48,15 +48,23 @@ async function main() {
   app.stage.addChild(grid.root);
 
   let g = load() ?? newGame(Math.floor(Math.random() * 1e9));
-  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1 };
+  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null };
   const hits = new Hits();
   let cam: Point = { x: 0, y: 0 };
   let dirty = true;
-  let since = 0;
+  let owed = 0;
+  let sinceSave = 0;
   let drag: { x: number; y: number; cam: Point; moved: boolean } | null = null;
 
   const recenter = () => {
     cam = centerOn(g, grid.cols, grid.rows);
+  };
+
+  // The force being watched, but only while it is actually in a fight
+  const watched = () => {
+    if (ui.watch === null) return null;
+    const f = g.forces.find((o) => o.id === ui.watch);
+    return f && f.mode === "fight" && f.battle ? f : null;
   };
 
   function fit() {
@@ -76,8 +84,9 @@ async function main() {
   function redraw() {
     hits.clear();
     grid.clear(C.bg);
-    if (g.battle) drawBattle(grid, g, ui, hits);
-    else drawMap(grid, g, cam, hits);
+    const watching = watched();
+    if (watching) drawBattle(grid, g, watching, hits, ui.speed);
+    else drawMap(grid, g, cam, hits, ui.speed);
     const panel = shownPanel(g, ui);
     if (panel) drawPanel(grid, g, ui, hits, panel);
     grid.flush();
@@ -89,6 +98,7 @@ async function main() {
     ui.panel = "";
     ui.pick = [];
     ui.node = 0;
+    ui.watch = null;
     recenter();
     save(g);
   }
@@ -99,15 +109,9 @@ async function main() {
         ui.node = a.id;
         ui.panel = "node";
         break;
-      case "move":
-        moveTo(g, ui.node);
+      case "order":
+        orderHero(g, ui.node);
         ui.panel = "";
-        recenter();
-        break;
-      case "advance":
-        advance(g, ui.node);
-        ui.panel = "";
-        since = 0;
         break;
       case "squad":
         ui.pick = [];
@@ -117,11 +121,18 @@ async function main() {
         ui.pick = ui.pick.includes(a.id) ? ui.pick.filter((i) => i !== a.id) : [...ui.pick, a.id];
         break;
       case "send":
-        // The expedition runs to its end here; what comes back is a report
         if (sendSquad(g, ui.node, ui.pick)) {
           ui.panel = "";
           ui.pick = [];
         }
+        break;
+      case "watch":
+        ui.watch = a.id;
+        ui.panel = "";
+        break;
+      case "back":
+        ui.watch = null;
+        recenter();
         break;
       case "army":
         ui.panel = "army";
@@ -142,18 +153,10 @@ async function main() {
         chooseStat(g, a.s);
         break;
       case "ok":
-        if (g.pending) g.pending = null;
-        else g.pendingLore = null;
+        g.loreQueue.shift();
         break;
       case "speed":
-        ui.speed = ui.speed >= 4 ? 1 : ui.speed * 2;
-        break;
-      case "skip":
-        runBattle(g);
-        break;
-      case "resolve":
-        resolveBattle(g);
-        recenter();
+        ui.speed = SPEEDS[(SPEEDS.indexOf(ui.speed) + 1) % SPEEDS.length];
         break;
       default:
         break;
@@ -163,7 +166,7 @@ async function main() {
     dirty = true;
   }
 
-  const panning = () => !g.battle && !shownPanel(g, ui);
+  const panning = () => !watched() && !shownPanel(g, ui);
 
   app.stage.eventMode = "static";
   app.stage.hitArea = app.screen;
@@ -199,13 +202,30 @@ async function main() {
   fit();
 
   app.ticker.add((t) => {
-    if (g.battle && !g.battle.done) {
-      since += t.deltaMS;
-      if (since >= TICK_MS / ui.speed) {
-        since = 0;
-        tickBattle(g);
-        dirty = true;
+    // A sheet you have to answer stops the clock, so nothing happens unwatched
+    const running = ui.speed > 0 && !g.over && !shownPanel(g, ui);
+    if (running) {
+      owed += (t.deltaMS * ui.speed) / TICK_MS;
+      const steps = Math.min(240, Math.floor(owed));
+      if (steps > 0) {
+        owed -= steps;
+        const before = g.time;
+        advance(g, steps);
+        if (g.time !== before) dirty = true;
       }
+      sinceSave += t.deltaMS;
+      if (sinceSave > SAVE_EVERY) {
+        sinceSave = 0;
+        if (!g.over) save(g);
+      }
+    } else {
+      owed = 0;
+    }
+    // Leaving a fight that has ended should put the map back by itself
+    if (ui.watch !== null && !watched()) {
+      ui.watch = null;
+      recenter();
+      dirty = true;
     }
     if (!dirty) return;
     dirty = false;

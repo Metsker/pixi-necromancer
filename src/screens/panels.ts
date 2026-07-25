@@ -4,14 +4,14 @@ import {
   CREATURES,
   KIND_NAME,
   KIND_NOTE,
-  RESOURCES,
-  RES_IDS,
+  SQUAD_GLYPH,
   STAT_LABEL,
   type CreatureId,
+  type Force,
   type GameState,
   type Stat,
 } from "../sim/data.ts";
-import { canAdvance, canMove, canSend, commandCap } from "../sim/game.ts";
+import { canOrder, canSend, commandCap, heroForce, heroUnit, reserve, squads } from "../sim/game.ts";
 import { C, Hits, type Line, sheet, wrap } from "../ui.ts";
 
 export type PanelId = "" | "node" | "roster" | "army" | "menu" | "confirm";
@@ -21,9 +21,10 @@ export type Ui = {
   node: number;
   pick: number[];
   speed: number;
+  watch: number | null;
 };
 
-export type Shown = PanelId | "level" | "reward" | "lore" | "over";
+export type Shown = PanelId | "level" | "lore" | "over";
 
 export const PANELS: Shown[] = [
   "node",
@@ -32,17 +33,16 @@ export const PANELS: Shown[] = [
   "menu",
   "confirm",
   "level",
-  "reward",
   "lore",
   "over",
 ];
 
 export type Spec = { title: string; lines: Line[]; minWidth: number };
 
-// Anything the run owes the player is shown before anything the player asked for
+// Anything the run owes the player is shown before anything the player asked
+// for. While any of these is up the clock is stopped, so nothing is missed.
 export function shownPanel(g: GameState, ui: Ui): Shown {
-  if (g.pending) return "reward";
-  if (g.pendingLore !== null) return "lore";
+  if (g.loreQueue.length) return "lore";
   if (g.unspent > 0) return "level";
   if (g.over) return "over";
   return ui.panel;
@@ -60,6 +60,9 @@ const tally = (foes: CreatureId[]) => {
     .join(", ");
 };
 
+const doing = (f: Force) =>
+  f.mode === "fight" ? "fighting" : f.mode === "march" ? "moving" : "waiting";
+
 // What a sheet says and what its lines do, built in one place and at a known
 // width, so a check can hold every panel to the narrowest grid there is
 export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spec | null {
@@ -70,9 +73,9 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
     case "node":
       return nodeSpec(g, ui, wide);
     case "roster":
-      return rosterSpec(g, ui, wide, true);
+      return rosterSpec(g, ui, wide);
     case "army":
-      return rosterSpec(g, ui, wide, false);
+      return armySpec(g, wide);
     case "menu":
       return {
         title: "MENU",
@@ -82,7 +85,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
           { text: `ward  ${g.build.ward}`, fg: C.mid },
           { text: `will  ${g.build.will}`, fg: C.mid },
           { text: "" },
-          ...say(`rooms cleared ${g.cleared}`, C.dim),
+          ...say(`rooms taken ${g.cleared}`, C.dim),
+          ...say(`dead ${g.lost}`, C.dim),
           { text: `lore ${g.seenLore.length}/${LORE.length}`, fg: C.dim },
           { text: "" },
           { text: "restart run", act: { t: "restart" } },
@@ -109,10 +113,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
           { text: STAT_LABEL.will, act: { t: "stat", s: "will" as Stat } },
         ],
       };
-    case "reward":
-      return rewardSpec(g, wide);
     case "lore": {
-      const piece = LORE[g.pendingLore ?? 0];
+      const piece = LORE[g.loreQueue[0] ?? 0];
       return {
         title: piece.title.slice(0, wide),
         minWidth: wide,
@@ -125,7 +127,7 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         minWidth: Math.min(wide, 16),
         lines: [
           ...say(g.over === "won" ? "the ossuary lies still" : "the army crumbles", C.dim),
-          ...say(`rooms cleared ${g.cleared}`, C.dim),
+          ...say(`rooms taken ${g.cleared}`, C.dim),
           { text: "" },
           { text: "new run", act: { t: "confirm" } },
         ],
@@ -156,11 +158,23 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
     say(KIND_NOTE[n.kind], C.dim);
     say(tally(n.foes), C.mid);
   }
-  lines.push({ text: "" });
 
-  if (canMove(g, n.id)) lines.push({ text: "walk there", act: { t: "move" } });
-  if (canAdvance(g, n.id)) lines.push({ text: "go in yourself", act: { t: "advance" } });
-  else if (n.state === "open") lines.push({ text: "too far to walk", fg: C.dim });
+  // Anything fighting here can be watched, whoever it belongs to
+  const busy = g.forces.filter((f) => f.mode === "fight" && f.at === n.id);
+  lines.push({ text: "" });
+  for (const f of busy) {
+    lines.push({
+      text: f.kind === "hero" ? "watch the fight" : "watch the squad",
+      act: { t: "watch", id: f.id },
+    });
+  }
+
+  if (canOrder(g, n.id) && g.forces[0].at !== n.id) {
+    lines.push({
+      text: n.state === "open" ? "take it yourself" : "go there",
+      act: { t: "order" },
+    });
+  }
   if (canSend(g, n.id)) lines.push({ text: "send a squad", act: { t: "squad" } });
   lines.push({ text: "close", act: { t: "close" } });
 
@@ -171,51 +185,55 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   };
 }
 
-function rosterSpec(g: GameState, ui: Ui, wide: number, select: boolean): Spec {
+function rosterSpec(g: GameState, ui: Ui, wide: number): Spec {
   const lines: Line[] = [];
-  if (!g.army.length) lines.push({ text: "nothing raised", fg: C.dim });
+  const troop = reserve(g);
+  if (!troop.length) lines.push({ text: "nothing raised", fg: C.dim });
 
-  for (const u of g.army) {
+  for (const u of troop) {
     const t = CREATURES[u.creature];
     const on = ui.pick.includes(u.id);
     lines.push({
-      text: `${select ? (on ? "►" : " ") : " "}${t.glyph} ${t.short.padEnd(7)}${u.hp}/${u.maxHp}`,
-      act: select ? { t: "toggle", id: u.id } : undefined,
-      fg: select ? (on ? C.gold : C.mid) : C.mid,
+      text: `${on ? "►" : " "}${t.glyph}${t.short.padEnd(7)}${u.hp}/${u.maxHp}`.slice(0, wide),
+      act: { t: "toggle", id: u.id },
+      fg: on ? C.gold : C.mid,
     });
-    if (!select) for (const text of wrap(t.tag, wide - 3)) lines.push({ text: `   ${text}`, fg: C.dim });
   }
 
   lines.push({ text: "" });
-  if (select) {
-    if (ui.pick.length) lines.push({ text: `send ${ui.pick.length}`, act: { t: "send" } });
-    lines.push({ text: "back", act: { t: "node", id: ui.node } });
-  } else {
-    lines.push({ text: `slots ${g.army.length}/${commandCap(g)}`, fg: C.dim });
-    lines.push({ text: "close", act: { t: "close" } });
-  }
-  return { title: select ? "SEND SQUAD" : "THE ARMY", minWidth: Math.min(wide, 16), lines };
+  if (ui.pick.length) lines.push({ text: `send ${ui.pick.length}`, act: { t: "send" } });
+  lines.push({ text: "back", act: { t: "node", id: ui.node } });
+  return { title: "SEND SQUAD", minWidth: Math.min(wide, 16), lines };
 }
 
-function rewardSpec(g: GameState, wide: number): Spec {
-  const r = g.pending!;
-  const squad = r.side === "squad";
+function armySpec(g: GameState, wide: number): Spec {
   const lines: Line[] = [];
-  const say = (s: string, fg: number) => {
-    for (const text of wrap(s, wide)) lines.push({ text, fg });
-  };
+  const h = heroUnit(g);
+  if (h) {
+    lines.push({
+      text: `${CREATURES.hero.glyph}${"You".padEnd(7)}${h.hp}/${h.maxHp}`,
+      fg: C.gold,
+    });
+  }
+  for (const u of reserve(g)) {
+    const t = CREATURES[u.creature];
+    lines.push({ text: `${t.glyph}${t.short.padEnd(7)}${u.hp}/${u.maxHp}`, fg: C.mid });
+    for (const text of wrap(t.tag, wide - 2)) lines.push({ text: `  ${text}`, fg: C.dim });
+  }
+  lines.push({ text: `slots ${reserve(g).length}/${commandCap(g)}`, fg: C.dim });
 
-  // An expedition reports on rooms; a room you took yourself needs no headline
-  if (squad) say(r.rooms ? `took ${r.rooms} rooms` : "took nothing", r.rooms ? C.pale : C.dim);
-  lines.push({ text: `+${r.xp} xp`, fg: C.gold });
+  const out = squads(g);
+  if (out.length) {
+    lines.push({ text: "" });
+    for (const f of out) {
+      lines.push({
+        text: `${SQUAD_GLYPH}${f.units.length} ${doing(f)} ${f.rooms}`.slice(0, wide),
+        act: f.mode === "fight" ? { t: "watch", id: f.id } : undefined,
+        fg: f.mode === "fight" ? C.hot : C.cyan,
+      });
+    }
+  }
 
-  const spoils = RES_IDS.filter((k) => r.res[k] > 0)
-    .map((k) => `${RESOURCES[k].glyph}${r.res[k]}`)
-    .join("  ");
-  if (spoils) lines.push({ text: spoils, fg: C.cyan });
-  if (r.raised.length) say(`rose: ${r.raised.map((c) => CREATURES[c].short).join(", ")}`, C.green);
-  if (r.lost) say(squad ? `${r.lost} never came back` : `lost ${r.lost}`, C.red);
-
-  lines.push({ text: "" }, { text: "continue", act: { t: "ok" } });
-  return { title: squad ? "THE EXPEDITION" : "SPOILS", minWidth: Math.min(wide, 16), lines };
+  lines.push({ text: "" }, { text: "close", act: { t: "close" } });
+  return { title: heroForce(g).mode === "fight" ? "IN A FIGHT" : "THE ARMY", minWidth: Math.min(wide, 16), lines };
 }

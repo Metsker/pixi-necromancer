@@ -4,36 +4,32 @@ import {
   KIND_GLYPH,
   RESOURCES,
   RES_IDS,
+  SQUAD_GLYPH,
   TUNING,
+  type Force,
   type GameState,
   type MapNode,
   type Point,
 } from "../sim/data.ts";
-import { canAdvance, canMove, commandCap, xpNeeded } from "../sim/game.ts";
+import { canOrder, commandCap, forcesAt, heroUnit, reserve, xpNeeded } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, buttons } from "../ui.ts";
 
 // log, status, resources; the button strip sits below it
 export const HUD_ROWS = 3;
 
-// One hex step in character cells. Odd rows are pushed half a step right, and
-// the row pitch is about 0.87 of the column pitch, which is what makes six
-// equidistant neighbours look equidistant on a grid of square cells.
-export const HEX_W = 6;
-export const HEX_H = 5;
+// One room step in character cells
+export const ROOM_W = 6;
+export const ROOM_H = 4;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
 export const viewRows = (rows: number) => Math.max(1, rows - HUD_ROWS - BTN_ROWS);
 
-// Where a room sits on the map, in map cells rather than screen cells
-export const nodeAt = (n: MapNode): Point => ({
-  x: 2 + n.col * HEX_W + (n.row & 1 ? HEX_W >> 1 : 0),
-  y: 1 + n.row * HEX_H,
-});
+export const nodeAt = (n: MapNode): Point => ({ x: 2 + n.col * ROOM_W, y: 1 + n.row * ROOM_H });
 
 export const mapSize = () => ({
-  w: 2 + (TUNING.mapCols - 1) * HEX_W + (HEX_W >> 1) + 3,
-  h: 1 + (TUNING.mapRows - 1) * HEX_H + 2,
+  w: 2 + (TUNING.mapCols - 1) * ROOM_W + 3,
+  h: 1 + (TUNING.mapRows - 1) * ROOM_H + 2,
 });
 
 // The camera never shows more void than it has to, and centres when the map fits
@@ -47,23 +43,32 @@ export function clampCam(cam: Point, cols: number, rows: number): Point {
 }
 
 export function centerOn(g: GameState, cols: number, rows: number): Point {
-  const at = nodeAt(g.nodes[g.at]);
+  const at = nodeAt(g.nodes[g.forces[0].at]);
   return clampCam({ x: at.x - (cols >> 1), y: at.y - (viewRows(rows) >> 1) }, cols, rows);
 }
 
-export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits) {
+export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed: number) {
   const { cols, rows } = grid;
   const view = viewRows(rows);
   const on = (x: number, y: number) => y >= 0 && y < view && x >= 0 && x < cols;
 
+  // Links first: orthogonal only, so every join is one straight run
   for (const n of g.nodes) {
     const a = nodeAt(n);
     for (const id of n.links) {
-      if (id < n.id) continue; // each edge is stored at both ends; draw it once
+      if (id < n.id) continue;
       const other = g.nodes[id];
       const b = nodeAt(other);
-      const known = n.state !== "locked" || other.state !== "locked";
-      edge(grid, a, b, cam, known ? C.dim : C.frame, on);
+      const color = n.state !== "locked" || other.state !== "locked" ? C.dim : C.frame;
+      if (a.y === b.y) {
+        for (let x = a.x + 2; x < b.x - 1; x++) {
+          if (on(x - cam.x, a.y - cam.y)) grid.put(x - cam.x, a.y - cam.y, "─", color);
+        }
+      } else {
+        for (let y = a.y + 1; y < b.y; y++) {
+          if (on(a.x - cam.x, y - cam.y)) grid.put(a.x - cam.x, y - cam.y, "│", color);
+        }
+      }
     }
   }
 
@@ -73,16 +78,32 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits) {
     const y = p.y - cam.y;
     if (y < -1 || y > view || x < -2 || x > cols + 1) continue;
 
+    const here = forcesAt(g, n.id);
+    const busy = here.some((f) => f.mode === "fight");
     const locked = n.state === "locked";
     const cleared = n.state === "cleared";
-    const reach = canAdvance(g, n.id) || canMove(g, n.id);
-    const frame = locked ? C.frame : reach ? C.gold : cleared ? C.dim : C.mid;
+    const frame = busy
+      ? C.hot
+      : locked
+        ? C.frame
+        : canOrder(g, n.id)
+          ? C.gold
+          : cleared
+            ? C.dim
+            : C.mid;
     if (on(x - 1, y)) grid.put(x - 1, y, "(", frame, C.bg);
     if (on(x + 1, y)) grid.put(x + 1, y, ")", frame, C.bg);
     if (on(x, y)) {
-      grid.put(x, y, locked ? "?" : KIND_GLYPH[n.kind], locked ? C.frame : cleared ? C.dim : C.ink, C.bg);
+      grid.put(
+        x,
+        y,
+        locked ? "?" : KIND_GLYPH[n.kind],
+        locked ? C.frame : busy ? C.hot : cleared ? C.dim : C.ink,
+        C.bg,
+      );
     }
-    if (g.at === n.id && on(x, y + 1)) grid.put(x, y + 1, CREATURES.hero.glyph, C.gold, C.bg);
+    drawForces(grid, here, x, y + 1, on);
+
     // Clipped to the map area, so a room just off the bottom cannot eat a hud tap
     const top = Math.max(0, y - 1);
     const tall = Math.min(view, y + 2) - top;
@@ -91,30 +112,29 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits) {
 
   drawHud(grid, g, view);
   buttons(grid, hits, [
-    { label: `ARMY ${g.army.length}`, act: { t: "army" } },
+    { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
+    { label: `ARMY ${reserve(g).length}`, act: { t: "army" } },
     { label: "MENU", act: { t: "menu" } },
   ]);
 }
 
-// Walks the long axis so a link reads as one unbroken run whatever its slope
-function edge(
+// The necromancer, then anybody he has cut loose standing on the same room
+function drawForces(
   grid: Grid,
-  a: Point,
-  b: Point,
-  cam: Point,
-  color: number,
+  here: Force[],
+  x: number,
+  y: number,
   on: (x: number, y: number) => boolean,
 ) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const steps = Math.max(Math.abs(dx), Math.abs(dy));
-  if (steps < 2) return;
-  const ch = dy === 0 ? "─" : dx === 0 ? "│" : dx > 0 === dy > 0 ? "╲" : "╱";
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    const x = Math.round(a.x + dx * t) - cam.x;
-    const y = Math.round(a.y + dy * t) - cam.y;
-    if (on(x, y)) grid.put(x, y, ch, color);
+  const hero = here.find((f) => f.kind === "hero");
+  const out = here.filter((f) => f.kind === "squad");
+  if (hero && on(x, y)) grid.put(x, y, CREATURES.hero.glyph, C.gold, C.bg);
+  if (!out.length) return;
+  const at = hero ? x + 1 : x;
+  if (!on(at, y)) return;
+  grid.put(at, y, SQUAD_GLYPH, out.some((f) => f.mode === "fight") ? C.hot : C.cyan, C.bg);
+  if (out.length > 1 && on(at + 1, y)) {
+    grid.put(at + 1, y, `${Math.min(9, out.length)}`, C.cyan, C.bg);
   }
 }
 
@@ -122,9 +142,10 @@ function drawHud(grid: Grid, g: GameState, y: number) {
   const cols = grid.cols;
   grid.text(0, y, (g.log[g.log.length - 1] ?? "").slice(0, cols), C.dim);
 
+  const h = heroUnit(g);
   let x = 0;
   grid.put(x, y + 1, "♥", C.hot);
-  const hp = `${g.hero.hp}/${g.hero.maxHp}`;
+  const hp = h ? `${h.hp}/${h.maxHp}` : "--";
   grid.text(x + 1, y + 1, hp, C.ink);
   x += hp.length + 2;
   grid.put(x, y + 1, "★", C.gold);
@@ -132,7 +153,7 @@ function drawHud(grid: Grid, g: GameState, y: number) {
   grid.text(x + 1, y + 1, lvl, C.ink);
   x += lvl.length + 2;
   grid.put(x, y + 1, "†", C.violet);
-  grid.text(x + 1, y + 1, `${g.army.length}/${commandCap(g)}`, C.ink);
+  grid.text(x + 1, y + 1, `${reserve(g).length}/${commandCap(g)}`, C.ink);
 
   x = 0;
   for (const r of RES_IDS) {

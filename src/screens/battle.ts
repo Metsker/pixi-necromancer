@@ -1,12 +1,12 @@
 import type { Grid } from "../gfx/grid.ts";
-import { CREATURES, KIND_NAME, type BattleUnit, type GameState } from "../sim/data.ts";
+import { CREATURES, KIND_NAME, type BattleUnit, type Force, type GameState } from "../sim/data.ts";
 import { hpFrac } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit
 
-export function drawBattle(grid: Grid, g: GameState, ui: { speed: number }, hits: Hits) {
-  const b = g.battle!;
+export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed: number) {
+  const b = f.battle!;
   const n = g.nodes[b.node];
   const { cols, rows } = grid;
   const last = rows - BTN_ROWS;
@@ -15,11 +15,18 @@ export function drawBattle(grid: Grid, g: GameState, ui: { speed: number }, hits
   const rightW = cols - half - 1;
 
   grid.center(0, 0, cols, KIND_NAME[n.kind], C.gold);
+  grid.center(
+    0,
+    1,
+    cols,
+    f.kind === "hero" ? `round ${b.round}` : `squad, round ${b.round}`,
+    C.frame,
+  );
 
   const ours = b.units.filter((u) => u.faction === "player");
   const theirs = b.units.filter((u) => u.faction === "enemy");
   const pairs = Math.max(ours.length, theirs.length);
-  const top = 2;
+  const top = 3;
   const fits = Math.max(1, Math.floor((last - top - 2) / ROW_H));
   const shown = Math.min(pairs, fits);
 
@@ -39,15 +46,9 @@ export function drawBattle(grid: Grid, g: GameState, ui: { speed: number }, hits
 
   for (const line of b.log.slice(-(last - y))) grid.text(0, y++, line.slice(0, cols), C.dim);
 
-  if (b.done) {
-    buttons(grid, hits, [
-      { label: b.done === "win" ? "THE ROOM IS YOURS" : "IT IS OVER", act: { t: "resolve" } },
-    ]);
-    return;
-  }
   buttons(grid, hits, [
-    { label: `SPEED x${ui.speed}`, act: { t: "speed" } },
-    { label: "SKIP", act: { t: "skip" } },
+    { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
+    { label: "MAP", act: { t: "back" } },
   ]);
 }
 

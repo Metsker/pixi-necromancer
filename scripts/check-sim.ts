@@ -4,23 +4,34 @@ import { LORE } from "../src/sim/lore.ts";
 import {
   ABILITIES,
   advance,
+  canOrder,
+  canSend,
   chooseStat,
   clearSave,
   commandCap,
-  hexAround,
+  heroUnit,
   load,
-  moveTo,
-  neighbors,
+  nearestOpen,
   newGame,
+  orderHero,
   raise,
-  resolveBattle,
-  runBattle,
+  reserve,
+  fight,
+  round,
+  routeTo,
   save,
   sendSquad,
-  tickBattle,
+  squads,
   xpNeeded,
 } from "../src/sim/game.ts";
-import { CREATURES, RES_IDS, TUNING, type Battle, type BattleUnit, type GameState, type Stat } from "../src/sim/data.ts";
+import {
+  CREATURES,
+  TUNING,
+  type Battle,
+  type BattleUnit,
+  type GameState,
+  type Stat,
+} from "../src/sim/data.ts";
 
 // A memory-backed store, so the save path can be exercised outside a browser
 const store = new Map<string, string>();
@@ -39,34 +50,25 @@ function ok(label: string, cond: boolean) {
   }
 }
 
+const openRooms = (g: GameState) => g.nodes.filter((n) => n.state === "open");
+
 // ---------------------------------------------------------------- map
 
 const g0 = newGame(12345);
 ok("node ids are their own index", g0.nodes.every((n, i) => n.id === i));
-ok("gate is cleared at the start", g0.nodes[0].state === "cleared" && g0.at === 0);
-ok(
-  "the gate's neighbours are open",
-  neighbors(g0, 0).every((id) => g0.nodes[id].state === "open"),
-);
+ok("the grid has holes in it", g0.nodes.length < TUNING.mapCols * TUNING.mapRows);
+ok("but most of it is rooms", g0.nodes.length > TUNING.mapCols * TUNING.mapRows * 0.5);
+ok("the gate is where you start", g0.nodes[g0.forces[0].at].kind === "gate");
 ok("exactly one boss", g0.nodes.filter((n) => n.kind === "boss").length === 1);
 ok("the boss is deepest", g0.nodes.find((n) => n.kind === "boss")!.row === TUNING.mapRows - 1);
-ok("the gate is at the top", g0.nodes[0].row === 0 && g0.nodes[0].kind === "gate");
 
-for (let seed = 1; seed <= 40; seed++) {
+for (let seed = 1; seed <= 30; seed++) {
   const g = newGame(seed * 7919);
-  const seen = new Set([0]);
-  const queue = [0];
-  while (queue.length) for (const id of neighbors(g, queue.pop()!)) if (!seen.has(id)) (seen.add(id), queue.push(id));
-  ok(`seed ${seed}: every room is reachable`, seen.size === g.nodes.length);
   ok(
-    `seed ${seed}: every room below the gate has foes`,
-    g.nodes.every((n) => n.kind === "gate" || n.foes.length > 0),
-  );
-  ok(
-    `seed ${seed}: every link joins two hexes that actually touch`,
+    `seed ${seed}: links are orthogonal only`,
     g.nodes.every((n) =>
-      n.links.every((id) =>
-        hexAround(n.col, n.row).some((h) => h.col === g.nodes[id].col && h.row === g.nodes[id].row),
+      n.links.every(
+        (id) => Math.abs(g.nodes[id].col - n.col) + Math.abs(g.nodes[id].row - n.row) === 1,
       ),
     ),
   );
@@ -74,65 +76,78 @@ for (let seed = 1; seed <= 40; seed++) {
     `seed ${seed}: links are recorded at both ends`,
     g.nodes.every((n) => n.links.every((id) => g.nodes[id].links.includes(n.id))),
   );
+  ok(`seed ${seed}: no room is walled off`, g.nodes.every((n) => n.links.length > 0));
+  // A hole may never cut anything off, whatever else it does to the shape
+  const seen = new Set([0]);
+  const queue = [0];
+  while (queue.length) for (const id of g.nodes[queue.pop()!].links) if (!seen.has(id)) (seen.add(id), queue.push(id));
+  ok(`seed ${seed}: the whole map is reachable`, seen.size === g.nodes.length);
   ok(
-    `seed ${seed}: no room shares a hex with another`,
+    `seed ${seed}: rooms sit where their coordinates say`,
     new Set(g.nodes.map((n) => `${n.col},${n.row}`)).size === g.nodes.length,
   );
-  ok(`seed ${seed}: the map is worth panning over`, g.nodes.length >= 20);
+  ok(`seed ${seed}: the map is worth panning over`, g.nodes.length > 40);
   ok(
-    `seed ${seed}: there is more than one way down`,
-    g.nodes.filter((n) => n.links.length > 2).length > g.nodes.length / 3,
+    `seed ${seed}: every room below the gate has foes`,
+    g.nodes.every((n) => n.kind === "gate" || n.foes.length > 0),
   );
   ok(
     `seed ${seed}: difficulty stays inside its band`,
     g.nodes.every((n) => n.tier >= 0 && n.tier < TUNING.tiers),
   );
+  ok(`seed ${seed}: there is always a way on`, openRooms(g).length >= 1);
 }
 
 const a = newGame(999);
-const b = newGame(999);
-ok("the same seed builds the same run", JSON.stringify(a) === JSON.stringify(b));
+ok("the same seed builds the same run", JSON.stringify(a) === JSON.stringify(newGame(999)));
 ok("different seeds differ", JSON.stringify(newGame(1000)) !== JSON.stringify(a));
+
+// ---------------------------------------------------------------- routing
+
+{
+  const g = newGame(4321);
+  const start = g.forces[0].at;
+  ok("a route to where you stand is empty", routeTo(g, start, start)!.length === 0);
+  const near = openRooms(g)[0];
+  ok("a route into an open room is one step", routeTo(g, start, near.id)!.length === 1);
+  const far = g.nodes.find((n) => n.state === "locked" && n.row > 3)!;
+  ok("there is no route into a sealed room", routeTo(g, start, far.id) === null);
+  ok("nearest open finds something", nearestOpen(g, start) !== null);
+  ok("the boss is never what a squad picks", g.nodes[nearestOpen(g, start)!].kind !== "boss");
+}
 
 // ---------------------------------------------------------------- lore
 
-ok("every room below the gate carries a piece", g0.nodes.every((n) => n.kind === "gate" || n.lore !== null));
+ok(
+  "every room below the gate carries a piece",
+  g0.nodes.every((n) => n.kind === "gate" || n.lore !== null),
+);
 ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.lore === LORE.length - 1);
-ok("no piece is out of range", g0.nodes.every((n) => n.lore === null || (n.lore >= 0 && n.lore < LORE.length)));
 
 // ---------------------------------------------------------------- army and levels
 
 {
   const g = newGame(7);
-  ok("two rats to start", g.army.length === TUNING.startingMinions);
+  ok("two rats to start", reserve(g).length === TUNING.startingMinions);
   while (raise(g, "rat")) {
     /* fill it */
   }
-  ok("the command cap holds", g.army.length === commandCap(g));
-  ok("a full army refuses another", raise(g, "rat") === false);
+  ok("the command cap holds", reserve(g).length === commandCap(g));
+  ok("a full reserve refuses another", raise(g, "rat") === false);
 
   const before = commandCap(g);
   g.unspent = 3;
   chooseStat(g, "will");
   ok("will buys a slot", commandCap(g) === before + TUNING.willPerPoint);
-  const hp = g.hero.maxHp;
+  const hp = heroUnit(g)!.maxHp;
   chooseStat(g, "ward");
-  ok("ward raises max hp", g.hero.maxHp === hp + TUNING.wardPerPoint);
-  ok("ward heals what it adds", g.hero.hp === g.hero.maxHp);
+  ok("ward raises max hp", heroUnit(g)!.maxHp === hp + TUNING.wardPerPoint);
+  ok("ward heals what it adds", heroUnit(g)!.hp === heroUnit(g)!.maxHp);
   chooseStat(g, "might");
   ok("points are spent", g.unspent === 0);
   chooseStat(g, "might");
   ok("spending past zero does nothing", g.build.might === 1);
-}
-
-{
-  const g = newGame(8);
-  const need = xpNeeded(g);
-  g.xp = 0;
-  g.level = 0;
-  g.unspent = 0;
-  // gainXp is exercised through the reward path below; this covers the curve itself
-  ok("the curve grows with level", xpNeeded({ ...g, level: 1 } as GameState) > need);
+  ok("the curve grows with level", xpNeeded({ ...g, level: 1 } as GameState) > xpNeeded(g));
 }
 
 // ---------------------------------------------------------------- abilities
@@ -142,7 +157,7 @@ const unit = (over: Partial<BattleUnit>): BattleUnit => ({
   hp: 10, maxHp: 10, dmg: 2, speed: 3, tier: 0, withered: 0, ...over,
 });
 const battle = (units: BattleUnit[]): Battle => ({
-  node: 0, side: "hero", units, hit: [], tick: 0, log: [], done: "", nextId: units.length,
+  node: 0, units, hit: [], round: 0, log: [], done: "", nextId: units.length,
 });
 
 {
@@ -171,162 +186,169 @@ ok("rend only bites the wounded", ABILITIES.rend.bonus!(unit({}), unit({ hp: 10 
 ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle([])) === TUNING.rendBonus);
 {
   const me = unit({ id: 0, faction: "enemy" });
-  const foes = [unit({ id: 1, hp: 10 }), unit({ id: 2, hp: 2 })];
+  const foes = [unit({ id: 1, hp: 40, maxHp: 40 }), unit({ id: 2, hp: 2 })];
   const bt = battle([me, ...foes]);
   ABILITIES.toll.onDeath!(me, bt);
-  ok("toll hits everyone opposite", foes[0].hp === 10 - TUNING.tollDamage);
+  ok("toll hits everyone opposite", foes[0].hp === 40 - TUNING.tollDamage);
   ok("toll can finish someone", foes[1].hp === 0);
 }
 {
-  const boss = unit({ id: 0, creature: "ossuary", maxHp: 40, dmg: 5 });
+  const boss = unit({ id: 0, creature: "ossuary", maxHp: 130, dmg: 8 });
   const bt = battle([boss]);
   ABILITIES.split.onDeath!(boss, bt);
   ok("split makes two", bt.units.length === 3);
-  ok("halves carry half the health", bt.units[1].maxHp === 20);
+  ok("halves carry half the health", bt.units[1].maxHp === 65);
   ok("halves are one tier deeper", bt.units[1].tier === 1);
   const deep = unit({ id: 9, creature: "ossuary", tier: TUNING.splitTiers });
   const bt2 = battle([deep]);
   ABILITIES.split.onDeath!(deep, bt2);
   ok("splitting stops somewhere", bt2.units.length === 1);
 }
+{
+  const bt = battle([unit({ id: 0 }), unit({ id: 1, faction: "enemy", hp: 40, maxHp: 40 })]);
+  const before = bt.units[1].hp;
+  round(bt);
+  ok("a round lands blows", bt.units[1].hp < before && bt.round === 1);
+}
 
-// ---------------------------------------------------------------- battle
+// ---------------------------------------------------------------- the clock
 
 {
-  const g = newGame(4242);
-  const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
-  ok("you cannot walk into a room you have not opened", advance(g, g.nodes.length - 1) === false);
-  ok("advancing starts a fight", advance(g, first) === true);
-  ok("two fights cannot run at once", advance(g, first) === false);
-
-  const b = g.battle!;
-  ok("your side is in it", b.units.some((u) => u.creature === "hero"));
-  ok("their side is in it", b.units.some((u) => u.faction === "enemy"));
-  const hp = b.units[0].hp;
-  tickBattle(g);
-  ok("a tick is a tick", b.tick === 1);
-  ok("somebody was hurt", b.hit.length > 0 || b.units[0].hp === hp);
-
-  runBattle(g);
-  ok("a fight always ends", b.done !== "");
-  ok("a fight ends inside its budget", b.tick <= TUNING.maxTicks);
+  // Time only moves when it is asked to, and every force moves on the same clock
+  const g = newGame(2210);
+  const before = JSON.stringify(g);
+  advance(g, 0);
+  ok("no ticks, no change", JSON.stringify(g) === before);
+  const target = openRooms(g)[0].id;
+  ok("the hero can be ordered", orderHero(g, target) === true);
+  ok("an order does not resolve on the spot", g.forces[0].mode === "march");
+  advance(g, TUNING.marchTicks + 1);
+  ok("marching takes time", g.forces[0].at === target);
+  ok("arriving starts the fight", g.forces[0].mode === "fight");
+  ok("a fight starts at round zero", g.forces[0].battle!.round === 0);
+  advance(g, TUNING.roundTicks);
+  ok("rounds land on the clock", g.forces[0].battle!.round >= 1);
+  ok("you cannot be ordered mid-fight", canOrder(g, g.forces[0].at) === false);
+  // The reserve is not in his fight, so it can still be spent while he is in one
+  const elsewhere = openRooms(g)[0].id;
+  ok("a squad can still be mustered mid-fight", canSend(g, elsewhere) === true);
 }
 
 {
-  // Clearing a room with the hero moves him there and opens what lies beyond
-  const g = newGame(31337);
-  const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
-  advance(g, first);
-  g.battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
-  g.battle!.done = "win";
-  resolveBattle(g);
-  ok("the room is cleared", g.nodes[first].state === "cleared");
-  ok("you are standing in it", g.at === first);
-  ok("nothing beside it stays sealed", g.nodes[first].links.every((id) => g.nodes[id].state !== "locked"));
-  ok("spoils are waiting", g.pending !== null);
-  ok("xp was paid", g.pending!.xp > 0);
-  ok("something was found", RES_IDS.some((k) => g.pending!.res[k] > 0));
-  ok("a piece of the story surfaced", g.pendingLore !== null);
-  const seen = g.pendingLore!;
-  g.pendingLore = null;
-  g.pending = null;
-  ok("a piece is never shown twice", g.seenLore.filter((i) => i === seen).length === 1);
+  // Several squads run at once, on the same clock, without the hero
+  const g = newGame(3311);
+  while (raise(g, "knight")) {
+    /* a retinue worth splitting */
+  }
+  const rooms = openRooms(g).map((n) => n.id);
+  const troop = reserve(g).map((u) => u.id);
+  ok("two rooms to aim at", rooms.length >= 2);
+  ok("first squad goes", sendSquad(g, rooms[0], troop.slice(0, 2)) === true);
+  ok("second squad goes", sendSquad(g, rooms[1], troop.slice(2, 4)) === true);
+  ok("an order to nowhere is refused", sendSquad(g, 9999, troop) === false);
+  ok("both are out there", squads(g).length === 2);
+  ok("they left the reserve", reserve(g).length === troop.length - 4);
+  ok("the hero stayed put", g.forces[0].mode === "idle");
+  const where = g.forces[0].at;
+
+  advance(g, 400);
+  ok("the hero still has not moved", g.forces[0].at === where);
+  ok(
+    "both squads fought without being told twice",
+    g.forces.filter((f) => f.kind === "squad").every((f) => f.rooms > 0 || f.mode === "gone"),
+  );
 }
 
 {
-  // A squad is a one-way expedition: it resolves on dispatch and never returns
-  const g = newGame(555);
-  const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
-  const ids = g.army.map((u) => u.id);
-  ok("a squad needs somebody in it", sendSquad(g, first, []) === false);
-  ok("a squad can be sent", sendSquad(g, first, ids) === true);
-  ok("nothing is left to watch", g.battle === null);
-  ok("the sent do not come back", g.army.every((u) => !ids.includes(u.id)));
-  ok("a report comes back", g.pending !== null && g.pending.side === "squad");
-  ok("the report counts who went", g.pending!.lost === ids.length);
-  ok("you are alive", g.over === "");
-  ok("you have not moved", g.at === 0);
-}
-
-{
-  // A squad that keeps winning keeps walking, and every room it takes is taken
+  // Two squads at once, over enough seeds that a bad pair of rooms is not the story
+  let took = 0;
   let chained = 0;
-  let doomed = 0;
   for (let seed = 0; seed < 30; seed++) {
+    const g = newGame(3000 + seed * 17);
+    while (raise(g, "knight")) {
+      /* nothing */
+    }
+    const troop = reserve(g).map((u) => u.id);
+    const rooms = openRooms(g).map((n) => n.id);
+    sendSquad(g, rooms[0], troop.slice(0, 2));
+    sendSquad(g, rooms[Math.min(1, rooms.length - 1)], troop.slice(2, 4));
+    const where = g.forces[0].at;
+    advance(g, 600);
+    ok(`pair ${seed}: the hero never moved`, g.forces[0].at === where);
+    ok(`pair ${seed}: nobody who went is back in the reserve`, reserve(g).every((u) => !troop.includes(u.id)));
+    if (g.cleared > 0) took += 1;
+    if (g.forces.some((f) => f.kind === "squad" && f.rooms > 1)) chained += 1;
+  }
+  ok("a pair of scouting squads is worth sending", took > 12);
+  ok("but sometimes they just die", took < 30);
+  ok("a lucky squad rolls on", chained > 3);
+}
+
+{
+  // A squad keeps going until there is nothing left of it, and never returns
+  let chained = 0;
+  for (let seed = 0; seed < 25; seed++) {
     const g = newGame(9100 + seed * 13);
     while (raise(g, "knight")) {
       /* the sturdiest squad the cap allows */
     }
-    const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
-    const sent = g.army.map((u) => u.id);
-    const before = g.nodes.filter((n) => n.state === "cleared").length;
-    sendSquad(g, first, sent);
-    const after = g.nodes.filter((n) => n.state === "cleared").length;
-    ok(`chain ${seed}: the report matches the map`, after - before === g.pending!.rooms);
-    ok(`chain ${seed}: nobody who went comes home`, g.army.every((u) => !sent.includes(u.id)));
-    ok(`chain ${seed}: the hero never moves`, g.at === 0);
+    const sent = reserve(g).map((u) => u.id);
+    sendSquad(g, openRooms(g)[0].id, sent);
+    advance(g, 40000);
+    const f = g.forces.find((o) => o.kind === "squad")!;
+    // Either it dies out there or it runs out of rooms; it never comes home
     ok(
-      `chain ${seed}: they never walk into the boss`,
+      `chain ${seed}: it ends up spent or holding`,
+      f.mode === "gone" || nearestOpen(g, f.at) === null,
+    );
+    ok(`chain ${seed}: nobody who went comes home`, reserve(g).every((u) => !sent.includes(u.id)));
+    ok(
+      `chain ${seed}: the boss is not theirs to take`,
       g.nodes.every((n) => n.kind !== "boss" || n.state !== "cleared"),
     );
-    if (g.pending!.rooms > 1) chained += 1;
-
-    // One rat is not an expedition, it is a delivery
-    const lone = newGame(9100 + seed * 13);
-    const alone = neighbors(lone, 0).find((id) => lone.nodes[id].state === "open")!;
-    sendSquad(lone, alone, [lone.army[0].id]);
-    if (lone.pending!.rooms === 0) doomed += 1;
+    if (f.rooms > 1) chained += 1;
   }
   ok("squads do chain rooms together", chained > 5);
-  ok("a squad too small dies where it stands", doomed > 5);
-}
-
-{
-  // The hero losing ends the run
-  const g = newGame(556);
-  const first = neighbors(g, 0).find((id) => g.nodes[id].state === "open")!;
-  advance(g, first);
-  g.battle!.units.filter((u) => u.faction === "player").forEach((u) => (u.hp = 0));
-  g.battle!.done = "loss";
-  resolveBattle(g);
-  ok("the run is over", g.over === "dead");
 }
 
 {
   // A room taken by proxy pays less of the lesson than one you walked into
+  const budget = TUNING.marchTicks * 4 + TUNING.roundTicks * TUNING.maxRounds + 20;
   const squad = newGame(777);
   const solo = newGame(777);
-  const first = neighbors(solo, 0).find((id) => solo.nodes[id].state === "open")!;
-
-  for (let i = 0; i < 6; i++) raise(squad, "knight");
-  sendSquad(squad, first, squad.army.map((u) => u.id));
-
-  advance(solo, first);
-  solo.battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
-  solo.battle!.done = "win";
-  resolveBattle(solo);
-
-  ok("a squad still clears the room", squad.nodes[first].state === "cleared");
-  ok("but you stay where you were", squad.at === 0);
-  ok("walking in pays the full lesson", solo.pending!.xp > 0);
-  ok("the hero rests in a room he took", solo.at === first);
+  const target = openRooms(solo)[0].id;
+  while (raise(squad, "knight")) {
+    /* nothing */
+  }
+  sendSquad(squad, target, reserve(squad).map((u) => u.id));
+  advance(squad, budget);
+  orderHero(solo, target);
+  advance(solo, budget);
+  ok(
+    "both rooms fell",
+    squad.nodes[target].state === "cleared" && solo.nodes[target].state === "cleared",
+  );
+  ok("the hero rests in a room he took", solo.forces[0].at === target);
+  ok("but a squad leaves you where you were", squad.forces[0].at !== target);
 }
 
 // ---------------------------------------------------------------- persistence
 
 {
   const g = newGame(2024);
+  advance(g, 50);
   save(g);
   const back = load()!;
   ok("a save round-trips", back !== null && back.seed === g.seed);
-  ok("the map survives", back.nodes.length === g.nodes.length);
+  ok("the clock survives", back.time === g.time);
+  ok("the forces survive", back.forces.length === g.forces.length);
 
   store.set("gravelight.save", JSON.stringify({ v: 999, g }));
   ok("an older save is thrown away", load() === null);
 
   const missing = JSON.parse(JSON.stringify(g)) as Record<string, unknown>;
-  delete missing.res;
-  store.set("gravelight.save", JSON.stringify({ v: 1, g: missing }));
+  delete missing.forces;
+  store.set("gravelight.save", JSON.stringify({ v: 2, g: missing }));
   ok("a save missing a field is thrown away", load() === null);
 
   store.set("gravelight.save", "not json");
@@ -338,93 +360,104 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 // ---------------------------------------------------------------- balance probe
 
 const STATS: Stat[] = ["might", "ward", "will"];
-const PROBES = 40;
+const PROBES = 30;
 
-// Nearest room with something left to do, walking only over ground already taken
-function routeToWork(g: GameState): number[] {
-  const from = new Map<number, number>([[g.at, -1]]);
-  const queue = [g.at];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    if (neighbors(g, cur).some((id) => g.nodes[id].state === "open")) {
-      const path: number[] = [];
-      for (let n = cur; n !== g.at; n = from.get(n)!) path.unshift(n);
-      return path;
-    }
-    for (const id of neighbors(g, cur)) {
-      if (from.has(id) || g.nodes[id].state !== "cleared") continue;
-      from.set(id, cur);
-      queue.push(id);
-    }
-  }
-  return [];
-}
-
-// A bot that walks in alone every time and never sends a squad: the floor of
-// play, not the ceiling. It exists to catch a run that cannot be finished at all.
+// A bot that throws half its retinue ahead and walks in with the rest. The floor
+// of play, not the ceiling: it never waits, never picks its fights, never times
+// anything. It exists to catch a run that cannot be finished at all.
 function autoplay(seedValue: number) {
   const g = newGame(seedValue);
-  let guard = 600;
+  let guard = 8000;
+  const said = new Set<string>();
   while (!g.over && guard-- > 0) {
-    if (g.pending) {
-      g.pending = null;
-      continue;
-    }
-    if (g.pendingLore !== null) {
-      g.pendingLore = null;
-      continue;
-    }
-    if (g.unspent > 0) {
-      chooseStat(g, STATS[g.level % STATS.length]);
-      continue;
-    }
-    const open = neighbors(g, g.at).filter((id) => g.nodes[id].state === "open");
-    if (!open.length) {
-      const path = routeToWork(g);
-      if (!path.length || !moveTo(g, path[0])) break;
-      continue;
-    }
-    open.sort(
-      (x, y) => g.nodes[y].row - g.nodes[x].row || g.nodes[x].foes.length - g.nodes[y].foes.length,
-    );
-    advance(g, open[0]);
-    runBattle(g);
-    for (const line of g.battle!.log) said.add(line);
-    resolveBattle(g);
-  }
-  for (const line of g.log) said.add(line);
-  return { g, stuck: guard <= 0 };
-}
+    while (g.unspent > 0) chooseStat(g, STATS[g.level % STATS.length]);
+    g.loreQueue.length = 0;
 
-// The hud gives a log line exactly one row of the narrowest grid there is
-const said = new Set<string>();
+    // Squads mop up behind him while he pushes down. He goes in alone either way.
+    const troop = reserve(g);
+    const shallow = openRooms(g).sort((x, y) => x.row - y.row);
+    if (troop.length >= 2 && shallow.length > 1 && squads(g).length < 4) {
+      sendSquad(g, shallow[0].id, troop.slice(0, 2).map((u) => u.id));
+    }
+    if (g.forces[0].mode === "idle") {
+      const mine = openRooms(g).sort((x, y) => y.row - x.row)[0];
+      if (mine) orderHero(g, mine.id);
+    }
+    advance(g, 20);
+    for (const line of g.log) said.add(line);
+  }
+  return { g, stuck: guard <= 0, said };
+}
 
 let wins = 0;
 let deaths = 0;
 let clearedTotal = 0;
+const chatter = new Set<string>();
 for (let s = 0; s < PROBES; s++) {
-  const { g, stuck } = autoplay(4000 + s * 101);
+  const { g, stuck, said } = autoplay(4000 + s * 101);
   ok(`probe seed ${s} terminates`, !stuck);
-  // Every run must end one way or the other; a bot with nowhere left to go is a map bug
   ok(`probe seed ${s} is never stranded`, g.over !== "");
+  for (const line of said) chatter.add(line);
   if (g.over === "won") wins += 1;
   if (g.over === "dead") deaths += 1;
   clearedTotal += g.cleared;
 }
 ok("a run can be finished", wins > 0);
 ok("a run can be lost", deaths > 0);
-ok("rooms are actually being cleared", clearedTotal / PROBES >= 3);
-ok("the probe saw a lot of chatter", said.size > 10);
-for (const line of said) ok(`"${line}" fits the narrowest hud`, line.length <= MIN_COLS);
-
-console.log(`sim: ${checks} checks passed`);
-console.log(
-  `balance: ${wins}/${PROBES} reached the end, ${deaths}/${PROBES} died, ${(clearedTotal / PROBES).toFixed(1)} rooms cleared on average`,
-);
+ok("rooms are actually being cleared", clearedTotal / PROBES >= 5);
+ok("the probe saw a lot of chatter", chatter.size > 10);
+for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <= MIN_COLS);
 
 // Ability tags are shown in the roster; a lie there is a real bug
 for (const [id, t] of Object.entries(CREATURES)) {
   ok(`${id}: an ability implies a tag`, !t.ability || t.tag.length > 0);
   ok(`${id}: a short name fits the roster`, t.short.length <= 7);
 }
-console.log(`sim: ${checks} checks passed in total`);
+
+// ---------------------------------------------------------------- a fight you can watch
+
+{
+  // A fight has to last long enough to be worth opening. Rooms by the gate are
+  // short on purpose; the ones that matter are not.
+  const room = (list: BattleUnit["creature"][], tier: number) =>
+    list.map((c, i) => {
+      const t = CREATURES[c];
+      return unit({
+        id: 100 + i,
+        creature: c,
+        faction: "enemy" as const,
+        hp: t.hp + tier * TUNING.tierHp,
+        maxHp: t.hp + tier * TUNING.tierHp,
+        dmg: t.dmg + (tier >= TUNING.tierDmgAt ? 1 : 0),
+        speed: t.speed,
+      });
+    });
+  const hero = () =>
+    unit({
+      id: 0,
+      creature: "hero",
+      hp: TUNING.heroHp,
+      maxHp: TUNING.heroHp,
+      dmg: TUNING.heroDmg,
+      speed: CREATURES.hero.speed,
+    });
+
+  const shallow = battle([hero(), ...room(["rat", "hound"], 0)]);
+  fight(shallow);
+  const deep = battle([hero(), ...room(["warden", "knight", "hound"], 4)]);
+  fight(deep);
+  const secs = (rounds: number) => ((rounds * TUNING.roundTicks + TUNING.marchTicks) * 0.11).toFixed(1);
+
+  ok("a room by the gate is not instant", shallow.round >= 3);
+  ok("a room that matters is a long fight", deep.round >= 10);
+  ok("and it is still a fight you win at depth", deep.done === "win");
+  console.log(
+    `fights: ${shallow.round} rounds by the gate (${secs(shallow.round)}s at x1), ` +
+      `${deep.round} deep (${secs(deep.round)}s at x1, ${(+secs(deep.round) / 4).toFixed(1)}s at x4)`,
+  );
+}
+
+console.log(`sim: ${checks} checks passed`);
+console.log(
+  `balance: ${wins}/${PROBES} reached the end, ${deaths}/${PROBES} died, ${(clearedTotal / PROBES).toFixed(1)} rooms taken on average`,
+);

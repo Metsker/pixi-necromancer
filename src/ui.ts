@@ -30,8 +30,7 @@ export type Act =
   | { t: "none" }
   | { t: "node"; id: number }
   | { t: "close" }
-  | { t: "move" }
-  | { t: "advance" }
+  | { t: "order" }
   | { t: "squad" }
   | { t: "toggle"; id: number }
   | { t: "send" }
@@ -42,8 +41,8 @@ export type Act =
   | { t: "stat"; s: Stat }
   | { t: "ok" }
   | { t: "speed" }
-  | { t: "skip" }
-  | { t: "resolve" };
+  | { t: "watch"; id: number }
+  | { t: "back" };
 
 export type Hit = { x: number; y: number; w: number; h: number; act: Act };
 

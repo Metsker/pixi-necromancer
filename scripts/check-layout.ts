@@ -3,7 +3,7 @@ import { MAX_COLS, MIN_COLS, computeLayout } from "../src/layout.ts";
 import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
 import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { LORE } from "../src/sim/lore.ts";
-import { newGame, raise } from "../src/sim/game.ts";
+import { advance, newGame, raise, sendSquad } from "../src/sim/game.ts";
 import { BTN_ROWS } from "../src/ui.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
@@ -60,19 +60,28 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 // line is silently clipped and a button reads as half a word
 {
   const g = newGame(2468);
-  g.pending = { xp: 42, res: { bone: 3, ash: 1, salt: 2 }, raised: ["knight", "warden"], side: "squad", lost: 2, rooms: 3 };
   g.unspent = 1;
   g.over = "won";
   g.cleared = 12;
+  g.lost = 9;
   while (raise(g, "warden")) {
     /* a full roster is the widest roster */
   }
-  const ui: Ui = { panel: "", node: 1, pick: g.army.map((u) => u.id), speed: 1 };
+  // Two squads out, one of them mid-fight, so the army sheet is at its longest
+  sendSquad(g, g.nodes.find((n) => n.state === "open")!.id, [g.reserve[0].id]);
+  advance(g, 200);
+  const ui: Ui = {
+    panel: "",
+    node: 1,
+    pick: g.reserve.map((u) => u.id),
+    speed: 1,
+    watch: null,
+  };
 
   for (const cols of [MIN_COLS, 20, 24, MAX_COLS]) {
     for (const panel of PANELS) {
       for (const lore of [0, LORE.length - 1]) {
-        g.pendingLore = lore;
+        g.loreQueue = [lore];
         for (const state of ["locked", "open", "cleared"] as const) {
           g.nodes[1].state = state;
           const spec = panelSpec(g, ui, panel, cols);
