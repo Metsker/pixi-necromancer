@@ -1,6 +1,9 @@
 // Run: node scripts/check-layout.ts
 import { MAX_COLS, MIN_COLS, computeLayout } from "../src/layout.ts";
 import { mapGeometry, HUD_ROWS } from "../src/screens/map.ts";
+import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
+import { LORE } from "../src/sim/lore.ts";
+import { newGame, raise } from "../src/sim/game.ts";
 import { TUNING } from "../src/sim/data.ts";
 import { BTN_ROWS } from "../src/ui.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
@@ -46,6 +49,37 @@ for (const c of cases) {
 // A viewport shorter than the chrome must not produce a negative or zero grid
 const tiny = computeLayout({ innerWidth: 200, innerHeight: 40, dpr: 1, reserved: 40 });
 ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
+
+// Every sheet has to fit the narrowest grid the layout will ever hand it, or a
+// line is silently clipped and a button reads as half a word
+{
+  const g = newGame(2468);
+  g.pending = { xp: 42, res: { bone: 3, ash: 1, salt: 2 }, raised: ["knight", "warden"], side: "squad", lost: 2 };
+  g.unspent = 1;
+  g.over = "won";
+  g.cleared = 12;
+  while (raise(g, "warden")) {
+    /* a full roster is the widest roster */
+  }
+  const ui: Ui = { panel: "", node: 1, pick: g.army.map((u) => u.id), speed: 1 };
+
+  for (const cols of [MIN_COLS, 20, 24, MAX_COLS]) {
+    for (const panel of PANELS) {
+      for (const lore of [0, LORE.length - 1]) {
+        g.pendingLore = lore;
+        for (const state of ["locked", "open", "cleared"] as const) {
+          g.nodes[1].state = state;
+          const spec = panelSpec(g, ui, panel, cols);
+          if (!spec) continue;
+          ok(`${panel}/${cols}: the title fits`, spec.title.length <= cols - 4);
+          for (const l of spec.lines) {
+            ok(`${panel}/${cols}: "${l.text}" fits`, l.text.length <= cols - 4);
+          }
+        }
+      }
+    }
+  }
+}
 
 // Anything the code draws has to exist in the sheet, or it renders as nothing at
 // all. Every non-ascii character in src/ is a glyph somebody meant to see.

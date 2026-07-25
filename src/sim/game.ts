@@ -17,7 +17,6 @@ import {
   type Resource,
   type Reward,
   type Stat,
-  type Unit,
 } from "./data.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
@@ -516,8 +515,5 @@ export function load(): GameState | null {
     return null;
   }
 }
-
-export const armyOf = (g: GameState, ids: number[]): Unit[] =>
-  g.army.filter((u) => ids.includes(u.id));
 
 export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp, 0, 1);

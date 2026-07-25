@@ -1,7 +1,7 @@
 import { TILE } from "./tilemap.ts";
 
 export const TARGET_TILE_CSS = 18;
-export const MIN_COLS = 18;
+export const MIN_COLS = 20;
 export const MAX_COLS = 44;
 export const MAX_ROWS = 64;
 
