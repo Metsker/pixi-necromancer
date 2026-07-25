@@ -217,14 +217,6 @@ export function raise(g: GameState, creature: CreatureId): boolean {
   return true;
 }
 
-function raiseInto(g: GameState, f: Force, creature: CreatureId): boolean {
-  if (raise(g, creature)) return true;
-  if (f.kind === "hero" || f.units.length >= TUNING.squadCap) return false;
-  const t = CREATURES[creature];
-  f.units.push({ id: g.nextUnit++, creature, hp: t.hp, maxHp: t.hp });
-  return true;
-}
-
 export function gainXp(g: GameState, n: number) {
   g.xp += n;
   while (g.xp >= xpNeeded(g)) {
@@ -505,6 +497,7 @@ function arrive(g: GameState, f: Force) {
   f.mode = "idle";
   f.next = g.time + TUNING.idlePoll;
   if (f.kind === "squad") retarget(g, f);
+  else readLore(g, g.nodes[f.at]);
 }
 
 function retarget(g: GameState, f: Force) {
@@ -580,6 +573,7 @@ function settle(g: GameState, f: Force, b: Battle) {
   h.hp = Math.min(h.maxHp, h.hp + TUNING.restHeal);
   f.mode = "idle";
   f.next = g.time + TUNING.idlePoll;
+  readLore(g, n);
 }
 
 function loot(n: MapNode): Record<Resource, number> {
@@ -607,24 +601,27 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   const spoils = RES_IDS.filter((k) => res[k] > 0).map((k) => `${RESOURCES[k].glyph}${res[k]}`);
   log(g, `+${xp}xp ${spoils.join(" ")}`.slice(0, 20));
 
-  // Whoever won the room, the necromancer is the one doing the raising, so a
-  // corpse reports to him first. A squad only keeps what he has no room for -
-  // which is what turns an expedition into a supply line.
+  // Only what he is standing over gets up. A squad wins the room and leaves
+  // the dead where they lie, which is why a squad is spent and not invested.
+  if (f.kind !== "hero") return;
   const rose: CreatureId[] = [];
   for (const u of fallen) {
     if (u.creature === "ossuary") continue;
     if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance) continue;
-    if (!raiseInto(g, f, u.creature)) break;
+    if (!raise(g, u.creature)) break;
     rose.push(u.creature);
   }
   if (rose.length) {
     log(g, `${rose.map((c) => CREATURES[c].short).join(", ")} rises.`.slice(0, 20));
   }
+}
 
-  if (n.lore !== null && !g.seenLore.includes(n.lore)) {
-    g.seenLore.push(n.lore);
-    g.loreQueue.push(n.lore);
-  }
+// The story is his to read, not theirs to report. A room a squad took keeps its
+// piece until he walks through it himself.
+function readLore(g: GameState, n: MapNode) {
+  if (n.lore === null || g.seenLore.includes(n.lore)) return;
+  g.seenLore.push(n.lore);
+  g.loreQueue.push(n.lore);
 }
 
 // ---------------------------------------------------------------- lifecycle

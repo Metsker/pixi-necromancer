@@ -25,8 +25,13 @@ with him as a **reserve**, and the reserve is what squads are made out of.
 Point a squad at any open room and it goes. It fights, and if it wins it walks
 to the nearest room still worth taking and fights again, until there is nothing
 left of it. You can have several out at once, all running while you take a room
-of your own. They never come back - but every corpse they raise reports to you,
-which is what makes an expedition a supply line rather than a funeral.
+of your own. They open the map and bring back experience, and that is all they
+bring back: they leave the dead where they lie, and they have nothing to say.
+Only what the necromancer is standing over gets up, and only he reads the walls -
+a room a squad took keeps its piece of the story until he walks through it.
+
+A room you walk into yourself opens on screen. You do not have to go looking for
+your own fight.
 
 A room you leave standing does not stay the size you found it. That is the only
 clock pressure there is, and it is what makes spending a squad worth it.

@@ -312,6 +312,42 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
+  // A squad wins the room and leaves the dead where they lie, and reads nothing
+  const g = newGame(51515);
+  while (raise(g, "knight")) {
+    /* nothing */
+  }
+  const target = openRooms(g).find((n) => n.lore !== null)!.id;
+  const held = g.reserve.map((u) => u.id);
+  sendSquad(g, target, held);
+  const before = g.reserve.length;
+  advance(g, TUNING.marchTicks * 3 + TUNING.roundTicks * TUNING.maxRounds);
+  ok("the squad took it", g.nodes[target].state === "cleared");
+  ok("nothing got up for them", g.reserve.length === before);
+  ok("and nobody told you a story", g.loreQueue.length === 0);
+  ok("the room keeps its piece", g.nodes[target].lore !== null && !g.seenLore.includes(g.nodes[target].lore!));
+
+  // ...until he walks through it himself
+  orderHero(g, target);
+  advance(g, TUNING.marchTicks * 6);
+  ok("he walked in", g.forces[0].at === target);
+  ok("and read it there", g.loreQueue.includes(g.nodes[target].lore!));
+}
+
+{
+  // A room he takes himself does raise what it kills
+  let rose = 0;
+  for (let seed = 0; seed < 20; seed++) {
+    const g = newGame(6100 + seed * 7);
+    const before = g.reserve.length;
+    orderHero(g, openRooms(g)[0].id);
+    advance(g, TUNING.marchTicks * 3 + TUNING.roundTicks * TUNING.maxRounds);
+    if (g.reserve.length > before) rose += 1;
+  }
+  ok("standing over them is what raises them", rose > 5);
+}
+
+{
   // A room taken by proxy pays less of the lesson than one you walked into
   const budget = TUNING.marchTicks * 4 + TUNING.roundTicks * TUNING.maxRounds + 20;
   const squad = newGame(777);

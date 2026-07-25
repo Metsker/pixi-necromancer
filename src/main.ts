@@ -54,6 +54,7 @@ async function main() {
   let dirty = true;
   let owed = 0;
   let sinceSave = 0;
+  let heroFighting = false;
   let drag: { x: number; y: number; cam: Point; moved: boolean } | null = null;
 
   const recenter = () => {
@@ -221,6 +222,15 @@ async function main() {
     } else {
       owed = 0;
     }
+    // A room he walks into himself is a room you are shown. Only on the edge,
+    // so leaving the fight does not immediately drag you back into it.
+    const fighting = g.forces[0].mode === "fight";
+    if (fighting && !heroFighting) {
+      ui.watch = g.forces[0].id;
+      ui.panel = "";
+      dirty = true;
+    }
+    heroFighting = fighting;
     // Leaving a fight that has ended should put the map back by itself
     if (ui.watch !== null && !watched()) {
       ui.watch = null;
