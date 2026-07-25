@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no"
+    />
+    <meta name="theme-color" content="#0d0e1b" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Gravelight</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0d0e1b;
+        overscroll-behavior: none;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #stage {
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        min-height: 100dvh;
+      }
+      #stage canvas {
+        display: block;
+        image-rendering: pixelated;
+      }
+      /* Measured, not assumed: keeps the button strip clear of the home indicator */
+      #safe {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="safe"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

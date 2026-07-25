@@ -1,0 +1,64 @@
+// Run: node scripts/check-layout.ts
+import { MAX_COLS, MIN_COLS, computeLayout } from "../src/layout.ts";
+import { mapGeometry, HUD_ROWS } from "../src/screens/map.ts";
+import { TUNING } from "../src/sim/data.ts";
+import { BTN_ROWS } from "../src/ui.ts";
+import { TILE, TILE_MAP } from "../src/tilemap.ts";
+import { readFileSync, readdirSync } from "node:fs";
+
+let checks = 0;
+function ok(label: string, cond: boolean) {
+  checks += 1;
+  if (!cond) {
+    console.error(`FAIL ${label}`);
+    process.exit(1);
+  }
+}
+
+const cases = [
+  { name: "iphone portrait", innerWidth: 390, innerHeight: 844, dpr: 3, reserved: 34 },
+  { name: "iphone landscape", innerWidth: 844, innerHeight: 390, dpr: 3, reserved: 21 },
+  { name: "small android", innerWidth: 320, innerHeight: 568, dpr: 2, reserved: 0 },
+  { name: "very narrow", innerWidth: 240, innerHeight: 600, dpr: 1, reserved: 0 },
+  { name: "desktop", innerWidth: 1920, innerHeight: 1080, dpr: 1, reserved: 0 },
+  { name: "dpr 1.5", innerWidth: 412, innerHeight: 915, dpr: 1.5, reserved: 24 },
+];
+
+for (const c of cases) {
+  const l = computeLayout(c);
+  ok(`${c.name}: integer scale`, Number.isInteger(l.scale) && l.scale >= 1);
+  ok(`${c.name}: cell is a whole number of device pixels`, l.cell === TILE * l.scale);
+  ok(`${c.name}: fits width`, l.cssW <= c.innerWidth + 0.001);
+  ok(`${c.name}: fits height`, l.cssH <= c.innerHeight - c.reserved + 0.001);
+  ok(`${c.name}: columns capped`, l.cols <= MAX_COLS);
+  // 240 CSS px at dpr 1 cannot hold MIN_COLS even at scale 1, and must not pretend to
+  const possible = Math.floor((c.innerWidth * c.dpr) / TILE);
+  ok(`${c.name}: minimum columns when possible`, l.cols >= Math.min(MIN_COLS, possible));
+  ok(`${c.name}: at least one row`, l.rows >= 1);
+
+  const geo = mapGeometry(l.cols, l.rows);
+  const deepest = geo.top + (TUNING.layers - 1) * geo.gap;
+  ok(`${c.name}: whole descent fits above the hud`, deepest <= geo.area - 1);
+  ok(`${c.name}: hud has its rows`, geo.area === l.rows - HUD_ROWS - BTN_ROWS);
+  ok(`${c.name}: layers are spaced`, geo.gap >= 1);
+}
+
+// A viewport shorter than the chrome must not produce a negative or zero grid
+const tiny = computeLayout({ innerWidth: 200, innerHeight: 40, dpr: 1, reserved: 40 });
+ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
+
+// Anything the code draws has to exist in the sheet, or it renders as nothing at
+// all. Every non-ascii character in src/ is a glyph somebody meant to see.
+const seg = new Intl.Segmenter("en", { granularity: "grapheme" });
+const files = readdirSync("src", { recursive: true, encoding: "utf8" })
+  .filter((f) => f.endsWith(".ts") && !f.endsWith("tilemap.ts"))
+  .map((f) => `src/${f}`);
+ok("there are sources to scan", files.length > 5);
+for (const file of files) {
+  for (const { segment } of seg.segment(readFileSync(file, "utf8"))) {
+    if (/^[\x20-\x7e\r\n\t]*$/.test(segment)) continue;
+    ok(`${file}: the sheet has ${segment}`, segment in TILE_MAP);
+  }
+}
+
+console.log(`layout: ${checks} checks passed`);

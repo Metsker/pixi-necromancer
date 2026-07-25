@@ -1,0 +1,5 @@
+node_modules/
+dist/
+public/dungeon-mode.png
+src/tilemap.ts
+*.local

@@ -1,0 +1,21 @@
+{
+  "name": "gravelight",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen": "node scripts/gen-tilemap.mjs",
+    "dev": "npm run gen && vite",
+    "build": "npm run check && vite build",
+    "preview": "vite preview --host",
+    "check": "npm run gen && tsc --noEmit && node scripts/check-layout.ts && node scripts/check-sim.ts"
+  },
+  "dependencies": {
+    "pixi.js": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.9.2",
+    "vite": "^8.1.5"
+  }
+}
