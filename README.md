@@ -15,23 +15,31 @@ punched through it - a cave-in is only allowed where it cuts nothing off. A room
 is **locked** until something beside it is cleared, then it is **open**, then it
 is **cleared**. It is wider and taller than any phone, so you drag it around.
 
+You come in at the middle of it and it gets worse the further out you go. The
+Ossuary waits at whatever room stands furthest from the way in.
+
 Nothing waits for you. The clock runs at x1, x2 or x4, or you hold it, and any
 sheet you have to answer stops it by itself.
 
-You go in **alone** - the necromancer is not a party, he is one very hard thing
-to kill, and he rests off every wound in a room he takes. What he raises waits
-with him as a **reserve**, and the reserve is what squads are made out of.
+You walk in with whatever you have not sent away, and a room you take is a room
+you rest in - everyone who walks out of it walks out whole. Only what he is
+standing over gets up, and only he reads the walls: a room a squad took keeps
+its piece of the story until he goes through it himself.
+
+A fight of your own opens on screen by itself: two ranks facing off across a
+dark room, stepping in to swing and knocked back when a blow lands, with the
+health of both sides under them.
 
 Point a squad at any open room and it goes. It fights, and if it wins it walks
 to the nearest room still worth taking and fights again, until there is nothing
 left of it. You can have several out at once, all running while you take a room
 of your own. They open the map and bring back experience, and that is all they
 bring back: they leave the dead where they lie, and they have nothing to say.
-Only what the necromancer is standing over gets up, and only he reads the walls -
-a room a squad took keeps its piece of the story until he walks through it.
 
-A room you walk into yourself opens on screen. You do not have to go looking for
-your own fight.
+Every one you send is one fewer beside you, so a squad is a thing you spend,
+not a thing you invest. The bot in `scripts/check-sim.ts` measures holding the
+army as the stronger line; sending is a judgement about a room you think you can
+spare the bodies for.
 
 A room you leave standing does not stay the size you found it. That is the only
 clock pressure there is, and it is what makes spending a squad worth it.

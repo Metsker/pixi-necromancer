@@ -20,6 +20,9 @@ export type ForceMode = "idle" | "march" | "fight" | "gone";
 
 export type Unit = { id: number; creature: CreatureId; hp: number; maxHp: number };
 
+// The last time the dead got up, so the map can make a moment of it
+export type Risen = { creatures: CreatureId[]; node: number; at: number };
+
 export type BattleUnit = {
   id: number;
   src: number; // the force's unit id, or -1 for anything with no roster entry
@@ -33,7 +36,8 @@ export type BattleUnit = {
   withered: number;
 };
 
-export type Hit = { id: number; n: number };
+// `by` is who threw it, which is what lets the view animate the blow
+export type Hit = { id: number; by: number; n: number };
 
 export type Battle = {
   node: number;
@@ -85,6 +89,7 @@ export type GameState = {
   unspent: number;
   build: Record<Stat, number>;
   res: Record<Resource, number>;
+  risen: Risen | null;
   seenLore: number[];
   loreQueue: number[];
   cleared: number;
@@ -105,23 +110,24 @@ export const TUNING = {
   idlePoll: 10,
   maxRounds: 140,
 
-  heroHp: 200,
-  heroDmg: 20,
+  heroHp: 90,
+  heroDmg: 8,
   startingMinions: 2,
   // A room he takes is a room he can rest in, so his question is only ever
   // whether he can win this one, not how much the last one cost
   restHeal: 999,
 
-  baseCap: 4,
+  baseCap: 6,
   squadCap: 6,
   willPerPoint: 1,
   mightPerPoint: 6,
   wardPerPoint: 34,
-  xpPerLevel: 22,
+  xpPerLevel: 26,
 
-  raiseChance: 0.5,
+  raiseChance: 0.9,
   squadXpCut: 1,
   reinforceEvery: 260,
+  riseTicks: 60,
   foeCap: 7,
 
   swarmPerAlly: 1,
@@ -134,7 +140,8 @@ export const TUNING = {
   tollDamage: 8,
   splitTiers: 2,
 
-  tierHp: 6,
+  roomBase: 3,
+  tierHp: 12,
   tierDmgAt: 3,
   logLines: 40,
 };
@@ -154,7 +161,7 @@ export type Template = {
 
 // color is an index into PALETTE
 export const CREATURES: Record<CreatureId, Template> = {
-  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 16, hp: 200, dmg: 20, speed: 3, xp: 0,  ability: null,      tag: "" },
+  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 16, hp: 90,  dmg: 8, speed: 3, xp: 0,  ability: null,      tag: "" },
   rat:     { name: "Plague Rat",  short: "Rat",    glyph: "⚇", color: 15, hp: 18,  dmg: 3, speed: 5, xp: 6,  ability: "swarm",   tag: "+1 dmg per ally" },
   hound:   { name: "Grave Hound", short: "Hound",  glyph: "⋒", color: 14, hp: 26,  dmg: 4, speed: 5, xp: 9,  ability: "rend",    tag: "+3 vs wounded" },
   knight:  { name: "Bone Knight", short: "Knight", glyph: "⌤", color: 22, hp: 40,  dmg: 3, speed: 2, xp: 12, ability: "bulwark", tag: "halves damage" },

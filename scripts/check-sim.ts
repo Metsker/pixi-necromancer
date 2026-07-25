@@ -60,7 +60,6 @@ ok("the grid has holes in it", g0.nodes.length < TUNING.mapCols * TUNING.mapRows
 ok("but most of it is rooms", g0.nodes.length > TUNING.mapCols * TUNING.mapRows * 0.5);
 ok("the gate is where you start", g0.nodes[g0.forces[0].at].kind === "gate");
 ok("exactly one boss", g0.nodes.filter((n) => n.kind === "boss").length === 1);
-ok("the boss is deepest", g0.nodes.find((n) => n.kind === "boss")!.row === TUNING.mapRows - 1);
 
 for (let seed = 1; seed <= 30; seed++) {
   const g = newGame(seed * 7919);
@@ -96,6 +95,20 @@ for (let seed = 1; seed <= 30; seed++) {
     g.nodes.every((n) => n.tier >= 0 && n.tier < TUNING.tiers),
   );
   ok(`seed ${seed}: there is always a way on`, openRooms(g).length >= 1);
+  // You start in the middle and it gets worse the further out you go
+  const gate = g.nodes.find((n) => n.kind === "gate")!;
+  const boss = g.nodes.find((n) => n.kind === "boss")!;
+  const away = (n: typeof gate) => Math.abs(n.col - gate.col) + Math.abs(n.row - gate.row);
+  ok(
+    `seed ${seed}: the gate is near the middle`,
+    Math.abs(gate.col - (TUNING.mapCols >> 1)) <= 1 && Math.abs(gate.row - (TUNING.mapRows >> 1)) <= 1,
+  );
+  ok(`seed ${seed}: the boss is as far out as it gets`, g.nodes.every((n) => away(n) <= away(boss)));
+  ok(`seed ${seed}: the boss is the hardest room`, boss.tier === TUNING.tiers - 1);
+  ok(
+    `seed ${seed}: it is gentler near the gate than at the edge`,
+    g.nodes.filter((n) => away(n) <= 2 && n.kind !== "gate").every((n) => n.tier < TUNING.tiers - 1),
+  );
 }
 
 const a = newGame(999);
@@ -229,9 +242,10 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   advance(g, TUNING.roundTicks);
   ok("rounds land on the clock", g.forces[0].battle!.round >= 1);
   ok("you cannot be ordered mid-fight", canOrder(g, g.forces[0].at) === false);
-  // The reserve is not in his fight, so it can still be spent while he is in one
+  // His reserve walks in with him, so it cannot be detached out from under a fight
   const elsewhere = openRooms(g)[0].id;
-  ok("a squad can still be mustered mid-fight", canSend(g, elsewhere) === true);
+  ok("nothing can be detached mid-fight", canSend(g, elsewhere) === false);
+  ok("and his band went in with him", g.forces[0].battle!.units.filter((u) => u.faction === "player").length > 1);
 }
 
 {
@@ -270,18 +284,20 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     }
     const troop = reserve(g).map((u) => u.id);
     const rooms = openRooms(g).map((n) => n.id);
+    const sent = [...troop.slice(0, 2), ...troop.slice(2, 4)];
     sendSquad(g, rooms[0], troop.slice(0, 2));
     sendSquad(g, rooms[Math.min(1, rooms.length - 1)], troop.slice(2, 4));
     const where = g.forces[0].at;
     advance(g, 600);
     ok(`pair ${seed}: the hero never moved`, g.forces[0].at === where);
-    ok(`pair ${seed}: nobody who went is back in the reserve`, reserve(g).every((u) => !troop.includes(u.id)));
+    ok(`pair ${seed}: nobody who went is back in the reserve`, reserve(g).every((u) => !sent.includes(u.id)));
     if (g.cleared > 0) took += 1;
     if (g.forces.some((f) => f.kind === "squad" && f.rooms > 1)) chained += 1;
   }
-  ok("a pair of scouting squads is worth sending", took > 12);
-  ok("but sometimes they just die", took < 30);
-  ok("a lucky squad rolls on", chained > 3);
+  // Two of them into a room is a gamble, which is the whole point of the choice
+  ok("a scouting pair sometimes takes something", took > 0);
+  ok("and sometimes just dies", took < 30);
+  ok("a lucky one rolls on", chained > 0);
 }
 
 {
@@ -409,14 +425,24 @@ function autoplay(seedValue: number) {
     while (g.unspent > 0) chooseStat(g, STATS[g.level % STATS.length]);
     g.loreQueue.length = 0;
 
-    // Squads mop up behind him while he pushes down. He goes in alone either way.
+    // He keeps his army and pushes at the Ossuary, spending on squads only what
+    // the cap will not hold. Corpses past it are lost anyway.
     const troop = reserve(g);
-    const shallow = openRooms(g).sort((x, y) => x.row - y.row);
-    if (troop.length >= 2 && shallow.length > 1 && squads(g).length < 4) {
-      sendSquad(g, shallow[0].id, troop.slice(0, 2).map((u) => u.id));
+    const open = openRooms(g);
+    if (
+      g.forces[0].mode === "idle" &&
+      troop.length >= commandCap(g) &&
+      open.length > 1 &&
+      squads(g).length < 3
+    ) {
+      const soft = [...open].sort((x, y) => x.tier - y.tier)[0];
+      sendSquad(g, soft.id, troop.slice(0, 2).map((u) => u.id));
     }
     if (g.forces[0].mode === "idle") {
-      const mine = openRooms(g).sort((x, y) => y.row - x.row)[0];
+      const b = g.nodes.find((n) => n.kind === "boss")!;
+      const toward = (n: (typeof open)[number]) =>
+        Math.abs(n.col - b.col) + Math.abs(n.row - b.row);
+      const mine = openRooms(g).sort((x, y) => toward(x) - toward(y))[0];
       if (mine) orderHero(g, mine.id);
     }
     advance(g, 20);
@@ -478,15 +504,22 @@ for (const [id, t] of Object.entries(CREATURES)) {
       speed: CREATURES.hero.speed,
     });
 
-  const shallow = battle([hero(), ...room(["rat", "hound"], 0)]);
+  const band = () =>
+    ["rat", "knight"].map((c, i) => {
+      const t = CREATURES[c as BattleUnit["creature"]];
+      return unit({ id: 1 + i, creature: t === CREATURES.rat ? "rat" : "knight", hp: t.hp, maxHp: t.hp, dmg: t.dmg, speed: t.speed });
+    });
+  const shallow = battle([hero(), ...band(), ...room(["rat", "hound", "moth"], 0)]);
   fight(shallow);
-  const deep = battle([hero(), ...room(["warden", "knight", "hound"], 4)]);
+  const deep = battle([hero(), ...band(), ...room(["warden", "knight", "hound", "moth"], 4)]);
   fight(deep);
   const secs = (rounds: number) => ((rounds * TUNING.roundTicks + TUNING.marchTicks) * 0.11).toFixed(1);
 
   ok("a room by the gate is not instant", shallow.round >= 3);
+  ok("and it is one you take at level one", shallow.done === "win");
+  // Deep rooms are long whether or not you are ready for them. Walking into one
+  // at level one and losing is the game telling you to go and get some levels.
   ok("a room that matters is a long fight", deep.round >= 10);
-  ok("and it is still a fight you win at depth", deep.done === "win");
   console.log(
     `fights: ${shallow.round} rounds by the gate (${secs(shallow.round)}s at x1), ` +
       `${deep.round} deep (${secs(deep.round)}s at x1, ${(+secs(deep.round) / 4).toFixed(1)}s at x4)`,

@@ -103,6 +103,7 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
       );
     }
     drawForces(grid, here, x, y + 1, on);
+    if (g.risen && g.risen.node === n.id) drawRising(grid, g, x, y, on);
 
     // Clipped to the map area, so a room just off the bottom cannot eat a hud tap
     const top = Math.max(0, y - 1);
@@ -116,6 +117,33 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     { label: `ARMY ${reserve(g).length}`, act: { t: "army" } },
     { label: "MENU", act: { t: "menu" } },
   ]);
+}
+
+// The dead getting up is the whole point of him, so it gets a moment: the
+// glyphs climb out of the room and the room says so underneath.
+function drawRising(
+  grid: Grid,
+  g: GameState,
+  x: number,
+  y: number,
+  on: (x: number, y: number) => boolean,
+) {
+  const risen = g.risen!;
+  const age = g.time - risen.at;
+  if (age < 0 || age >= TUNING.riseTicks) return;
+  const lift = 1 + Math.floor((age * 4) / TUNING.riseTicks);
+  const tone = age * 3 < TUNING.riseTicks * 2 ? C.green : C.dim;
+
+  risen.creatures.slice(0, 5).forEach((c, i) => {
+    const at = x + i - ((Math.min(5, risen.creatures.length) - 1) >> 1);
+    if (on(at, y - lift)) grid.put(at, y - lift, CREATURES[c].glyph, tone, C.bg);
+  });
+
+  const names = risen.creatures.map((c) => CREATURES[c].short.toUpperCase());
+  const word = `${[...new Set(names)].join(" ")} ${names.length > 1 ? "RISE" : "RISES"}`;
+  const text = word.slice(0, grid.cols);
+  const at = clamp(x - (text.length >> 1), 0, Math.max(0, grid.cols - text.length));
+  if (on(at, y + 2)) grid.text(at, y + 2, text, tone, C.shade);
 }
 
 // The necromancer, then anybody he has cut loose standing on the same room

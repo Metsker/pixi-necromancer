@@ -18,6 +18,7 @@ import {
   type NodeKind,
   type Resource,
   type Stat,
+  type Unit,
 } from "./data.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
@@ -34,6 +35,12 @@ export const heroDmg = (g: GameState) => TUNING.heroDmg + g.build.might * TUNING
 export const xpNeeded = (g: GameState) => TUNING.xpPerLevel * (g.level + 1);
 export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp, 0, 1);
 
+// Everyone who walks in with him: whatever he has not sent away. The reserve is
+// his retinue when he fights and the pool a squad is drawn from when he does
+// not - it cannot be both at once, which is why nothing detaches mid-room.
+export const bandOf = (g: GameState, f: Force): Unit[] =>
+  f.kind === "hero" ? [...f.units, ...g.reserve] : f.units;
+
 export function log(g: GameState, line: string) {
   g.log.push(line);
   if (g.log.length > TUNING.logLines) g.log.shift();
@@ -43,19 +50,17 @@ export function log(g: GameState, line: string) {
 
 // A plain grid joined north, south, east and west. Every cell is a room; the
 // shape of a run comes from what you choose to take, not from where routes go.
-export const tierForRow = (row: number) =>
-  clamp(
-    Math.floor(((row - 1) * TUNING.tiers) / Math.max(1, TUNING.mapRows - 2)),
-    0,
-    TUNING.tiers - 1,
-  );
+// You start in the middle of it, so difficulty radiates out rather than down.
+export const tierForDist = (dist: number, far: number) =>
+  clamp(Math.round(((dist - 1) * (TUNING.tiers - 1)) / Math.max(1, far - 1)), 0, TUNING.tiers - 1);
 
 function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
   if (kind === "boss") return ["ossuary", "warden", "knight"];
   // Rooms near the gate are small enough that a scouting pair has a real chance;
   // the deep ones are not
   const grow = tier >= 2 ? 1 : 0;
-  const n = kind === "elite" ? 3 + grow : kind === "crypt" ? 1 + grow : 2 + grow;
+  const base = TUNING.roomBase;
+  const n = kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow;
   const pool = tier < 2 ? EARLY_POOL : LATE_POOL;
   return Array.from({ length: n }, () => pick(pool));
 }
@@ -92,19 +97,33 @@ const GRID_STEPS = [
 
 function buildMap(g: GameState) {
   const { mapCols, mapRows } = TUNING;
-  const mid = mapCols >> 1;
+  const gateCol = mapCols >> 1;
+  const gateRow = mapRows >> 1;
   const key = (col: number, row: number) => row * mapCols + col;
+  const away = (col: number, row: number) => Math.abs(col - gateCol) + Math.abs(row - gateRow);
 
   const solid = new Set<number>();
   for (let row = 0; row < mapRows; row++) {
     for (let col = 0; col < mapCols; col++) solid.add(key(col, row));
   }
-  const gate = key(mid, 0);
-  const boss = key(mid, mapRows - 1);
-  for (const k of shuffle([...solid].filter((k) => k !== gate && k !== boss))) {
+  const gate = key(gateCol, gateRow);
+  for (const k of shuffle([...solid].filter((k) => k !== gate))) {
     if (rnd() >= TUNING.holeChance) continue;
     solid.delete(k);
     if (!whole(solid, gate, mapCols)) solid.add(k);
+  }
+
+  // The Ossuary sits at whatever is left standing furthest from the way in
+  let boss = gate;
+  let far = 0;
+  for (const k of solid) {
+    const col = k % mapCols;
+    const row = (k - col) / mapCols;
+    const d = away(col, row);
+    if (d > far || (d === far && row > (boss - (boss % mapCols)) / mapCols)) {
+      far = d;
+      boss = k;
+    }
   }
 
   const id = new Map<number, number>();
@@ -113,7 +132,10 @@ function buildMap(g: GameState) {
       const k = key(col, row);
       if (!solid.has(k)) continue;
       const kind: NodeKind = k === gate ? "gate" : k === boss ? "boss" : pick(KIND_ROLL);
-      const tier = clamp(tierForRow(row) + (kind === "elite" ? 1 : 0), 0, TUNING.tiers - 1);
+      const tier =
+        kind === "boss"
+          ? TUNING.tiers - 1
+          : clamp(tierForDist(away(col, row), far) + (kind === "elite" ? 1 : 0), 0, TUNING.tiers - 1);
       id.set(k, g.nodes.length);
       g.nodes.push({
         id: g.nodes.length,
@@ -272,7 +294,7 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
   toll: {
     onDeath: (s, b) => {
       for (const o of living(b, s.faction === "player" ? "enemy" : "player")) {
-        damage(b, o, TUNING.tollDamage);
+        damage(b, o, TUNING.tollDamage, s.id);
       }
     },
   },
@@ -310,10 +332,10 @@ function blog(b: Battle, line: string) {
   if (b.log.length > TUNING.logLines) b.log.shift();
 }
 
-function damage(b: Battle, u: BattleUnit, amount: number) {
+function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
   if (u.hp <= 0) return;
   u.hp = Math.max(0, u.hp - amount);
-  b.hit.push({ id: u.id, n: amount });
+  b.hit.push({ id: u.id, by, n: amount });
   if (u.hp > 0) return;
   blog(b, `${CREATURES[u.creature].short} falls.`);
   hooks(u).onDeath?.(u, b);
@@ -323,7 +345,7 @@ function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   let raw = a.dmg + (hooks(a).bonus?.(a, d, b) ?? 0);
   if (a.withered > 0) raw *= TUNING.witherCut;
   const soaked = hooks(d).taken?.(d, raw, b) ?? raw;
-  damage(b, d, Math.max(1, Math.round(soaked)));
+  damage(b, d, Math.max(1, Math.round(soaked)), a.id);
   // Fires even on a killing blow, or a wisp would be punished for aiming well
   hooks(a).onAttack?.(a, d, b);
 }
@@ -364,7 +386,7 @@ function makeBattle(g: GameState, f: Force): Battle {
   const n = g.nodes[f.at];
   const b: Battle = { node: f.at, units: [], hit: [], round: 0, log: [], done: "", nextId: 0 };
 
-  for (const u of f.units) {
+  for (const u of bandOf(g, f)) {
     const t = CREATURES[u.creature];
     b.units.push({
       id: b.nextId++,
@@ -403,9 +425,9 @@ function makeBattle(g: GameState, f: Force): Battle {
 export const canOrder = (g: GameState, id: number) =>
   !g.over && heroForce(g).mode !== "fight" && routeTo(g, heroForce(g).at, id) !== null;
 
-// A squad can be mustered while his own fight runs: the reserve is not in it
 export const canSend = (g: GameState, id: number) =>
   !g.over &&
+  heroForce(g).mode !== "fight" &&
   g.reserve.length > 0 &&
   g.nodes[id]?.state === "open" &&
   routeTo(g, heroForce(g).at, id) !== null;
@@ -527,9 +549,10 @@ function settle(g: GameState, f: Force, b: Battle) {
   const alive = new Map(
     b.units.filter((u) => u.faction === "player" && u.hp > 0).map((u) => [u.src, u.hp]),
   );
-  g.lost += f.units.filter((u) => !alive.has(u.id)).length;
+  g.lost += bandOf(g, f).filter((u) => !alive.has(u.id)).length;
   f.units = f.units.filter((u) => alive.has(u.id));
-  for (const u of f.units) u.hp = alive.get(u.id)!;
+  if (f.kind === "hero") g.reserve = g.reserve.filter((u) => alive.has(u.id));
+  for (const u of bandOf(g, f)) u.hp = alive.get(u.id)!;
   f.battle = null;
 
   if (b.done === "loss") {
@@ -571,6 +594,7 @@ function settle(g: GameState, f: Force, b: Battle) {
     return;
   }
   h.hp = Math.min(h.maxHp, h.hp + TUNING.restHeal);
+  for (const m of g.reserve) m.hp = Math.min(m.maxHp, m.hp + TUNING.restHeal);
   f.mode = "idle";
   f.next = g.time + TUNING.idlePoll;
   readLore(g, n);
@@ -612,6 +636,7 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
     rose.push(u.creature);
   }
   if (rose.length) {
+    g.risen = { creatures: rose, node: n.id, at: g.time };
     log(g, `${rose.map((c) => CREATURES[c].short).join(", ")} rises.`.slice(0, 20));
   }
 }
@@ -642,6 +667,7 @@ export function newGame(seedValue: number): GameState {
     unspent: 0,
     build: { might: 0, ward: 0, will: 0 },
     res: { bone: 0, ash: 0, salt: 0 },
+    risen: null,
     seenLore: [],
     loreQueue: [],
     cleared: 0,
@@ -672,12 +698,12 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
   "seed", "rng", "time", "nodes", "forces", "reserve", "nextForce", "nextUnit", "xp",
-  "level", "unspent", "build", "res", "seenLore", "loreQueue", "cleared",
+  "level", "unspent", "build", "res", "risen", "seenLore", "loreQueue", "cleared",
   "lost", "log", "over",
 ];
 
