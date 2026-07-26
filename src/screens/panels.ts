@@ -235,6 +235,7 @@ function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
     minWidth: Math.min(wide, 16),
     lines: [
       { text: `${t.glyph} ${u.hp}/${u.maxHp}`, fg: C.ink },
+      { text: t.role, fg: C.gold },
       { text: `hits for ${u.creature === "hero" ? heroDmg(g) : t.dmg}`, fg: C.mid },
       { text: pace, fg: C.mid },
       ...(t.tag ? [{ text: "" }, ...wrap(t.tag, wide).map((text) => ({ text, fg: C.dim }))] : []),

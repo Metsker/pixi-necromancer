@@ -235,11 +235,15 @@ ok("bulwark never fully blocks", ABILITIES.bulwark.taken!(unit({}), 1, battle([]
   ok("wither sticks for its turns", target.withered === TUNING.witherTurns);
 }
 {
-  const me = unit({ id: 0 });
-  const hurt = unit({ id: 1, hp: 3 });
+  // The mender tops up whoever is worst off, and never past their ceiling
+  const me = unit({ id: 0, hp: 10, maxHp: 10 });
+  const hurt = unit({ id: 1, hp: 3, maxHp: 60 });
   const bt = battle([me, hurt]);
   ABILITIES.siphon.onAttack!(me, unit({ faction: "enemy" }), bt);
   ok("siphon heals the worst off", hurt.hp === 3 + TUNING.siphonHeal);
+  const brimming = unit({ id: 2, hp: 10, maxHp: 10 });
+  ABILITIES.siphon.onAttack!(me, unit({ faction: "enemy" }), battle([me, brimming]));
+  ok("and nothing goes over the top", brimming.hp === 10);
 }
 ok("rend only bites the wounded", ABILITIES.rend.bonus!(unit({}), unit({ hp: 10 }), battle([])) === 0);
 ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle([])) === TUNING.rendBonus);
@@ -310,6 +314,8 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   // He walks off a room he takes. What he raised does not.
   const g = newGame(3939);
   raise(g, "knight");
+  // He takes the front here, so the wounded one behind him lives to be counted
+  g.front = 0;
   const target = openRooms(g)[0].id;
   orderHero(g, target);
   advance(g, TUNING.marchTicks + 1);
@@ -331,19 +337,22 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // He is not pinned to the front of his own line
+  // He sends the dead in first by default, and is not pinned anywhere
   const g = newGame(4545);
   raise(g, "knight");
   const before = bandOf(g, heroForce(g)).map((u) => u.creature);
-  ok("he stands at the head by default", before[0] === "hero");
-  moveUp(g, 1);
+  ok("the dead go in ahead of him", before[before.length - 1] === "hero");
+  ok("so something else is what gets hit", before[0] !== "hero");
+
+  const last = before.length - 1;
+  moveUp(g, last);
   const after = bandOf(g, heroForce(g)).map((u) => u.creature);
-  ok("and can be put behind something sturdier", after[0] !== "hero" && after[1] === "hero");
+  ok("he can be walked up the line", after[last - 1] === "hero");
   ok("without losing anybody", after.length === before.length);
+  for (let i = last - 1; i > 0; i--) moveUp(g, i);
+  ok("all the way to the front", bandOf(g, heroForce(g))[0].creature === "hero");
   moveUp(g, 0);
-  ok("the head of the line cannot move up", bandOf(g, heroForce(g))[1].creature === "hero");
-  moveUp(g, 1);
-  ok("and he can step forward again", bandOf(g, heroForce(g))[0].creature === "hero");
+  ok("and no further", bandOf(g, heroForce(g))[0].creature === "hero");
 }
 
 {
@@ -356,8 +365,8 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   orderHero(g, openRooms(g)[0].id);
   advance(g, TUNING.marchTicks + 1);
   const line = g.forces[0].battle!.units.filter((u) => u.faction === "player");
-  ok("the necromancer stands at the head of it", line[0].creature === "hero");
-  ok("and the rest stand where you put them", line.slice(1).map((u) => u.creature).join() === order.join());
+  ok("the dead go in ahead of him", line[line.length - 1].creature === "hero");
+  ok("and stand where you put them", line.slice(0, -1).map((u) => u.creature).join() === order.join());
   ok("ids run front to back", line.every((u, i) => i === 0 || u.id > line[i - 1].id));
 
   const foes = g.forces[0].battle!.units.filter((u) => u.faction === "enemy");
@@ -533,12 +542,14 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     const g = newGame(6100 + seed * 7);
     const room = g.nodes[openRooms(g)[0].id];
     const before = g.reserve.length;
+    const buried = g.lost;
     const bodies = room.foes.length;
     const crypt = room.kind === "crypt";
     orderHero(g, room.id);
     advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
     if (room.state !== "cleared") continue;
-    const got = g.reserve.length - before;
+    // The reserve also loses people in there, so count what came in, not the net
+    const got = g.reserve.length - before + (g.lost - buried);
     if (crypt) {
       crypts += bodies;
       cryptUp += got;

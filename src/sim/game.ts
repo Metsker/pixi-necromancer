@@ -749,8 +749,9 @@ export function newGame(seedValue: number): GameState {
     time: 0,
     nodes: [],
     forces: [],
+    // The dead go in first; he can be moved up the line if you want him there
     reserve: [],
-    front: 0,
+    front: TUNING.baseCap,
     nextForce: 1,
     nextUnit: 1,
     xp: 0,

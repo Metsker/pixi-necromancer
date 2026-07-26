@@ -40,9 +40,15 @@ lines **alternate**: bringing six against three does not buy you six blows to
 three, it buys you a deeper bench. A toss on the way in decides who opens.
 
 **Order is the tactic.** Whoever stands at the front of a line is what the other
-side hits, and the army sheet numbers your line so you can see it: tap the arrow
-to move somebody up, including the necromancer, who is happy to stand behind a
-bone knight. A squad stands in the order you tapped it - first tapped, first hit.
+side hits. He sends the dead in ahead of him by default; the army sheet numbers
+the line and the arrow walks anybody up it, himself included. A squad stands in
+the order you tapped it - first tapped, first hit.
+
+Each thing he raises is for something. A **bone knight** is a wall that halves
+what it takes and barely hits back. A **grave hound** is the heaviest blow in the
+game and made of paper. A **corpse wisp** mends whoever is worst off and can
+hardly fight. **Rats** are worth what you have a lot of them. He hits about as
+hard as a hound, so the line is where the damage is, not him.
 
 When the room falls the board stays up for a beat. A white beam comes down out
 of the ceiling onto each body he is taking, the colour comes back into it, and

@@ -125,10 +125,10 @@ export const TUNING = {
   turnTicks: 5,
   spoilsTicks: 45,
   idlePoll: 10,
-  maxRounds: 60,
+  maxRounds: 100,
 
-  heroHp: 300,
-  heroDmg: 55,
+  heroHp: 260,
+  heroDmg: 14,
   startingMinions: 2,
   // What a room he takes gives him back, as a share of what he can hold. Not
   // all of it: the run is meant to wear him down.
@@ -137,8 +137,8 @@ export const TUNING = {
   baseCap: 6,
   squadCap: 6,
   willPerPoint: 1,
-  mightPerPoint: 10,
-  wardPerPoint: 80,
+  mightPerPoint: 3,
+  wardPerPoint: 30,
   xpPerLevel: 26,
 
   raiseChance: 0.5,
@@ -148,15 +148,15 @@ export const TUNING = {
   riseTicks: 60,
   foeCap: 7,
 
-  swarmPerAlly: 1,
-  swarmCap: 4,
+  swarmPerAlly: 2,
+  swarmCap: 8,
   bulwarkCut: 0.5,
   witherCut: 0.7,
   witherTurns: 3,
-  siphonHeal: 2,
-  rendBonus: 3,
-  tollDamage: 8,
-  splitTiers: 2,
+  siphonHeal: 8,
+  rendBonus: 6,
+  tollDamage: 14,
+  splitTiers: 1,
 
   roomBase: 2,
   tierHp: 4,
@@ -167,6 +167,7 @@ export const TUNING = {
 export type Template = {
   name: string;
   short: string;
+  role: string; // what it is for, in one word
   glyph: string;
   color: number;
   hp: number;
@@ -179,14 +180,14 @@ export type Template = {
 
 // color is an index into PALETTE
 export const CREATURES: Record<CreatureId, Template> = {
-  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 20, hp: 300, dmg: 55, speed: 3, xp: 0,  ability: null,      tag: "" },
-  rat:     { name: "Plague Rat",  short: "Rat",    glyph: "⚇", color: 15, hp: 18,  dmg: 2, speed: 5, xp: 6,  ability: "swarm",   tag: "+1 dmg per ally" },
-  hound:   { name: "Grave Hound", short: "Hound",  glyph: "⋒", color: 14, hp: 26,  dmg: 4, speed: 5, xp: 9,  ability: "rend",    tag: "+3 vs wounded" },
-  knight:  { name: "Bone Knight", short: "Knight", glyph: "⌤", color: 22, hp: 40,  dmg: 2, speed: 2, xp: 12, ability: "bulwark", tag: "halves damage" },
-  moth:    { name: "Grave Moth",  short: "Moth",   glyph: "⫙", color: 16, hp: 24,  dmg: 3, speed: 4, xp: 9,  ability: "wither",  tag: "blunts their blows" },
-  wisp:    { name: "Corpse Wisp", short: "Wisp",   glyph: "◉", color: 21, hp: 22,  dmg: 2, speed: 3, xp: 9,  ability: "siphon",  tag: "heals the hurt" },
-  warden:  { name: "Tomb Warden", short: "Warden", glyph: "⛨", color: 19, hp: 46,  dmg: 4, speed: 2, xp: 14, ability: "toll",    tag: "hurts all on death" },
-  ossuary: { name: "The Ossuary", short: "Ossuary",glyph: "⚱", color: 17, hp: 130, dmg: 7, speed: 3, xp: 60, ability: "split",   tag: "splits when broken" },
+  hero:    { name: "Necromancer", short: "You",    role: "himself", glyph: "🕱", color: 20, hp: 260, dmg: 14, speed: 3, xp: 0,  ability: null,      tag: "" },
+  rat:     { name: "Plague Rat",  short: "Rat",    role: "swarm",   glyph: "⚇", color: 15, hp: 20,  dmg: 4,  speed: 5, xp: 6,  ability: "swarm",   tag: "+2 dmg per ally" },
+  hound:   { name: "Grave Hound", short: "Hound",  role: "heavy",   glyph: "⋒", color: 14, hp: 26,  dmg: 12, speed: 5, xp: 12, ability: "rend",    tag: "+6 vs wounded" },
+  knight:  { name: "Bone Knight", short: "Knight", role: "wall",    glyph: "⌤", color: 22, hp: 70,  dmg: 3,  speed: 2, xp: 14, ability: "bulwark", tag: "halves what it takes" },
+  moth:    { name: "Grave Moth",  short: "Moth",   role: "hex",     glyph: "⫙", color: 16, hp: 24,  dmg: 4,  speed: 4, xp: 10, ability: "wither",  tag: "blunts their blows" },
+  wisp:    { name: "Corpse Wisp", short: "Wisp",   role: "mender",  glyph: "◉", color: 21, hp: 26,  dmg: 2,  speed: 3, xp: 12, ability: "siphon",  tag: "mends the worst hurt" },
+  warden:  { name: "Tomb Warden", short: "Warden", role: "guard",   glyph: "⛨", color: 19, hp: 80,  dmg: 5,  speed: 2, xp: 18, ability: "toll",    tag: "hurts all when it falls" },
+  ossuary: { name: "The Ossuary", short: "Ossuary",role: "the end", glyph: "⚱", color: 17, hp: 150, dmg: 16, speed: 3, xp: 60, ability: "split",   tag: "splits when broken" },
 };
 
 export const RAISABLE: CreatureId[] = ["rat", "hound", "knight", "moth", "wisp", "warden"];
@@ -230,8 +231,8 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
 };
 
 export const STAT_LABEL: Record<Stat, string> = {
-  might: "MIGHT +10 dmg",
-  ward: "WARD  +80 hp",
+  might: "MIGHT  +3 dmg",
+  ward: "WARD  +30 hp",
   will: "WILL  +1 slot",
 };
 
