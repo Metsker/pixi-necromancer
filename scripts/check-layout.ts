@@ -18,7 +18,8 @@ import {
 } from "../src/sim/game.ts";
 import { BTN_ROWS, C, Hits, cells, tailW } from "../src/ui.ts";
 import { CREATURES, MANA_GLYPH, RAISABLE, TAUNT_GLYPH, TUNING } from "../src/sim/data.ts";
-import { ARMS, TREE, rootId } from "../src/sim/tree.ts";
+import { TREE, rootId } from "../src/sim/tree.ts";
+import { POWERS, powerLines } from "../src/sim/powers.ts";
 import { TREE_TEXT, stateOf, treeLines, treeWidth } from "../src/screens/tree.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
@@ -120,6 +121,9 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   g.over = "won";
   g.cleared = 12;
   g.lost = 9;
+  // The widest hand the board can pay for, with the reroll line under it
+  g.offer = POWERS.slice(0, 3 + 4).map((p) => p.id);
+  g.rerolls = 9;
   while (raise(g, "warden")) {
     /* a full roster of the widest names is the widest roster */
   }
@@ -171,19 +175,19 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   ok("and the box it asks for fits the narrowest grid", treeWidth() <= MIN_COLS);
   ok("it is one tree, not three", TREE.length >= 16 && TREE.length <= 22);
 
-  // Every node reachable from the one you start on, or a run can level past a
+  // Every node reachable from the one you start on, or a run can bank gold for a
   // node it can never buy
   const walk = newGame(99);
   ok("the middle comes free", walk.taken.join() === `${rootId}`);
-  walk.unspent = TREE.length * 2;
+  walk.res.gold = 9999;
   let guard = 200;
   while (treeOpen(walk).length && guard-- > 0) takeNode(walk, treeOpen(walk)[0]);
   ok("every node can be reached", walk.taken.length === TREE.length);
   ok("and nothing is left open", treeOpen(walk).length === 0);
   for (const n of TREE) ok(`${n.name}: it reads as bought`, stateOf(walk, n.id) === "taken");
 
-  // Every arm is named on the board it belongs to
-  for (const arm of Object.values(ARMS)) ok(`${arm.name}: it fits the board`, cells(arm.name) <= TREE_TEXT);
+  // A card the dark deals is held to the same width as everything else
+  for (const s of powerLines()) ok(`"${s}" fits a card`, cells(s) <= TREE_TEXT);
 }
 
 // A mend has to be as legible on the board as a blow is

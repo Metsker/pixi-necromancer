@@ -19,9 +19,11 @@ import {
   newGame,
   orderArmy,
   reap,
+  reroll,
   save,
   sell,
   takeNode,
+  takePower,
 } from "./sim/game.ts";
 import { sfx, toggleSfx, unlock, type SfxName } from "./sfx.ts";
 import { rootId } from "./sim/tree.ts";
@@ -43,7 +45,9 @@ const ACT_SFX: Partial<Record<Act["t"], SfxName>> = {
   up: "move",
   down: "move",
   pick: "move",
+  reroll: "move",
   take: "buy",
+  power: "buy",
   sell: "eat",
   mend: "mend",
 };
@@ -244,6 +248,12 @@ async function main() {
         break;
       case "take":
         takeNode(g, a.id);
+        break;
+      case "power":
+        takePower(g, a.id);
+        break;
+      case "reroll":
+        reroll(g);
         break;
       case "mend":
         mend(g);

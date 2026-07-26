@@ -24,7 +24,8 @@ import {
   type Resource,
   type Unit,
 } from "./data.ts";
-import { PERK_IDS, TREE, depthOf, linksOf, rootId, type ArmId, type Perks } from "./tree.ts";
+import { PERK_IDS, TREE, depthOf, linksOf, rootId, type Perks } from "./tree.ts";
+import { POWERS, POWER_BY_ID } from "./powers.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
@@ -34,44 +35,29 @@ const left = (pct: number) => clamp(pct, 100 - TUNING.softCap, 100) / 100;
 
 export const reserve = (g: GameState) => g.reserve;
 
-// ---------------------------------------------------------------- the tree
+// ---------------------------------------------------------------- what is bought
 
-// Everything bought, as one bag of numbers. Nineteen nodes is small enough that
-// summing it on demand is cheaper than keeping a copy honest.
+// Everything owned, as one bag of numbers: the neutral board plus whatever the
+// dark has offered along the way. Small enough that summing it on demand is
+// cheaper than keeping a copy honest.
 export function perks(g: GameState): Perks {
   const out = Object.fromEntries(PERK_IDS.map((k) => [k, 0])) as Perks;
-  for (const id of g.taken) {
-    for (const [k, v] of Object.entries(TREE[id].gives)) out[k as keyof Perks] += v;
-  }
+  const give = (gives: Partial<Perks>) => {
+    for (const [k, v] of Object.entries(gives)) out[k as keyof Perks] += v;
+  };
+  for (const id of g.taken) give(TREE[id].gives);
+  for (const id of g.powers) give(POWER_BY_ID[id]?.gives ?? {});
   return out;
 }
 
-const ownedIn = (g: GameState, arm: ArmId | "") =>
-  g.taken.filter((id) => TREE[id].arm === arm).length;
-
-// A node is buyable if it is beside one already bought - the same rule that
-// opens a room next to a room already cleared - and if the arm it belongs to is
-// deep enough to carry it. Distance out is the price of admission: nothing at
-// depth d opens until d-1 of its own arm is yours, so two arms may touch on the
-// board without one of them being a back door into the other.
-export const treeOpen = (g: GameState): number[] =>
-  TREE.filter(
-    (n) =>
-      !g.taken.includes(n.id) &&
-      linksOf(n).some((id) => g.taken.includes(id)) &&
-      ownedIn(g, n.arm) >= depthOf(n) - 1,
-  ).map((n) => n.id);
-
-export function takeNode(g: GameState, id: number): boolean {
-  if (g.unspent <= 0 || !treeOpen(g).includes(id)) return false;
-  g.unspent -= 1;
-  g.taken.push(id);
-  const gives = TREE[id].gives;
-  // What a node adds to the ceiling of the pool is his to hand: a number you
-  // cannot use yet is not a level-up
+// What a thing adds the moment it is yours. A number you cannot use until the
+// next room is not a reward, so the ceiling and anything already standing both
+// have to hear about it.
+function applyGives(g: GameState, gives: Partial<Perks>) {
   if (gives.manaPool) g.mana += gives.manaPool;
-  // ...and the same for anything already standing. A wall bought after the wall
-  // is up still has to make the wall bigger.
+  if (gives.rerolls) g.rerolls += gives.rerolls;
+  // A body at the gate is only ever a body at the gate, so it arrives now
+  if (gives.startBand) for (let i = 0; i < gives.startBand; i++) raise(g, pick(START_POOL));
   for (const u of g.reserve) {
     const gain =
       (gives.ratHp && u.creature === "rat" ? gives.ratHp : 0) +
@@ -80,6 +66,77 @@ export function takeNode(g: GameState, id: number): boolean {
     u.maxHp += gain;
     u.hp += gain;
   }
+}
+
+// ---------------------------------------------------------------- the tree
+
+// Distance out is the price. The board is neutral, so there is nothing else to
+// gate it with and nothing else it needs.
+export const nodeCost = (id: number) => TUNING.nodeBase + depthOf(TREE[id]) * TUNING.nodeStep;
+
+// A node is open if it is beside one already bought - the same rule that opens a
+// room next to a room already cleared.
+export const treeOpen = (g: GameState): number[] =>
+  TREE.filter((n) => !g.taken.includes(n.id) && linksOf(n).some((id) => g.taken.includes(id))).map(
+    (n) => n.id,
+  );
+
+export const canTake = (g: GameState, id: number) =>
+  treeOpen(g).includes(id) && g.res.gold >= nodeCost(id);
+
+export function takeNode(g: GameState, id: number): boolean {
+  if (!canTake(g, id)) return false;
+  g.res.gold -= nodeCost(id);
+  g.taken.push(id);
+  applyGives(g, TREE[id].gives);
+  return true;
+}
+
+// ---------------------------------------------------------------- the offer
+
+// What the dark will put on the table. A rule is gone once it is yours; a number
+// may come round again until it has been stacked as deep as it goes.
+const drawable = (g: GameState, id: string) => {
+  const p = POWER_BY_ID[id];
+  const held = g.powers.filter((o) => o === id).length;
+  return p.rare ? held === 0 : held < TUNING.powerStack;
+};
+
+// A bag with more copies of the common things in it, drawn from without
+// replacement so no hand ever shows the same card twice. An empty bag gives the
+// point back rather than leaving a sheet up that cannot be answered.
+export function rollOffer(g: GameState) {
+  const want = Math.max(1, TUNING.offerCount + perks(g).offers);
+  const bag: string[] = [];
+  for (const p of POWERS) {
+    if (!drawable(g, p.id)) continue;
+    for (let i = 0; i < (p.rare ? 1 : TUNING.commonWeight); i++) bag.push(p.id);
+  }
+  const out: string[] = [];
+  while (out.length < want && bag.length) {
+    const id = bag[Math.floor(rnd() * bag.length)];
+    out.push(id);
+    for (let i = bag.length - 1; i >= 0; i--) if (bag[i] === id) bag.splice(i, 1);
+  }
+  g.offer = out;
+  if (!out.length) g.unspent = 0;
+}
+
+export function takePower(g: GameState, id: string): boolean {
+  if (g.unspent <= 0 || !g.offer.includes(id) || !POWER_BY_ID[id]) return false;
+  g.unspent -= 1;
+  g.powers.push(id);
+  applyGives(g, POWER_BY_ID[id].gives);
+  g.offer = [];
+  if (g.unspent > 0) rollOffer(g);
+  return true;
+}
+
+// A hand you do not want, once per node of the board that paid for it
+export function reroll(g: GameState): boolean {
+  if (g.rerolls <= 0 || !g.offer.length) return false;
+  g.rerolls -= 1;
+  rollOffer(g);
   return true;
 }
 
@@ -103,17 +160,19 @@ export const unitDmg = (g: GameState, u: Unit): number => {
   const years = Math.min(u.rooms, TUNING.vetCap);
   return t.dmg + P.minionDmg + P.vetDmg * years + (u.creature === "rat" ? P.ratDmg : 0);
 };
-export const xpNeeded = (g: GameState) => TUNING.xpPerLevel * (g.level + 1);
+// Levelling sooner is a node of the board, held to the same cap as everything
+// else that is bought as a percentage
+export const xpNeeded = (g: GameState) =>
+  Math.max(1, Math.round(TUNING.xpPerLevel * (g.level + 1) * left(100 - perks(g).xpCut)));
 export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp, 0, 1);
 
 // Whether a body is a wall, which is the only thing that decides who gets hit.
-// The pack node hands it to hounds as well, but only on your side of the board.
+// The shield wall hands it to everybody, but only on your side of the board.
 export const wallish = (u: { creature: CreatureId; faction?: Faction }, P: Perks) =>
-  CREATURES[u.creature].taunt || (P.packTaunt > 0 && u.creature === "hound" && u.faction !== "enemy");
+  CREATURES[u.creature].taunt || (u.faction !== "enemy" && P.wallAll > 0);
 
 const taunts = (b: Battle, u: BattleUnit) =>
-  CREATURES[u.creature].taunt ||
-  (b.perks.packTaunt > 0 && u.creature === "hound" && u.faction === "player");
+  CREATURES[u.creature].taunt || (u.faction === "player" && b.perks.wallAll > 0);
 
 // Move whoever stands at `k` one place up the line. The order is the order they
 // swing in, so this is the whole of it: front of the line goes first.
@@ -333,6 +392,9 @@ export function gainXp(g: GameState, n: number) {
     g.level += 1;
     g.unspent += 1;
   }
+  // Dealt here rather than when the sheet goes up, so the hand is part of the
+  // run and a reload does not deal a fresh one
+  if (g.unspent > 0 && !g.offer.length) rollOffer(g);
 }
 
 // ---------------------------------------------------------------- abilities
@@ -353,7 +415,12 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
       const mine = s.faction === "player";
       const per = TUNING.swarmPerAlly + (mine ? b.perks.swarmPer : 0);
       const cap = TUNING.swarmCap + (mine ? b.perks.swarmCap : 0);
-      return Math.min(cap, (living(b, s.faction).length - 1) * per);
+      // Bought deep enough, the ones already down are still in the way
+      const side =
+        mine && b.perks.swarmDead
+          ? b.units.filter((u) => u.faction === s.faction)
+          : living(b, s.faction);
+      return Math.min(cap, (side.length - 1) * per);
     },
   },
   bulwark: { taken: (_s, n) => Math.max(1, Math.ceil(n * TUNING.bulwarkCut)) },
@@ -430,10 +497,19 @@ function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
   if (u.hp > 0) return;
   blog(b, `${CREATURES[u.creature].short} falls.`);
   hooks(u).onDeath?.(u, b);
+  // Bought deep enough, one of theirs going down is felt by the rest of them.
+  // Safe to recurse: anything already down is out at the top of this function.
+  if (b.perks.spite && u.faction === "enemy") {
+    for (const o of living(b, "enemy")) damage(b, o, TUNING.tollDamage, by);
+  }
 }
 
 function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   let raw = a.dmg + (hooks(a).bonus?.(a, d, b) ?? 0);
+  // Bought deep enough, everything of yours crowds the way a rat does
+  if (a.faction === "player" && b.perks.swarmAll && CREATURES[a.creature].ability !== "swarm") {
+    raw += ABILITIES.swarm.bonus!(a, d, b);
+  }
   // What the dark has already touched is easier to break open
   if (a.faction === "player" && d.withered > 0) raw += b.perks.hexDmg;
   // ...and what it is holding swings softer, more so the deeper you bought in.
@@ -446,10 +522,16 @@ function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   if (a.faction === "enemy") soften += b.perks.dread;
   if (soften > 0) raw *= left(100 - soften);
   let soaked = hooks(d).taken?.(d, raw, b) ?? raw;
-  if (d.faction === "player" && b.perks.wallCut && taunts(b, d)) {
+  // Only what was born a wall. A shield wall changes who is hit, not what a hit
+  // is worth, or one card puts the cap on every body you own.
+  if (d.faction === "player" && b.perks.wallCut && CREATURES[d.creature].taunt) {
     soaked *= left(100 - b.perks.wallCut);
   }
   damage(b, d, Math.max(1, Math.round(soaked)), a.id);
+  // Swinging while the dark is on you costs you something for the effort
+  if (a.faction === "enemy" && a.withered > 0 && b.perks.rot) {
+    damage(b, a, TUNING.rotDamage, a.id);
+  }
   // Fires even on a killing blow, or a wisp would be punished for aiming well
   hooks(a).onAttack?.(a, d, b);
   // Bought deep enough, the dark does not need a moth to carry it
@@ -782,18 +864,20 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
   g.cleared += 1;
   unlock(g);
   // A room that stops fighting back is a room you get some of yourself back in
-  g.mana = Math.min(manaCap(g), g.mana + Math.ceil(manaCap(g) * TUNING.manaRegen));
+  const P = perks(g);
+  const rise = TUNING.manaRegen + P.manaRise / 100;
+  g.mana = Math.min(manaCap(g), g.mana + Math.ceil(manaCap(g) * rise));
 
   // Anything that lived through it has one more room behind it, and gets a
   // little of itself back for it. With nobody standing behind the army this is
   // the only thing that heals without a node of the tree bought for it.
-  const P = perks(g);
   let mended = 0;
+  const rest = TUNING.restFrac + P.restMore / 100;
   for (const u of g.reserve) {
     u.rooms += 1;
     if (u.rooms <= TUNING.vetCap) u.maxHp += P.vetHp;
     const before = u.hp;
-    u.hp = Math.min(u.maxHp, u.hp + P.vetHp + Math.ceil(u.maxHp * TUNING.restFrac));
+    u.hp = Math.min(u.maxHp, u.hp + P.vetHp + Math.ceil(u.maxHp * rest));
     mended += u.hp - before;
     const shown = b.units.find((o) => o.src === u.id);
     if (shown) {
@@ -819,7 +903,9 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
   const bodies: number[] = [];
   for (const u of fallen) {
     if (u.creature === "ossuary") continue;
-    if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance + P.riseLuck / 100) continue;
+    // A crypt gives up all of it, and so does an open grave
+    const free = n.kind === "crypt" || P.glut > 0;
+    if (!free && rnd() >= TUNING.raiseChance + P.riseLuck / 100) continue;
     if (!raise(g, u.creature)) break;
     b.taken.push(u.id);
     rose.push(u.creature);
@@ -841,7 +927,8 @@ function readLore(g: GameState, n: MapNode) {
 
 // Three different things out of the early pool. Different, so no roll ever
 // hands out a band with nothing in it that can kill.
-export const rollBand = (): CreatureId[] => shuffle(START_POOL).slice(0, START_BAND);
+export const rollBand = (more = 0): CreatureId[] =>
+  shuffle(START_POOL).slice(0, Math.min(START_POOL.length, START_BAND + more));
 
 export function newGame(seedValue: number): GameState {
   seedRng(seedValue);
@@ -862,8 +949,11 @@ export function newGame(seedValue: number): GameState {
     level: 0,
     unspent: 0,
     mana: TUNING.manaBase,
-    // The middle of the board comes free: level one buys an arm, not the centre
+    // The middle of the board comes free, and it is worth a body
     taken: [rootId],
+    powers: [],
+    offer: [],
+    rerolls: 0,
     res: { gold: 0, keys: 0 },
     risen: null,
     seenLore: [],
@@ -874,7 +964,11 @@ export function newGame(seedValue: number): GameState {
     over: "",
   };
   buildMap(g);
-  for (const c of rollBand()) raise(g, c);
+  // What the board is worth at the gate: the band it opens with and the hands
+  // it will be dealt. Everything else the board gives is spent as it goes.
+  const P = perks(g);
+  g.rerolls = P.rerolls;
+  for (const c of rollBand(P.startBand)) raise(g, c);
   log(g, "Into the dark.");
   g.rng = rngState();
   return g;
@@ -883,13 +977,13 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 9;
+const SAVE_VERSION = 10;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
   "seed", "rng", "time", "nodes", "reserve", "at", "route", "mode", "next", "battle", "rooms",
-  "nextUnit", "xp", "level", "unspent", "mana", "taken", "res", "risen", "seenLore", "loreQueue",
-  "cleared", "lost", "log", "over",
+  "nextUnit", "xp", "level", "unspent", "mana", "taken", "powers", "offer", "rerolls", "res",
+  "risen", "seenLore", "loreQueue", "cleared", "lost", "log", "over",
 ];
 
 export function save(g: GameState) {

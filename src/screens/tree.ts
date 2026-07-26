@@ -1,8 +1,8 @@
 import type { Surface } from "../gfx/surface.ts";
-import { TREE_GLYPH, type GameState } from "../sim/data.ts";
-import { treeOpen } from "../sim/game.ts";
-import { ARMS, TREE, TREE_COLS, TREE_ROWS, depthOf, linksOf, type TreeNode } from "../sim/tree.ts";
-import { C, COL, Hits, box, cells, cut } from "../ui.ts";
+import { RESOURCES, TREE_GLYPH, type GameState } from "../sim/data.ts";
+import { canTake, nodeCost, treeOpen } from "../sim/game.ts";
+import { TREE, TREE_COLS, TREE_ROWS, linksOf, type TreeNode } from "../sim/tree.ts";
+import { C, Hits, box, cells, cut } from "../ui.ts";
 
 // One node step in character cells. Three across is a board a thumb can hit and
 // a phone can hold without a camera.
@@ -21,12 +21,9 @@ export const treeWidth = () => Math.max(BOARD_W, TREE_TEXT) + 4;
 export const stateOf = (g: GameState, id: number): keyof typeof TREE_GLYPH =>
   g.taken.includes(id) ? "taken" : treeOpen(g).includes(id) ? "open" : "sealed";
 
-const tint = (n: TreeNode) => (n.arm ? COL(ARMS[n.arm].color) : C.gold);
-
 export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
-  const open = treeOpen(g);
   const node = TREE[sel] as TreeNode | undefined;
-  const buyable = node !== undefined && g.unspent > 0 && open.includes(node.id);
+  const buyable = node !== undefined && canTake(g, node.id);
 
   // Under the board: what is selected, what it does, the buy, the way out. They
   // are always all four, so the box does not change height as you tap around it.
@@ -37,10 +34,8 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
   box(grid, x, y, w, h);
   hits.add(x, y, w, h, { t: "none" });
 
-  const title = node?.arm ? ARMS[node.arm].name : "THE TREE";
-  grid.center(x + 1, y + 1, w - 2, title, node ? tint(node) : C.gold);
-  const points = g.unspent > 0 ? `${g.unspent} to spend` : `level ${g.level + 1}`;
-  grid.center(x + 1, y + 2, w - 2, points, g.unspent > 0 ? C.gold : C.dim);
+  grid.center(x + 1, y + 1, w - 2, "THE TREE", C.gold);
+  grid.center(x + 1, y + 2, w - 2, `${RESOURCES.gold.glyph} ${g.res.gold}`, C.gold);
 
   const bx = x + ((w - BOARD_W) >> 1);
   const by = y + 4;
@@ -52,7 +47,7 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
       const o = TREE[id];
       const both = g.taken.includes(n.id) && g.taken.includes(id);
       const live = g.taken.includes(n.id) || g.taken.includes(id);
-      const ink = both ? tint(n.arm ? n : o) : live ? C.dim : C.frame;
+      const ink = both ? C.gold : live ? C.dim : C.frame;
       if (n.row === o.row) {
         const from = Math.min(n.col, o.col);
         for (let i = 1; i < STEP_X; i++) grid.put(bx + from * STEP_X + i, by + n.row * STEP_Y, "─", ink);
@@ -68,7 +63,7 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
     const nx = bx + n.col * STEP_X;
     const ny = by + n.row * STEP_Y;
     const ink =
-      state === "taken" ? tint(n) : state === "open" ? (g.unspent > 0 ? C.gold : C.mid) : C.frame;
+      state === "taken" ? C.gold : state === "open" ? (canTake(g, n.id) ? C.ink : C.mid) : C.frame;
     // The one you are reading wears the frame colour behind it, which is the only
     // way to say "this one" on a board made of single characters
     grid.put(nx, ny, TREE_GLYPH[state], n.id === sel ? C.shade : ink, n.id === sel ? ink : C.bg);
@@ -96,24 +91,16 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
     if (a) hits.add(x, ly, w, 2, a);
     ly += 2;
   };
-  if (buyable) act("take it", C.ink, { t: "take", id: node.id });
-  else if (node && g.taken.includes(node.id)) act("bought", tint(node), null);
-  else if (node && node.arm && armShort(g, node)) act(armShort(g, node)!, C.dim, null);
+  if (buyable) act(`take it, ${nodeCost(node.id)}`, C.ink, { t: "take", id: node.id });
+  else if (node && g.taken.includes(node.id)) act("bought", C.gold, null);
+  // Why it is shut, when the reason is the price rather than the board. A player
+  // who cannot see the gate reads it as a bug.
+  else if (node && treeOpen(g).includes(node.id)) act(`costs ${nodeCost(node.id)}`, C.dim, null);
   else act("not yet", C.dim, null);
   act("close", C.ink, { t: "close" });
 }
 
-// Why a node is still shut, when the reason is the arm rather than the board.
-// A player who cannot see the gate reads it as a bug.
-function armShort(g: GameState, n: TreeNode): string | null {
-  if (!n.arm) return null;
-  const need = depthOf(n) - 1;
-  const have = g.taken.filter((id) => TREE[id].arm === n.arm).length;
-  return have < need ? `needs ${need} in arm` : null;
-}
-
 // Held to the same rule as every sheet: nothing is written wider than the box
-export const treeLines = (): string[] =>
-  TREE.flatMap((n) => [n.name, n.note]).concat(Object.values(ARMS).map((a) => a.name));
+export const treeLines = (): string[] => TREE.flatMap((n) => [n.name, n.note]);
 
 export const treeFits = (): boolean => treeLines().every((s) => cells(s) <= TREE_TEXT);

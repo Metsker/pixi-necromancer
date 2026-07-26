@@ -13,7 +13,8 @@ import {
 import { canOrder, perks, reserve, unitDmg, wallish } from "../sim/game.ts";
 import { sfxMuted } from "../sfx.ts";
 import { TREE } from "../sim/tree.ts";
-import { C, Hits, type Line, sheet, wrap } from "../ui.ts";
+import { ARMS, POWER_BY_ID } from "../sim/powers.ts";
+import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
 import { drawTree } from "./tree.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
@@ -37,11 +38,11 @@ export type Ui = {
   tnode: number;
 };
 
-export type Shown = PanelId | "lore" | "over";
+export type Shown = PanelId | "lore" | "over" | "draft";
 
 // The tree draws itself rather than going through sheet(), so it is not listed
 // here: what this drives is the width check, and a board is not a list of lines.
-export const PANELS: Shown[] = ["node", "army", "unit", "menu", "confirm", "lore", "over"];
+export const PANELS: Shown[] = ["node", "army", "unit", "menu", "confirm", "lore", "over", "draft"];
 
 export type Spec = { title: string; lines: Line[]; minWidth: number };
 
@@ -49,7 +50,7 @@ export type Spec = { title: string; lines: Line[]; minWidth: number };
 // for. While any of these is up the clock is stopped, so nothing is missed.
 export function shownPanel(g: GameState, ui: Ui): Shown {
   if (g.loreQueue.length) return "lore";
-  if (g.unspent > 0) return "tree";
+  if (g.unspent > 0 && g.offer.length) return "draft";
   if (g.over) return "over";
   return ui.panel;
 }
@@ -124,6 +125,23 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         minWidth: wide,
         lines: [...body, { text: "" }, { text: "continue", act: { t: "ok" } }],
       };
+    }
+    // The level-up. Three of them, coloured by the arm they belong to, and the
+    // arm is the whole of what the colour is for.
+    case "draft": {
+      const lines: Line[] = [];
+      for (const id of g.offer) {
+        const p = POWER_BY_ID[id];
+        if (!p) continue;
+        // A gap between the cards, or one card's note reads as the next one's
+        if (lines.length) lines.push({ text: "" });
+        lines.push({ text: p.name, act: { t: "power", id }, fg: COL(ARMS[p.arm].color) });
+        lines.push(...wrap(p.note, wide).map((text) => ({ text, fg: C.dim })));
+      }
+      if (g.rerolls > 0) {
+        lines.push({ text: "" }, { text: `roll again (${g.rerolls})`, act: { t: "reroll" } });
+      }
+      return { title: "THE DARK OFFERS", minWidth: Math.min(wide, 16), lines };
     }
     case "over":
       return {

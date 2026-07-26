@@ -9,6 +9,7 @@ import {
   clearSave,
   commandCap,
   fielded,
+  gainXp,
   held,
   leaveRoom,
   load,
@@ -21,16 +22,20 @@ import {
   newGame,
   offered,
   orderArmy,
+  nodeCost,
   perks,
   powerOf,
   raise,
   reap,
+  reroll,
   reserve,
   rollBand,
+  rollOffer,
   routeTo,
   save,
   sell,
   takeNode,
+  takePower,
   takeTurn,
   targetFor,
   threatOf,
@@ -51,7 +56,8 @@ import {
   tierHpFor,
   type GameState,
 } from "../src/sim/data.ts";
-import { ARM_IDS, PERK_IDS, TREE, depthOf, linksOf, rootId, type ArmId } from "../src/sim/tree.ts";
+import { PERK_IDS, TREE, depthOf, rootId } from "../src/sim/tree.ts";
+import { ARM_IDS, POWERS, POWER_BY_ID, type ArmId } from "../src/sim/powers.ts";
 
 // A memory-backed store, so the save path can be exercised outside a browser
 const store = new Map<string, string>();
@@ -71,6 +77,11 @@ function ok(label: string, cond: boolean) {
 }
 
 const openRooms = (g: GameState) => g.nodes.filter((n) => n.state === "open");
+// Levels, without having to find enough dead to pay for them
+const gainXpTo = (g: GameState, level: number) => {
+  let guard = 200;
+  while (g.level < level && guard-- > 0) gainXp(g, xpNeeded(g));
+};
 // Enough ticks for a march and the longest fight the cap allows
 const budgetFor = TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 2 + 64;
 
@@ -228,66 +239,38 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
 // ---------------------------------------------------------------- the tree
 
 {
-  // The middle comes free. Level one buys an arm, not the centre.
+  // The middle comes free, and the board is neutral: gold is the only gate.
   const g = newGame(1001);
   ok("the root is already yours", g.taken.join() === `${rootId}`);
-  ok("and every arm opens off it", treeOpen(g).length === ARM_IDS.length);
-  ok(
-    "one node of each arm, at the near edge of it",
-    ARM_IDS.every((arm) => treeOpen(g).filter((id) => TREE[id].arm === arm).length === 1),
-  );
-  ok("a point is needed", takeNode(g, treeOpen(g)[0]) === false);
-  g.unspent = 1;
+  ok("and the board opens off it", treeOpen(g).length === 3);
   const first = treeOpen(g)[0];
+  g.res.gold = 0;
+  ok("gold is needed", takeNode(g, first) === false);
+  g.res.gold = nodeCost(first);
   ok("and then it is yours", takeNode(g, first) === true);
-  ok("the point is spent", g.unspent === 0);
+  ok("the gold is spent", g.res.gold === 0);
   ok("buying it twice does nothing", takeNode(g, first) === false);
+  ok("a node further out costs more", nodeCost(TREE.length - 1) > nodeCost(first));
 }
 
 {
-  // Distance out is the price of admission: the far end of an arm does not open
-  // until enough of that arm is already bought, whatever it is standing beside
+  // Adjacency is the whole of the gate, so the far end of the board is not
+  // reachable from the middle in one step however much gold there is
   const g = newGame(1002);
-  g.unspent = 40;
+  g.res.gold = 9999;
   const deep = TREE.filter((n) => depthOf(n) >= 3);
   ok("there is a far end to reach", deep.length > 0);
   for (const n of deep) ok(`${n.name}: it is not open at the gate`, !treeOpen(g).includes(n.id));
 
-  // Two arms touching on the board is not a back door into either of them
-  const touching = TREE.filter(
-    (n) => n.arm && linksOf(n).some((id) => TREE[id].arm && TREE[id].arm !== n.arm),
-  );
-  ok("two arms do touch", touching.length >= 2);
-  for (const n of touching) {
-    const walk = newGame(1003);
-    walk.unspent = 40;
-    // Buy out one whole arm and nothing else
-    const other = TREE.filter((o) => o.arm && o.arm !== n.arm).map((o) => o.id);
-    let guard = 40;
-    while (guard-- > 0) {
-      const next = treeOpen(walk).find((id) => other.includes(id));
-      if (next === undefined) break;
-      takeNode(walk, next);
-    }
-    ok(
-      `${n.name}: a neighbouring arm does not open it`,
-      depthOf(n) <= 1 || !treeOpen(walk).includes(n.id),
-    );
-  }
-}
-
-{
-  // Every node is reachable by somebody who spends everything, or a run can
-  // level past a node it can never buy
-  const g = newGame(99);
-  g.unspent = TREE.length * 2;
+  // Every node is reachable by somebody who banks enough, or a run can save for
+  // a node it can never buy
   let guard = 200;
   while (treeOpen(g).length && guard-- > 0) takeNode(g, treeOpen(g)[0]);
   ok("every node can be reached", g.taken.length === TREE.length);
   ok("and nothing is left open", treeOpen(g).length === 0);
 }
 
-// Every key the tree hands out has to be one the sim reads, or it is a number
+// Every key handed out either way has to be one the sim reads, or it is a number
 // written on a sheet that does nothing
 for (const n of TREE) {
   ok(`${n.name}: it does something`, Object.keys(n.gives).length > 0);
@@ -295,17 +278,108 @@ for (const n of TREE) {
     ok(`${n.name}: ${k} is a perk`, PERK_IDS.includes(k as (typeof PERK_IDS)[number]));
   }
 }
-for (const arm of ARM_IDS) {
-  ok(`${arm}: it is worth walking down`, TREE.filter((n) => n.arm === arm).length >= 5);
+for (const p of POWERS) {
+  ok(`${p.name}: it does something`, Object.keys(p.gives).length > 0);
+  for (const k of Object.keys(p.gives)) {
+    ok(`${p.name}: ${k} is a perk`, PERK_IDS.includes(k as (typeof PERK_IDS)[number]));
+  }
 }
-// Every perk has to be somewhere on the board, or it is dead code in the sim
+ok("every card is its own id", new Set(POWERS.map((p) => p.id)).size === POWERS.length);
+// An arm that is a shallower walk than another is an arm the probe cannot
+// compare, so they are held level
+for (const arm of ARM_IDS) {
+  const mine = POWERS.filter((p) => p.arm === arm);
+  ok(`${arm}: it is worth drafting`, mine.length >= 5);
+  ok(
+    `${arm}: it is the same walk as the others`,
+    mine.length === POWERS.length / ARM_IDS.length &&
+      mine.filter((p) => p.rare).length === POWERS.filter((p) => p.rare).length / ARM_IDS.length,
+  );
+}
+// The tree is neutral: nothing on it touches a fight
+const COMBAT: (typeof PERK_IDS)[number][] = ["ratDmg", "minionDmg", "wallHp", "dread", "mend"];
+for (const k of COMBAT) {
+  ok(`${k}: the board does not sell it`, !TREE.some((n) => k in n.gives));
+}
+// Every perk has to come from somewhere, or it is dead code in the sim
 for (const k of PERK_IDS) {
-  ok(`${k}: something on the board gives it`, TREE.some((n) => k in n.gives));
+  ok(
+    `${k}: something gives it`,
+    TREE.some((n) => k in n.gives) || POWERS.some((p) => k in p.gives),
+  );
 }
 
 {
-  // A node that makes bodies bigger has to make the bodies already standing
-  // bigger, or buying it late buys nothing
+  // The dark deals a hand the moment there is a point to spend, it is dealt from
+  // the run's own stream, and taking one spends the point
+  const g = newGame(1010);
+  ok("nothing is on the table at the gate", g.offer.length === 0);
+  gainXpTo(g, 1);
+  ok("a level puts a hand on the table", g.offer.length === TUNING.offerCount);
+  ok("and it is three different things", new Set(g.offer).size === g.offer.length);
+  ok("a card not on the table cannot be taken", takePower(g, "nonesuch") === false);
+  const want = g.offer[1];
+  ok("one of them is yours", takePower(g, want) === true);
+  ok("the point is spent", g.unspent === 0);
+  ok("and the table is cleared", g.offer.length === 0);
+  ok("what was taken is held", g.powers.join() === want);
+  ok("taking it again does nothing", takePower(g, want) === false);
+
+  // A save and a load deal the same hand, or a reload is a reroll
+  gainXpTo(g, 2);
+  const dealt = g.offer.join();
+  save(g);
+  const back = load()!;
+  ok("a reload does not deal a fresh hand", back.offer.join() === dealt);
+  clearSave();
+}
+
+{
+  // A rule leaves the pool once it is yours; a number comes round again until it
+  // has been stacked as deep as it goes
+  const g = newGame(1011);
+  const rare = POWERS.find((p) => p.rare)!;
+  const common = POWERS.find((p) => !p.rare)!;
+  g.powers = [rare.id];
+  let guard = 400;
+  let sawRare = false;
+  while (guard-- > 0) {
+    rollOffer(g);
+    if (g.offer.includes(rare.id)) sawRare = true;
+  }
+  ok("a rule taken never comes round again", !sawRare);
+
+  g.powers = Array.from({ length: TUNING.powerStack }, () => common.id);
+  guard = 400;
+  let sawCommon = false;
+  while (guard-- > 0) {
+    rollOffer(g);
+    if (g.offer.includes(common.id)) sawCommon = true;
+  }
+  ok("a number stacked to the cap stops being offered", !sawCommon);
+
+  // Nothing on the table with a point owing would stop the clock forever
+  g.powers = POWERS.flatMap((p) => Array.from({ length: TUNING.powerStack }, () => p.id));
+  g.unspent = 3;
+  rollOffer(g);
+  ok("an empty pool gives the point back", g.offer.length === 0 && g.unspent === 0);
+}
+
+{
+  // A reroll is paid for, and there is nothing to pay with until the board sells
+  // one
+  const g = newGame(1012);
+  gainXpTo(g, 1);
+  ok("no reroll at the gate", reroll(g) === false);
+  g.rerolls = 1;
+  ok("and then there is", reroll(g) === true);
+  ok("it is spent", g.rerolls === 0);
+  ok("but the point is not", g.unspent === 1 && g.offer.length > 0);
+}
+
+{
+  // A card that makes bodies bigger has to make the bodies already standing
+  // bigger, or taking it late takes nothing
   const g = newGame(1004);
   g.reserve.length = 0;
   raise(g, "rat");
@@ -314,13 +388,11 @@ for (const k of PERK_IDS) {
   const wall = g.reserve[1];
   const ratWas = rat.maxHp;
   const wallWas = wall.maxHp;
-  g.unspent = 40;
-  let guard = 60;
-  const wants = (k: "ratHp" | "wallHp") => TREE.find((n) => n.gives[k])!.id;
   for (const k of ["ratHp", "wallHp"] as const) {
-    while (!g.taken.includes(wants(k)) && guard-- > 0) {
-      takeNode(g, treeOpen(g).find((id) => id === wants(k)) ?? treeOpen(g)[0]);
-    }
+    const card = POWERS.find((p) => p.gives[k])!;
+    g.unspent = 1;
+    g.offer = [card.id];
+    ok(`${card.name} is taken`, takePower(g, card.id) === true);
   }
   const P = perks(g);
   ok("thin blood reaches a rat already standing", rat.maxHp === ratWas + P.ratHp);
@@ -341,7 +413,7 @@ const unit = (over: Partial<BattleUnit>): BattleUnit => ({
   id: 0, src: -1, creature: "warden", faction: "player",
   hp: 10, maxHp: 10, dmg: 2, slot: slots++, tier: 0, withered: 0, ...over,
 });
-const noPerks = perks({ ...newGame(1), taken: [] } as GameState);
+const noPerks = perks({ ...newGame(1), taken: [], powers: [] } as GameState);
 const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
   node: 0, units, hit: [], mend: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
   round: 0, log: [], done: "", healed: 0, taken: [], nextId: units.length, perks: { ...noPerks },
@@ -385,12 +457,12 @@ const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battl
       .every((c) => !CREATURES[c].taunt),
   );
 
-  // The pack node hands it to hounds, and only on your side of the board
+  // The shield wall hands it to everybody, and only on your side of the board
   const mine = unit({ id: 1, creature: "hound", faction: "player" });
   const theirs = unit({ id: 2, creature: "hound", faction: "enemy" });
   const bare = battle([mine, theirs]);
   ok("a hound is nobody's wall by default", !wallish(mine, bare.perks) && !wallish(theirs, bare.perks));
-  const bought = { ...noPerks, packTaunt: 1 };
+  const bought = { ...noPerks, wallAll: 1 };
   ok("bought, yours is", wallish({ ...mine, faction: "player" }, bought));
   ok("and theirs is not", !wallish({ ...theirs, faction: "enemy" }, bought));
 }
@@ -724,16 +796,10 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // Mending is a node, not a given
+  // Mending is a card, not a given
   const g = newGame(5152);
   ok("nothing to mend with at the gate", mendable(g) === null);
-  g.unspent = 40;
-  const grit = TREE.find((n) => n.gives.mend)!.id;
-  let guard = 60;
-  while (!g.taken.includes(grit) && guard-- > 0) {
-    takeNode(g, treeOpen(g).find((id) => id === grit) ?? treeOpen(g)[0]);
-  }
-  g.unspent = 0;
+  g.powers.push(POWERS.find((p) => p.gives.mend)!.id);
   ok("nor with no room to stand in", mendable(g) === null);
   g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
   orderArmy(g, openRooms(g)[0].id);
@@ -859,13 +925,21 @@ function autoplay(seedValue: number, arm: ArmId | null = null) {
   let guard = 12000;
   const said = new Set<string>();
   while (!g.over && guard-- > 0) {
-    // It spends every point the moment it has one. Given an arm it walks down
-    // that one; given none it takes whatever is nearest to hand.
-    while (g.unspent > 0 && treeOpen(g).length) {
-      const want = arm ? treeOpen(g).find((id) => TREE[id].arm === arm) : undefined;
-      takeNode(g, want ?? treeOpen(g)[0]);
+    // It takes every hand the moment it is dealt. Given an arm it drafts that
+    // arm wherever the hand allows; given none it takes the first card shown.
+    let deals = 40;
+    while (g.unspent > 0 && g.offer.length && deals-- > 0) {
+      const want = arm ? g.offer.find((id) => POWER_BY_ID[id].arm === arm) : undefined;
+      takePower(g, want ?? g.offer[0]);
     }
-    g.unspent = 0;
+    // Gold goes on the board, cheapest first. It never saves for the far corner.
+    let buys = 40;
+    while (buys-- > 0) {
+      const next = treeOpen(g)
+        .filter((id) => nodeCost(id) <= g.res.gold)
+        .sort((a, z) => nodeCost(a) - nodeCost(z))[0];
+      if (next === undefined || !takeNode(g, next)) break;
+    }
     g.loreQueue.length = 0;
 
     const b = g.battle;
@@ -928,6 +1002,15 @@ const scores = [null, ...ARM_IDS].map((arm) => {
   }
   return { arm: arm ?? "any", wins, deaths, rooms: rooms / PROBES, level: levels / PROBES + 1 };
 });
+
+// Said before the assertions, or a balance regression prints one FAIL and hides
+// the four numbers you need to fix it
+for (const s of scores) {
+  console.log(
+    `balance ${s.arm.padEnd(8)} ${s.rooms.toFixed(1)} rooms, level ${s.level.toFixed(1)}, ` +
+      `${s.wins}/${PROBES} reached the end, ${s.deaths}/${PROBES} died`,
+  );
+}
 
 for (const s of scores) {
   ok(`${s.arm}: a run can be lost`, s.deaths > 0);
@@ -1020,9 +1103,3 @@ for (const [id, t] of Object.entries(CREATURES)) {
 
 void unitDmg;
 console.log(`sim: ${checks} checks passed`);
-for (const s of scores) {
-  console.log(
-    `balance ${s.arm.padEnd(8)} ${s.rooms.toFixed(1)} rooms, level ${s.level.toFixed(1)}, ` +
-      `${s.wins}/${PROBES} reached the end, ${s.deaths}/${PROBES} died`,
-  );
-}

@@ -93,6 +93,11 @@ export type GameState = {
   unspent: number;
   mana: number; // what asking costs; the ceiling is what you have built up to
   taken: number[]; // the nodes of the tree that are bought
+  powers: string[]; // what has been drafted this run, in the order it was taken
+  // What is on the table right now. It lives here rather than on the ui, or a
+  // reload in the middle of a level-up would deal a fresh hand.
+  offer: string[];
+  rerolls: number;
   res: Record<Resource, number>;
   risen: Risen | null;
   seenLore: number[];
@@ -131,6 +136,18 @@ export const TUNING = {
   baseCap: 5,
   xpPerLevel: 22,
 
+  // What a level-up puts on the table, and how deep one of them can be stacked
+  // before it leaves the pool. A common drawn against a rare, so a rule stays
+  // something you remember getting.
+  offerCount: 3,
+  powerStack: 3,
+  commonWeight: 4,
+
+  // A node of the tree, priced by how far out it stands. Distance is the whole
+  // of the gate now that the board is neutral.
+  nodeBase: 3,
+  nodeStep: 3,
+
   // What you can spend on the dead, and what a room you take gives back of it
   manaBase: 12,
   manaRegen: 0.4,
@@ -155,6 +172,8 @@ export const TUNING = {
   siphonFloor: 8,
   rendBonus: 6,
   tollDamage: 14,
+  // What the dark takes out of a withered thing every time it swings anyway
+  rotDamage: 6,
   splitTiers: 1,
 
   // The most rooms a body is ever paid for living through. Uncapped, a long run

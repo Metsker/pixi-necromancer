@@ -45,6 +45,8 @@ export type Act =
   | { t: "tree" }
   | { t: "pick"; id: number }
   | { t: "take"; id: number }
+  | { t: "power"; id: string }
+  | { t: "reroll" }
   | { t: "mend" }
   | { t: "sell"; id: number }
   | { t: "ok" }
