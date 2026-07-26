@@ -10,7 +10,7 @@ import {
   type CreatureId,
   type GameState,
 } from "../sim/data.ts";
-import { canOrder, perks, reserve, unitDmg, wallish } from "../sim/game.ts";
+import { canOrder, perks, reserve, unitDmg, wallish, type Meta } from "../sim/game.ts";
 import { sfxMuted } from "../sfx.ts";
 import { TREE } from "../sim/tree.ts";
 import { ARMS, POWER_BY_ID } from "../sim/powers.ts";
@@ -51,6 +51,8 @@ export type Spec = { title: string; lines: Line[]; minWidth: number };
 export function shownPanel(g: GameState, ui: Ui): Shown {
   if (g.loreQueue.length) return "lore";
   if (g.unspent > 0 && g.offer.length) return "draft";
+  // Above the end of a run, because the end of a run is where the board is spent
+  if (ui.panel === "tree") return "tree";
   if (g.over) return "over";
   return ui.panel;
 }
@@ -143,6 +145,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
       }
       return { title: "THE DARK OFFERS", minWidth: Math.min(wide, 16), lines };
     }
+    // The end of a run is the only hub there is: what it earned is already
+    // banked, and the board is the thing to spend it on before the next one.
     case "over":
       return {
         title: g.over === "won" ? "IT IS DONE" : "NOTHING STANDS",
@@ -151,6 +155,7 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
           ...say(g.over === "won" ? "the ossuary lies still" : "the army is gone", C.dim),
           ...say(`rooms taken ${g.cleared}`, C.dim),
           { text: "" },
+          { text: "the tree", act: { t: "tree" }, fg: C.gold },
           { text: "new run", act: { t: "confirm" } },
         ],
       };
@@ -159,9 +164,9 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
   }
 }
 
-export function drawPanel(grid: Grid, g: GameState, ui: Ui, hits: Hits, panel: Shown) {
+export function drawPanel(grid: Grid, g: GameState, m: Meta, ui: Ui, hits: Hits, panel: Shown) {
   // A board is not a list of lines, so it does not go through sheet()
-  if (panel === "tree") return drawTree(grid, g, hits, ui.tnode);
+  if (panel === "tree") return drawTree(grid, m, hits, ui.tnode, g.over !== "");
   const spec = panelSpec(g, ui, panel, grid.cols);
   if (spec) sheet(grid, hits, spec.title, spec.lines, spec.minWidth);
 }

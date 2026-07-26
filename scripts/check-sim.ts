@@ -4,6 +4,8 @@ import { LORE } from "../src/sim/lore.ts";
 import {
   ABILITIES,
   advance,
+  bank,
+  buyNode,
   canOrder,
   canSell,
   clearSave,
@@ -13,6 +15,7 @@ import {
   held,
   leaveRoom,
   load,
+  loadMeta,
   manaCap,
   manaCost,
   mend,
@@ -20,6 +23,7 @@ import {
   moveDown,
   moveUp,
   newGame,
+  newMeta,
   offered,
   orderArmy,
   nodeCost,
@@ -33,8 +37,8 @@ import {
   rollOffer,
   routeTo,
   save,
+  saveMeta,
   sell,
-  takeNode,
   takePower,
   takeTurn,
   targetFor,
@@ -240,34 +244,65 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
 
 {
   // The middle comes free, and the board is neutral: gold is the only gate.
-  const g = newGame(1001);
-  ok("the root is already yours", g.taken.join() === `${rootId}`);
-  ok("and the board opens off it", treeOpen(g).length === 3);
-  const first = treeOpen(g)[0];
-  g.res.gold = 0;
-  ok("gold is needed", takeNode(g, first) === false);
-  g.res.gold = nodeCost(first);
-  ok("and then it is yours", takeNode(g, first) === true);
-  ok("the gold is spent", g.res.gold === 0);
-  ok("buying it twice does nothing", takeNode(g, first) === false);
+  const m = newMeta();
+  ok("the root is already yours", m.taken.join() === `${rootId}`);
+  ok("and the board opens off it", treeOpen(m).length === 3);
+  const first = treeOpen(m)[0];
+  ok("gold is needed", buyNode(m, first) === false);
+  m.gold = nodeCost(first);
+  ok("and then it is yours", buyNode(m, first) === true);
+  ok("the gold is spent", m.gold === 0);
+  ok("buying it twice does nothing", buyNode(m, first) === false);
   ok("a node further out costs more", nodeCost(TREE.length - 1) > nodeCost(first));
 }
 
 {
   // Adjacency is the whole of the gate, so the far end of the board is not
   // reachable from the middle in one step however much gold there is
-  const g = newGame(1002);
-  g.res.gold = 9999;
+  const m = newMeta();
+  m.gold = 9999;
   const deep = TREE.filter((n) => depthOf(n) >= 3);
   ok("there is a far end to reach", deep.length > 0);
-  for (const n of deep) ok(`${n.name}: it is not open at the gate`, !treeOpen(g).includes(n.id));
+  for (const n of deep) ok(`${n.name}: it is not open at the gate`, !treeOpen(m).includes(n.id));
 
   // Every node is reachable by somebody who banks enough, or a run can save for
   // a node it can never buy
   let guard = 200;
-  while (treeOpen(g).length && guard-- > 0) takeNode(g, treeOpen(g)[0]);
-  ok("every node can be reached", g.taken.length === TREE.length);
-  ok("and nothing is left open", treeOpen(g).length === 0);
+  while (treeOpen(m).length && guard-- > 0) buyNode(m, treeOpen(m)[0]);
+  ok("every node can be reached", m.taken.length === TREE.length);
+  ok("and nothing is left open", treeOpen(m).length === 0);
+}
+
+{
+  // A run pays what it earned into the board once, and a purse already paid in
+  // pays nothing - which is what stops a reload onto a finished run paying twice
+  const g = newGame(1005);
+  const m = newMeta();
+  g.res.gold = 17;
+  bank(g, m);
+  ok("what the run earned is banked", m.gold === 17);
+  ok("and the purse is empty", g.res.gold === 0);
+  bank(g, m);
+  ok("banking it again pays nothing", m.gold === 17);
+
+  // ...and what the board carries is what the next run walks in holding
+  m.taken = TREE.map((n) => n.id);
+  const next = newGame(1006, m.taken);
+  ok("the next run holds the board", next.taken.length === TREE.length);
+  ok("and feels it at the gate", next.mana === manaCap(next) && next.mana > TUNING.manaBase);
+  ok("nothing of a run carries over but the board", next.powers.length === 0 && next.res.gold === 0);
+}
+
+{
+  // The board survives a shape change to a run: its own key, its own version
+  const m = newMeta();
+  m.gold = 40;
+  buyNode(m, treeOpen(m)[0]);
+  saveMeta(m);
+  clearSave();
+  const back = loadMeta();
+  ok("the board comes back", back.taken.join() === m.taken.join() && back.gold === m.gold);
+  ok("and losing the run save does not lose it", load() === null);
 }
 
 // Every key handed out either way has to be one the sim reads, or it is a number
@@ -920,8 +955,8 @@ const PROBES = 60;
 // threat colour, because that is what the threat colour is for. It exists to
 // catch a game that cannot be finished at all - or one that cannot be lost,
 // which is the same bug from the other side.
-function autoplay(seedValue: number, arm: ArmId | null = null) {
-  const g = newGame(seedValue);
+function autoplay(seedValue: number, arm: ArmId | null = null, owned = [rootId]) {
+  const g = newGame(seedValue, owned);
   let guard = 12000;
   const said = new Set<string>();
   while (!g.over && guard-- > 0) {
@@ -931,14 +966,6 @@ function autoplay(seedValue: number, arm: ArmId | null = null) {
     while (g.unspent > 0 && g.offer.length && deals-- > 0) {
       const want = arm ? g.offer.find((id) => POWER_BY_ID[id].arm === arm) : undefined;
       takePower(g, want ?? g.offer[0]);
-    }
-    // Gold goes on the board, cheapest first. It never saves for the far corner.
-    let buys = 40;
-    while (buys-- > 0) {
-      const next = treeOpen(g)
-        .filter((id) => nodeCost(id) <= g.res.gold)
-        .sort((a, z) => nodeCost(a) - nodeCost(z))[0];
-      if (next === undefined || !takeNode(g, next)) break;
     }
     g.loreQueue.length = 0;
 
@@ -1028,6 +1055,30 @@ const best = Math.max(...armed.map((s) => s.wins));
 const worst = Math.min(...armed.map((s) => s.wins));
 const spread = armed.map((s) => `${s.arm} ${s.wins}`).join(", ");
 ok(`no arm is simply the answer (${spread})`, best <= worst * 2);
+
+// The tripwire on the thing that is deliberately not solved yet: the board is
+// cumulative and nothing caps how much of it one player ends up owning. This
+// does not tune that curve - it fails the day owning all of it stops being a
+// game, which is the day it needs tuning.
+{
+  const whole = TREE.map((n) => n.id);
+  let wins = 0;
+  let deaths = 0;
+  let rooms = 0;
+  for (let s = 0; s < PROBES; s++) {
+    const { g, stuck } = autoplay(4000 + s * 101, null, whole);
+    ok(`the whole board, seed ${s}, terminates`, !stuck);
+    if (g.over === "won") wins += 1;
+    if (g.over === "dead") deaths += 1;
+    rooms += g.cleared;
+  }
+  console.log(
+    `balance ${"whole".padEnd(8)} ${(rooms / PROBES).toFixed(1)} rooms, ` +
+      `${wins}/${PROBES} reached the end, ${deaths}/${PROBES} died`,
+  );
+  ok(`the whole board still loses runs (${deaths}/${PROBES})`, deaths > 0);
+  ok(`and is still worth more than nothing (${wins}/${PROBES})`, wins > 0);
+}
 
 ok("the probe saw a lot of chatter", chatter.size > 10);
 for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <= MIN_COLS);

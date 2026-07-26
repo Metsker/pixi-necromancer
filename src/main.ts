@@ -10,9 +10,11 @@ import { LORE } from "./sim/lore.ts";
 import type { Point } from "./sim/data.ts";
 import {
   advance,
-  clearSave,
+  bank,
+  buyNode,
   leaveRoom,
   load,
+  loadMeta,
   mend,
   moveDown,
   moveUp,
@@ -21,8 +23,8 @@ import {
   reap,
   reroll,
   save,
+  saveMeta,
   sell,
-  takeNode,
   takePower,
 } from "./sim/game.ts";
 import { sfx, toggleSfx, unlock, type SfxName } from "./sfx.ts";
@@ -89,7 +91,8 @@ async function main() {
   app.stage.filters = [crt];
   app.stage.filterArea = app.screen;
 
-  let g = load() ?? newGame(Math.floor(Math.random() * 1e9));
+  const meta = loadMeta();
+  let g = load() ?? newGame(Math.floor(Math.random() * 1e9), meta.taken);
   const ui: Ui = {
     panel: "",
     node: 0,
@@ -130,7 +133,15 @@ async function main() {
 
   function hear() {
     const now = snap();
-    if (now.over && !seen.over) sfx(now.over === "won" ? "win" : "lose");
+    if (now.over && !seen.over) {
+      sfx(now.over === "won" ? "win" : "lose");
+      // What the run earned, on the edge it ends on. bank() empties the purse as
+      // it pays it in, and the emptied run is written down with it: the run save
+      // is only touched while a run is running, so a tab closed on this frame
+      // would otherwise come back to a run still holding gold already paid in.
+      saveMeta(bank(g, meta));
+      save(g);
+    }
     else if (now.level > seen.level) sfx("level");
     else if (now.cleared > seen.cleared) sfx("clear");
     if (now.risen !== seen.risen) sfx("rise");
@@ -171,13 +182,13 @@ async function main() {
     if (watching()) drawBattle(grid, g, hits, ui.speed);
     else drawMap(grid, g, cam, hits, ui.speed);
     const panel = shownPanel(g, ui);
-    if (panel) drawPanel(grid, g, ui, hits, panel);
+    if (panel) drawPanel(grid, g, meta, ui, hits, panel);
     grid.flush();
   }
 
   function startRun() {
-    clearSave();
-    g = newGame(Math.floor(Math.random() * 1e9));
+    // Whatever the board carries is what the next one walks in holding
+    g = newGame(Math.floor(Math.random() * 1e9), meta.taken);
     ui.panel = "";
     ui.node = 0;
     ui.watch = false;
@@ -247,7 +258,7 @@ async function main() {
         ui.tnode = a.id;
         break;
       case "take":
-        takeNode(g, a.id);
+        if (buyNode(meta, a.id)) saveMeta(meta);
         break;
       case "power":
         takePower(g, a.id);
@@ -274,8 +285,9 @@ async function main() {
       default:
         break;
     }
-    if (g.over) clearSave();
-    else save(g);
+    // A finished run is kept, not thrown away: it is the hub, and a reload has to
+    // land back on it rather than skipping the one screen that spends the gold.
+    save(g);
     dirty = true;
   }
 

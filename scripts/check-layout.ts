@@ -10,10 +10,11 @@ import {
   held,
   manaCap,
   newGame,
+  newMeta,
   offered,
   orderArmy,
+  buyNode,
   raise,
-  takeNode,
   treeOpen,
 } from "../src/sim/game.ts";
 import { BTN_ROWS, C, Hits, cells, tailW } from "../src/ui.ts";
@@ -177,11 +178,11 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 
   // Every node reachable from the one you start on, or a run can bank gold for a
   // node it can never buy
-  const walk = newGame(99);
+  const walk = newMeta();
   ok("the middle comes free", walk.taken.join() === `${rootId}`);
-  walk.res.gold = 9999;
+  walk.gold = 9999;
   let guard = 200;
-  while (treeOpen(walk).length && guard-- > 0) takeNode(walk, treeOpen(walk)[0]);
+  while (treeOpen(walk).length && guard-- > 0) buyNode(walk, treeOpen(walk)[0]);
   ok("every node can be reached", walk.taken.length === TREE.length);
   ok("and nothing is left open", treeOpen(walk).length === 0);
   for (const n of TREE) ok(`${n.name}: it reads as bought`, stateOf(walk, n.id) === "taken");

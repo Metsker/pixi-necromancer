@@ -1,6 +1,6 @@
 import type { Surface } from "../gfx/surface.ts";
-import { RESOURCES, TREE_GLYPH, type GameState } from "../sim/data.ts";
-import { canTake, nodeCost, treeOpen } from "../sim/game.ts";
+import { RESOURCES, TREE_GLYPH } from "../sim/data.ts";
+import { canBuy, nodeCost, treeOpen, type Meta } from "../sim/game.ts";
 import { TREE, TREE_COLS, TREE_ROWS, linksOf, type TreeNode } from "../sim/tree.ts";
 import { C, Hits, box, cells, cut } from "../ui.ts";
 
@@ -18,12 +18,14 @@ export const TREE_TEXT = 16;
 export const treeWidth = () => Math.max(BOARD_W, TREE_TEXT) + 4;
 
 // What a node is right now. Bought, next, or still behind something.
-export const stateOf = (g: GameState, id: number): keyof typeof TREE_GLYPH =>
-  g.taken.includes(id) ? "taken" : treeOpen(g).includes(id) ? "open" : "sealed";
+export const stateOf = (m: Meta, id: number): keyof typeof TREE_GLYPH =>
+  m.taken.includes(id) ? "taken" : treeOpen(m).includes(id) ? "open" : "sealed";
 
-export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
+// `selling` is only true between runs. During one the board is a thing to read:
+// what it hands out it hands out at the gate, so buying mid-run buys nothing.
+export function drawTree(grid: Surface, m: Meta, hits: Hits, sel: number, selling: boolean) {
   const node = TREE[sel] as TreeNode | undefined;
-  const buyable = node !== undefined && canTake(g, node.id);
+  const buyable = selling && node !== undefined && canBuy(m, node.id);
 
   // Under the board: what is selected, what it does, the buy, the way out. They
   // are always all four, so the box does not change height as you tap around it.
@@ -35,7 +37,7 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
   hits.add(x, y, w, h, { t: "none" });
 
   grid.center(x + 1, y + 1, w - 2, "THE TREE", C.gold);
-  grid.center(x + 1, y + 2, w - 2, `${RESOURCES.gold.glyph} ${g.res.gold}`, C.gold);
+  grid.center(x + 1, y + 2, w - 2, `${RESOURCES.gold.glyph} ${m.gold}`, C.gold);
 
   const bx = x + ((w - BOARD_W) >> 1);
   const by = y + 4;
@@ -45,8 +47,8 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
     for (const id of linksOf(n)) {
       if (id < n.id) continue;
       const o = TREE[id];
-      const both = g.taken.includes(n.id) && g.taken.includes(id);
-      const live = g.taken.includes(n.id) || g.taken.includes(id);
+      const both = m.taken.includes(n.id) && m.taken.includes(id);
+      const live = m.taken.includes(n.id) || m.taken.includes(id);
       const ink = both ? C.gold : live ? C.dim : C.frame;
       if (n.row === o.row) {
         const from = Math.min(n.col, o.col);
@@ -59,11 +61,11 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
   }
 
   for (const n of TREE) {
-    const state = stateOf(g, n.id);
+    const state = stateOf(m, n.id);
     const nx = bx + n.col * STEP_X;
     const ny = by + n.row * STEP_Y;
     const ink =
-      state === "taken" ? C.gold : state === "open" ? (canTake(g, n.id) ? C.ink : C.mid) : C.frame;
+      state === "taken" ? C.gold : state === "open" ? (canBuy(m, n.id) ? C.ink : C.mid) : C.frame;
     // The one you are reading wears the frame colour behind it, which is the only
     // way to say "this one" on a board made of single characters
     grid.put(nx, ny, TREE_GLYPH[state], n.id === sel ? C.shade : ink, n.id === sel ? ink : C.bg);
@@ -76,7 +78,7 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
     ly += 1;
   };
   if (node) {
-    text(node.name, stateOf(g, node.id) === "sealed" ? C.dim : C.ink);
+    text(node.name, stateOf(m, node.id) === "sealed" ? C.dim : C.ink);
     text(node.note, C.mid);
   } else {
     ly += 2;
@@ -92,12 +94,12 @@ export function drawTree(grid: Surface, g: GameState, hits: Hits, sel: number) {
     ly += 2;
   };
   if (buyable) act(`take it, ${nodeCost(node.id)}`, C.ink, { t: "take", id: node.id });
-  else if (node && g.taken.includes(node.id)) act("bought", C.gold, null);
+  else if (node && m.taken.includes(node.id)) act("bought", C.gold, null);
   // Why it is shut, when the reason is the price rather than the board. A player
   // who cannot see the gate reads it as a bug.
-  else if (node && treeOpen(g).includes(node.id)) act(`costs ${nodeCost(node.id)}`, C.dim, null);
+  else if (node && treeOpen(m).includes(node.id)) act(`costs ${nodeCost(node.id)}`, C.dim, null);
   else act("not yet", C.dim, null);
-  act("close", C.ink, { t: "close" });
+  act(selling ? "begin" : "close", C.ink, { t: "close" });
 }
 
 // Held to the same rule as every sheet: nothing is written wider than the box

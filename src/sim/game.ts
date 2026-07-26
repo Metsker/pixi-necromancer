@@ -50,14 +50,9 @@ export function perks(g: GameState): Perks {
   return out;
 }
 
-// What a thing adds the moment it is yours. A number you cannot use until the
-// next room is not a reward, so the ceiling and anything already standing both
-// have to hear about it.
+// What a card adds the moment it is taken. A card that makes bodies bigger has
+// to reach the bodies already standing, or taking it late takes nothing.
 function applyGives(g: GameState, gives: Partial<Perks>) {
-  if (gives.manaPool) g.mana += gives.manaPool;
-  if (gives.rerolls) g.rerolls += gives.rerolls;
-  // A body at the gate is only ever a body at the gate, so it arrives now
-  if (gives.startBand) for (let i = 0; i < gives.startBand; i++) raise(g, pick(START_POOL));
   for (const u of g.reserve) {
     const gain =
       (gives.ratHp && u.creature === "rat" ? gives.ratHp : 0) +
@@ -70,26 +65,39 @@ function applyGives(g: GameState, gives: Partial<Perks>) {
 
 // ---------------------------------------------------------------- the tree
 
+// What survives a run. Everything else about him is forgotten at the gate; this
+// is what the next one starts holding.
+export type Meta = { gold: number; taken: number[] };
+
+export const newMeta = (): Meta => ({ gold: 0, taken: [rootId] });
+
 // Distance out is the price. The board is neutral, so there is nothing else to
 // gate it with and nothing else it needs.
 export const nodeCost = (id: number) => TUNING.nodeBase + depthOf(TREE[id]) * TUNING.nodeStep;
 
 // A node is open if it is beside one already bought - the same rule that opens a
 // room next to a room already cleared.
-export const treeOpen = (g: GameState): number[] =>
-  TREE.filter((n) => !g.taken.includes(n.id) && linksOf(n).some((id) => g.taken.includes(id))).map(
+export const treeOpen = (m: Meta): number[] =>
+  TREE.filter((n) => !m.taken.includes(n.id) && linksOf(n).some((id) => m.taken.includes(id))).map(
     (n) => n.id,
   );
 
-export const canTake = (g: GameState, id: number) =>
-  treeOpen(g).includes(id) && g.res.gold >= nodeCost(id);
+export const canBuy = (m: Meta, id: number) =>
+  treeOpen(m).includes(id) && m.gold >= nodeCost(id);
 
-export function takeNode(g: GameState, id: number): boolean {
-  if (!canTake(g, id)) return false;
-  g.res.gold -= nodeCost(id);
-  g.taken.push(id);
-  applyGives(g, TREE[id].gives);
+export function buyNode(m: Meta, id: number): boolean {
+  if (!canBuy(m, id)) return false;
+  m.gold -= nodeCost(id);
+  m.taken.push(id);
   return true;
+}
+
+// What a run leaves behind. The purse is emptied as it is paid in, so banking a
+// run that has already been banked pays nothing and a reload cannot pay twice.
+export function bank(g: GameState, m: Meta): Meta {
+  m.gold += g.res.gold;
+  g.res.gold = 0;
+  return m;
 }
 
 // ---------------------------------------------------------------- the offer
@@ -930,7 +938,9 @@ function readLore(g: GameState, n: MapNode) {
 export const rollBand = (more = 0): CreatureId[] =>
   shuffle(START_POOL).slice(0, Math.min(START_POOL.length, START_BAND + more));
 
-export function newGame(seedValue: number): GameState {
+// `owned` is what the board carries over. Handed in rather than read, so the sim
+// still knows nothing about where a save lives.
+export function newGame(seedValue: number, owned: number[] = [rootId]): GameState {
   seedRng(seedValue);
   const g: GameState = {
     seed: seedValue,
@@ -950,7 +960,7 @@ export function newGame(seedValue: number): GameState {
     unspent: 0,
     mana: TUNING.manaBase,
     // The middle of the board comes free, and it is worth a body
-    taken: [rootId],
+    taken: [...owned],
     powers: [],
     offer: [],
     rerolls: 0,
@@ -964,9 +974,10 @@ export function newGame(seedValue: number): GameState {
     over: "",
   };
   buildMap(g);
-  // What the board is worth at the gate: the band it opens with and the hands
-  // it will be dealt. Everything else the board gives is spent as it goes.
+  // What the board is worth at the gate: a full pool, the band it opens with,
+  // and the hands it will be dealt. The rest it gives is spent as it goes.
   const P = perks(g);
+  g.mana = manaCap(g);
   g.rerolls = P.rerolls;
   for (const c of rollBand(P.startBand)) raise(g, c);
   log(g, "Into the dark.");
@@ -1000,6 +1011,35 @@ export function clearSave() {
     localStorage.removeItem(KEY);
   } catch {
     // nothing to do
+  }
+}
+
+// Its own key and its own version, because the likely change is to the shape of
+// a run and that must never cost him the board he has spent runs buying.
+const META_KEY = "gravelight.meta";
+const META_VERSION = 1;
+
+export function saveMeta(m: Meta) {
+  try {
+    localStorage.setItem(META_KEY, JSON.stringify({ v: META_VERSION, m }));
+  } catch {
+    // a full or blocked store is not worth losing the run over
+  }
+}
+
+export function loadMeta(): Meta {
+  try {
+    const raw = localStorage.getItem(META_KEY);
+    if (!raw) return newMeta();
+    const held = JSON.parse(raw) as { v?: number; m?: Meta };
+    if (held?.v !== META_VERSION || !held.m) return newMeta();
+    if (typeof held.m.gold !== "number" || !Array.isArray(held.m.taken)) return newMeta();
+    // The middle is free and is what every other node hangs off, so a board
+    // without it is a board nothing can be bought on
+    if (!held.m.taken.includes(rootId)) held.m.taken.push(rootId);
+    return held.m;
+  } catch {
+    return newMeta();
   }
 }
 

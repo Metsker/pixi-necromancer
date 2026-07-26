@@ -29,8 +29,10 @@ node scripts/check-sim.ts      # rules assertions, then a balance probe bot
 Both `exit 1` on the first failed assertion. `check-sim` ends by autoplaying 60 seeded runs
 per draft arm (plus a greedy arm-agnostic set) and asserting each arm can win, can lose,
 clears >= 10 rooms, is not a walkover, and that no arm wins more than twice as often as the
-worst. A balance regression fails the build, not just a type error. The four `balance` lines
-print *before* those assertions, so a regression shows you the numbers rather than one FAIL.
+worst - all of it on a *fresh board*, which is the run a new player gets. A fifth `whole` probe
+holds every node and only asks that it still terminates and can still be lost. A balance
+regression fails the build, not just a type error. Every `balance` line prints *before* those
+assertions, so a regression shows you the numbers rather than one FAIL.
 
 `src/tilemap.ts` and `public/dungeon-mode.png` are generated and gitignored. Nothing compiles
 until `npm run gen` has run at least once.
@@ -112,8 +114,25 @@ Both are written `{ engine: 1, number: 1 }` so a repeat draw is not a dud.
 buy power. Nothing on it may touch a fight (a check asserts this). It sells capacity, mana,
 healing, levelling speed, and the draft itself - a fourth card, a reroll, a body at the gate.
 A node opens when it is beside one you own, and `nodeCost` prices it by `depthOf`, so distance
-out is the whole of the gate. It is paid for in `g.res.gold`, which rooms have always dropped
-and nothing used to spend.
+out is the whole of the gate.
+
+**The tree is the meta, and it is the only thing that survives a run.** It lives on `Meta`
+(`{ gold, taken }`), not on `GameState`, under its own key and its own version - a
+`SAVE_VERSION` bump changes the shape of a run and must never cost him a board he spent runs
+buying. Gold is what a room has always dropped and nothing ever spent; `bank()` pays the run's
+purse into the board on the edge `g.over` is set and **empties the purse as it does**, which is
+the whole of what stops a reload paying twice. The run save is written on that same frame, or a
+tab closed there comes back to a run still holding gold already paid in.
+
+The end of a run is the hub - there is no title screen. `over` offers the board, the board says
+`begin` instead of `close`, and `newGame(seed, owned)` takes what is bought as an argument, so
+`src/sim/` still knows nothing about where a save lives. During a run the board is a thing to
+read: what it hands out it hands out at the gate.
+
+Nothing caps how much of the board one player ends up owning, and that is **deliberately not
+solved**. The check's `whole` probe is the tripwire: 60 runs holding every node, asserting only
+that it still terminates and can still be lost. It sits close to its limit already. When it goes
+red, that is the day the cap has to be designed, not before.
 
 ## Architecture
 
@@ -141,7 +160,9 @@ right. Keep it that way - a Pixi import in `src/sim/` breaks both check scripts.
 
 `GameState` is plain JSON, saved to `localStorage`. When its shape changes, bump
 `SAVE_VERSION` **and** add the field to `REQUIRED` in `game.ts` - a save that half-loads
-crashes the first frame.
+crashes the first frame. `Meta` is the other save and versions separately on purpose; a bad
+one falls back to `newMeta()` rather than refusing to load, because a board is not worth
+crashing over.
 
 **Rendering is a character grid, not a scene.** `src/gfx/grid.ts` keeps two sprite pools (cell
 background, glyph) and a char/fg/bg array; screens only ever call `put/fill/text/center`, then

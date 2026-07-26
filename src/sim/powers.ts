@@ -34,32 +34,34 @@ export type Power = {
 // does not: three of the one card you were after is the build now.
 export const POWERS: Power[] = [
   // swarm: more of them, cheaper, and rats worth keeping a lot of
-  { id: "vermin", arm: "swarm", name: "VERMIN", note: "rats +2 dmg", gives: { ratDmg: 2 } },
-  { id: "thinblood", arm: "swarm", name: "THIN BLOOD", note: "rats +8 hp", gives: { ratHp: 8 } },
-  { id: "crowding", arm: "swarm", name: "CROWDING", note: "swarm caps +4", gives: { swarmCap: 4 } },
-  { id: "carrion", arm: "swarm", name: "CARRION", note: "more get up", gives: { riseLuck: 12 } },
+  { id: "vermin", arm: "swarm", name: "VERMIN", note: "rats +3 dmg", gives: { ratDmg: 3 } },
+  { id: "thinblood", arm: "swarm", name: "THIN BLOOD", note: "rats +12 hp", gives: { ratHp: 12 } },
+  // The arm is called the many and the board sells capacity, so without this the
+  // one thing swarm is about is the one thing it cannot buy
+  { id: "themany", arm: "swarm", name: "THE MANY", note: "+1 body", gives: { slots: 1 } },
+  { id: "carrion", arm: "swarm", name: "CARRION", note: "more get up", gives: { riseLuck: 16 } },
   // The rest of the arm only ever helps rats, so the thing that makes everybody
   // crowd is a common. Drawn again it does not switch on twice - it bites harder.
-  { id: "ratking", arm: "swarm", name: "KING OF RATS", note: "all swarm now", gives: { swarmAll: 1, swarmPer: 1 } },
+  { id: "ratking", arm: "swarm", name: "KING OF RATS", note: "all swarm now", gives: { swarmAll: 1, swarmPer: 1, swarmCap: 2 } },
   { id: "thepress", arm: "swarm", name: "THE PRESS", note: "dead crowd too", rare: true, gives: { swarmDead: 1 } },
   { id: "opengraves", arm: "swarm", name: "OPEN GRAVES", note: "all rise free", rare: true, gives: { glut: 1 } },
 
   // bond: fewer of them, and a wall worth standing behind
   { id: "thefew", arm: "bond", name: "THE FEW", note: "all +2 dmg", gives: { minionDmg: 2 } },
   { id: "hardyears", arm: "bond", name: "HARD YEARS", note: "+1 hp a room", gives: { vetHp: 1 } },
-  { id: "stoneskin", arm: "bond", name: "STONE SKIN", note: "walls +10 hp", gives: { wallHp: 10 } },
-  { id: "unbroken", arm: "bond", name: "UNBROKEN", note: "walls -8% hit", gives: { wallCut: 8 } },
-  { id: "thepack", arm: "bond", name: "THE PACK", note: "old bones bite", gives: { vetDmg: 1 } },
+  { id: "stoneskin", arm: "bond", name: "STONE SKIN", note: "walls +15 hp", gives: { wallHp: 15 } },
+  { id: "unbroken", arm: "bond", name: "UNBROKEN", note: "walls -10% hit", gives: { wallCut: 10 } },
+  { id: "thepack", arm: "bond", name: "THE PACK", note: "old bones bite", gives: { vetDmg: 2 } },
   // Mending is a rule, not a number. Stacked, it is a pump that turns the mana a
   // room hands back into more life than the room ever took.
   { id: "grit", arm: "bond", name: "GRIT", note: "mend the worst", rare: true, gives: { mend: 8 } },
   { id: "shieldwall", arm: "bond", name: "SHIELD WALL", note: "all are walls", rare: true, gives: { wallAll: 1 } },
 
   // control: nothing of yours gets better, everything of theirs gets worse
-  { id: "dread", arm: "control", name: "DREAD", note: "they hit -4%", gives: { dread: 4 } },
-  { id: "gloom", arm: "control", name: "GLOOM", note: "they hit -3%", gives: { dread: 3 } },
-  { id: "deepwither", arm: "control", name: "DEEP WITHER", note: "wither bites", gives: { witherPow: 5 } },
-  { id: "hex", arm: "control", name: "HEX", note: "+3 vs withered", gives: { hexDmg: 3 } },
+  { id: "dread", arm: "control", name: "DREAD", note: "they hit -6%", gives: { dread: 6 } },
+  { id: "gloom", arm: "control", name: "GLOOM", note: "they hit -4%", gives: { dread: 4 } },
+  { id: "deepwither", arm: "control", name: "DEEP WITHER", note: "wither bites", gives: { witherPow: 8 } },
+  { id: "hex", arm: "control", name: "HEX", note: "+5 vs withered", gives: { hexDmg: 5 } },
   // The rest of the arm is dead without something withering, so the thing that
   // withers is a common. Drawn again it does not switch on twice - it lasts longer.
   { id: "thehusk", arm: "control", name: "THE HUSK", note: "it all withers", gives: { witherAll: 1, witherLong: 1 } },
