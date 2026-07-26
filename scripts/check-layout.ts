@@ -2,9 +2,11 @@
 import { MAX_COLS, MIN_COLS, computeLayout } from "../src/layout.ts";
 import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
 import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
+import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
-import { advance, newGame, raise, sendSquad } from "../src/sim/game.ts";
-import { BTN_ROWS, cells } from "../src/ui.ts";
+import { advance, newGame, orderHero, raise, sendSquad } from "../src/sim/game.ts";
+import { BTN_ROWS, C, Hits, cells } from "../src/ui.ts";
+import { TUNING } from "../src/sim/data.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -97,6 +99,54 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
       }
     }
   }
+}
+
+// The battle view draws through the same Grid surface the renderer does, so a
+// stub that records cells can be held to what the fight is supposed to look like
+{
+  type Cell = { ch: string; fg: number; bg: number };
+  const cells = new Map<string, Cell>();
+  const stub = {
+    cols: 24,
+    rows: 52,
+    cssCell: 16,
+    put(x: number, y: number, ch: string, fg: number, bg?: number) {
+      const was = cells.get(`${x},${y}`);
+      cells.set(`${x},${y}`, { ch, fg, bg: bg ?? was?.bg ?? C.bg });
+    },
+    fill(x: number, y: number, w: number, h: number, bg: number) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.put(x + i, y + j, " ", bg, bg);
+    },
+    text(x: number, y: number, str: string, fg: number, bg?: number) {
+      [...str].forEach((ch, i) => this.put(x + i, y, ch, fg, bg));
+    },
+    center(x: number, y: number, w: number, str: string, fg: number, bg?: number) {
+      const t = [...str].slice(0, w);
+      this.text(x + Math.max(0, (w - t.length) >> 1), y, t.join(""), fg, bg);
+    },
+  };
+
+  const g = newGame(31313);
+  const f = g.forces[0];
+  orderHero(g, g.nodes.find((n) => n.state === "open")!.id);
+  advance(g, TUNING.marchTicks + 1);
+  const b = f.battle!;
+  // Hand it a finished fight with one of theirs already spoken for
+  b.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
+  b.done = "win";
+  const body = b.units.find((u) => u.faction === "enemy")!;
+  g.risen = { creatures: [body.creature], units: [body.id], node: b.node, at: g.time };
+  f.mode = "spoils";
+  f.next = g.time + TUNING.spoilsTicks;
+
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
+  const drawn = [...cells.values()];
+  const beam = drawn.filter((c) => c.ch === "║" && c.fg === C.ink);
+  ok("the light comes down as a column", beam.length >= 1);
+  const lit = drawn.filter((c) => c.bg === C.ink && c.ch !== " " && c.ch !== "║");
+  ok("and it is behind the body, not over it", lit.length === 1);
+  ok("the body is still legible in it", lit[0].fg === C.shade);
 }
 
 // Anything the code draws has to exist in the sheet, or it renders as nothing at

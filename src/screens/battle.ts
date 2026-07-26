@@ -144,9 +144,11 @@ function drawArena(
       const home = mid - dir * (2 + (i % wide) * 3 + rank);
       const x = home + dir * step - dir * knocked;
       const t = CREATURES[u.creature];
-      // The light comes down out of the ceiling and closes over the body
+      // The light comes down out of the ceiling and pools on the body. The cell
+      // fill and the glyph are separate layers, so the beam can be behind it.
       if (woken && rise!.beam) {
-        for (let by = top + 1; by <= y; by++) grid.put(x, by, "║", C.ink, C.bg);
+        for (let by = top + 1; by < y; by++) grid.put(x, by, "║", C.ink, C.bg);
+        grid.put(x, y, down ? "☠" : t.glyph, C.shade, C.ink);
         return;
       }
       grid.put(x, y, down ? "☠" : t.glyph, down ? C.frame : hurt ? C.ink : COL(t.color), C.bg);
