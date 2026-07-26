@@ -1,5 +1,6 @@
 import type { Grid } from "../gfx/grid.ts";
 import {
+  ARMY_COLOR,
   ARMY_GLYPH,
   KIND_GLYPH,
   MANA_GLYPH,
@@ -14,7 +15,6 @@ import {
   canOrder,
   commandCap,
   fielded,
-  hpFrac,
   manaCap,
   reserve,
   threatOf,
@@ -111,12 +111,9 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
       const ink = locked ? C.frame : busy ? C.hot : cleared ? C.dim : THREAT[threatOf(n)];
       grid.put(x, y, locked ? "?" : KIND_GLYPH[n.kind], ink, C.bg);
     }
-    // The army stands under the room it is in, coloured by how it is holding up
-    if (here && on(x, y + 1)) {
-      const troop = reserve(g);
-      const whole = troop.length ? troop.reduce((s, u) => s + hpFrac(u), 0) / troop.length : 0;
-      grid.put(x, y + 1, ARMY_GLYPH, whole > 0.66 ? C.green : whole > 0.33 ? C.gold : C.hot, C.bg);
-    }
+    // He stands under the room he is in. How the army is holding up is the
+    // heart in the hud; this is only where you are.
+    if (here && on(x, y + 1)) grid.put(x, y + 1, ARMY_GLYPH, COL(ARMY_COLOR), C.bg);
 
     // Clipped to the map area, so a room just off the bottom cannot eat a hud tap
     const top = Math.max(0, y - 1);

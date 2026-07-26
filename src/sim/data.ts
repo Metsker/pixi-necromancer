@@ -237,7 +237,10 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
   keys: { short: "keys", glyph: "⚷", color: 22 },
 };
 
-export const ARMY_GLYPH = "⸬";
+// What stands on the map is still him, whatever it is made of: he does not
+// fight any more, but the token you move is the necromancer.
+export const ARMY_GLYPH = "🕱";
+export const ARMY_COLOR = 20;
 // A wall is worth marking wherever a body is listed, because it is the one
 // thing that decides who gets hit
 export const TAUNT_GLYPH = "⛨";

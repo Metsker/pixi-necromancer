@@ -311,8 +311,10 @@ function side(
   else if (put) edge(`+${put.n}`, C.green);
   else if (offer) {
     // What it would cost to ask this one back, or what giving it up pays, against
-    // the divider where the fighting used to be
-    edge(`${MANA_GLYPH}${mirrored ? price : `+${price}`}`, offer === 2 || !mirrored ? C.cyan : C.frame);
+    // the divider where the fighting used to be. Unmaking is red: it reads as a
+    // price on the wrong side of the line, because that is what it is.
+    if (mirrored) edge(`${MANA_GLYPH}${price}`, offer === 2 ? C.cyan : C.frame);
+    else edge(`${MANA_GLYPH}+${price}`, C.red);
   } else if (u.withered > 0 && !down) edge("∿", C.violet);
   else if (!down && wallish(u, P)) edge(TAUNT_GLYPH, C.blue);
 
