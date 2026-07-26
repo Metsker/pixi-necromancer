@@ -5,8 +5,8 @@ import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
 import { advance, commandCap, newGame, orderHero, raise, sendSquad } from "../src/sim/game.ts";
-import { BTN_ROWS, C, Hits, cells } from "../src/ui.ts";
-import { RAISABLE, TUNING } from "../src/sim/data.ts";
+import { BTN_ROWS, C, COL, Hits, cells } from "../src/ui.ts";
+import { CREATURES, RAISABLE, TUNING } from "../src/sim/data.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -173,9 +173,10 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   cells.clear();
   drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
   const drawn = [...cells.values()];
-  const beam = drawn.filter((c) => c.ch === "║" && c.fg === C.ink);
-  ok("the light comes down as a column", beam.length >= 1);
-  const lit = drawn.filter((c) => c.bg === C.ink && c.ch !== " " && c.ch !== "║");
+  const beam = drawn.filter((c) => c.ch === "║" && c.fg === C.violet);
+  ok("his light comes down as a column", beam.length >= 1);
+  ok("and it is his colour, not the colour of a blow", C.violet === COL(CREATURES.hero.color));
+  const lit = drawn.filter((c) => c.bg === C.violet && c.ch !== " " && c.ch !== "║");
   ok("and it is behind the body, not over it", lit.length === 1);
   ok("the body is still legible in it", lit[0].fg === C.shade);
 
