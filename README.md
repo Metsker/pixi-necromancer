@@ -36,8 +36,10 @@ side hits, and the army sheet numbers your line so you can see it: tap the arrow
 to move somebody up, including the necromancer, who is happy to stand behind a
 bone knight. A squad stands in the order you tapped it - first tapped, first hit.
 
-When the room falls the board stays up for a beat, and that beat is where the
-dead get up.
+When the room falls the board stays up for a beat. A white beam comes down out
+of the ceiling onto each body he is taking, the colour comes back into it, and
+then it is standing at the end of your line. Several at once if he took several.
+Nothing is written on the battlefield about it - that goes in the log.
 
 Point a squad at any open room and it goes. It fights, and if it wins it walks
 to the nearest room still worth taking and fights again, until there is nothing

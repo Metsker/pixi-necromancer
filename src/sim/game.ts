@@ -701,14 +701,16 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   // the dead where they lie, which is why a squad is spent and not invested.
   if (f.kind !== "hero") return;
   const rose: CreatureId[] = [];
+  const bodies: number[] = [];
   for (const u of fallen) {
     if (u.creature === "ossuary") continue;
     if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance) continue;
     if (!raise(g, u.creature)) break;
     rose.push(u.creature);
+    bodies.push(u.id);
   }
   if (rose.length) {
-    g.risen = { creatures: rose, node: n.id, at: g.time };
+    g.risen = { creatures: rose, units: bodies, node: n.id, at: g.time };
     log(g, `${rose.map((c) => CREATURES[c].short).join(", ")} rises.`.slice(0, 20));
   }
 }

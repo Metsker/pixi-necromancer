@@ -21,7 +21,12 @@ export type ForceMode = "idle" | "march" | "fight" | "spoils" | "gone";
 export type Unit = { id: number; creature: CreatureId; hp: number; maxHp: number };
 
 // The last time the dead got up, so the map can make a moment of it
-export type Risen = { creatures: CreatureId[]; node: number; at: number };
+export type Risen = {
+  creatures: CreatureId[];
+  units: number[]; // the battle units that got up, so the board can show it
+  node: number;
+  at: number;
+};
 
 export type BattleUnit = {
   id: number;
@@ -111,9 +116,9 @@ export const TUNING = {
   tiers: 6,
 
   // Ticks. The clock runs at TICK_MS a tick, multiplied by the speed control.
-  marchTicks: 9,
-  turnTicks: 2,
-  spoilsTicks: 34,
+  marchTicks: 5,
+  turnTicks: 5,
+  spoilsTicks: 45,
   idlePoll: 10,
   maxRounds: 60,
 

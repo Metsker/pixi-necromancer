@@ -14,6 +14,13 @@ import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 const ROW_H = 2; // a name row and a bar row per unit in the roster
 const LUNGE = 2; // how far a fighter steps into the middle to land a blow
 
+// The three beats of getting up: the light finds it, the colour comes back,
+// and then it is standing at the end of your line.
+const BEAM_UNTIL = 0.3;
+const WAKE_UNTIL = 0.6;
+
+type Rise = { ids: Set<number>; beam: boolean; moved: boolean };
+
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
 export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed: number) {
@@ -35,7 +42,6 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
 
   const ours = b.units.filter((u) => u.faction === "player");
   const theirs = b.units.filter((u) => u.faction === "enemy");
-  const pairs = Math.max(ours.length, theirs.length);
 
   // Ticks since this blow landed. One unit swings per turn, so the whole beat is
   // the swing: step in, connect, and it is somebody else's turn.
@@ -43,39 +49,44 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   const spoils = f.mode === "spoils";
   const swing = spoils ? 0 : age < 1 ? LUNGE : 1;
   const landing = spoils ? [] : b.hit;
-  // How far through the beat after the fight, which is when the dead get up
-  const rising =
-    spoils && g.risen && g.risen.node === b.node
-      ? clamp(1 - (f.next - g.time) / TUNING.spoilsTicks, 0, 1)
-      : 0;
 
-  // The arena is sized to what stands in it. A taller box would only be a void,
-  // so the slack goes to the log, which fills as the fight goes on.
+  const raised = g.risen;
+  let rise: Rise | null = null;
+  if (spoils && raised && raised.node === b.node && g.time - raised.at <= TUNING.spoilsTicks) {
+    const p = clamp(1 - (f.next - g.time) / TUNING.spoilsTicks, 0, 1);
+    rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL, moved: p >= WAKE_UNTIL };
+  }
+
+  // Once they have crossed they are on his side of the board, in the roster too
+  const crossed = rise?.moved ? theirs.filter((u) => rise.ids.has(u.id)) : [];
+  const ourLine = [...ours, ...crossed];
+  const theirLine = rise?.moved ? theirs.filter((u) => !rise.ids.has(u.id)) : theirs;
+  const shown = Math.max(ourLine.length, theirLine.length);
+
   const ranks = Math.max(
-    Math.ceil(ours.length / perRank(cols)),
-    Math.ceil(theirs.length / perRank(cols)),
+    Math.ceil(ourLine.length / perRank(cols)),
+    Math.ceil(theirLine.length / perRank(cols)),
   );
   const head = 3;
-  const roster = Math.min(pairs, Math.max(1, Math.floor((last - head - 6) / ROW_H)));
+  const roster = Math.min(shown, Math.max(1, Math.floor((last - head - 6) / ROW_H)));
   const fixed = roster * ROW_H + 2;
   const arena = last - head - fixed >= ranks + 5 ? ranks + 3 : 0;
 
   let y = head;
   if (arena) {
-    drawArena(grid, ours, theirs, y, arena, cols, landing, swing);
-    if (rising) drawRising(grid, g, y, arena, cols, rising);
+    drawArena(grid, ourLine, theirLine, y, arena, cols, landing, swing, rise);
     y += arena;
   }
   for (let x = 0; x < cols; x++) grid.put(x, y, "─", C.frame);
   y += 1;
 
   for (let i = 0; i < roster; i++) {
-    if (ours[i]) side(grid, 0, half, y, ours[i], landing, false);
-    if (theirs[i]) side(grid, rightX, rightW, y, theirs[i], landing, true);
-    if (ours[i] || theirs[i]) grid.put(half, y, "│", C.frame);
+    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, false, rise);
+    if (theirLine[i]) side(grid, rightX, rightW, y, theirLine[i], landing, true, rise);
+    if (ourLine[i] || theirLine[i]) grid.put(half, y, "│", C.frame);
     y += ROW_H;
   }
-  if (roster < pairs) grid.center(0, y++, cols, `+${pairs - roster} more`, C.frame);
+  if (roster < shown) grid.center(0, y++, cols, `+${shown - roster} more`, C.frame);
   for (let x = 0; x < cols; x++) grid.put(x, y, "─", C.frame);
   y += 1;
 
@@ -90,8 +101,9 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
 const perRank = (cols: number) => Math.max(1, Math.floor(((cols >> 1) - 2) / 3));
 
 // Two lines of figures facing off across the middle of a dark room. A fighter
-// that swung this round steps in; one that was hit is knocked back a cell, wears
-// the blow that did it, and the number floats off it.
+// that swung this turn steps in; one that was hit is knocked back a cell, wears
+// the blow that did it, and the number floats off it. When the fighting stops,
+// whatever he raised takes the light and crosses to the end of his line.
 function drawArena(
   grid: Grid,
   ours: BattleUnit[],
@@ -101,6 +113,7 @@ function drawArena(
   cols: number,
   landing: Hit[],
   swing: number,
+  rise: Rise | null,
 ) {
   const mid = cols >> 1;
   const ground = top + h - 1;
@@ -117,8 +130,9 @@ function drawArena(
     list.forEach((u, i) => {
       const rank = Math.floor(i / wide);
       const y = ground - 1 - rank;
-      if (y <= top + 1) return;
-      const down = u.hp <= 0;
+      if (y <= top) return;
+      const woken = rise?.ids.has(u.id) === true;
+      const down = u.hp <= 0 && !(woken && !rise!.beam);
       const hurt = took.get(u.id);
       const step = down ? 0 : threw.has(u.id) ? swing : 0;
       const knocked = !down && hurt !== undefined ? 1 : 0;
@@ -126,42 +140,20 @@ function drawArena(
       const home = mid - dir * (2 + (i % wide) * 3 + rank);
       const x = home + dir * step - dir * knocked;
       const t = CREATURES[u.creature];
-      grid.put(x, y, down ? "☠" : t.glyph, down ? C.frame : hurt ? C.hot : COL(t.color), C.bg);
+      grid.put(x, y, down ? "☠" : t.glyph, down ? C.frame : hurt ? C.ink : COL(t.color), C.bg);
+
+      // The light comes down out of the ceiling and finds the body
+      if (woken && rise!.beam) {
+        for (let by = top + 1; by < y; by++) grid.put(x, by, "║", C.ink, C.bg);
+      }
       if (!knocked) return;
-      grid.put(x + dir, y, "✕", C.hot, C.bg);
+      grid.put(x + dir, y, "✕", C.ink, C.bg);
       const num = `${hurt}`;
-      grid.text(x - (num.length >> 1), y - 1, num, C.hot, C.bg);
+      grid.text(x - (num.length >> 1), y - 1, num, C.ink, C.bg);
     });
   };
   line(ours, 1);
   line(theirs, -1);
-}
-
-// The one thing worth stopping the board for. What he killed climbs back up on
-// his side of the room, and the room says whose they are now.
-function drawRising(
-  grid: Grid,
-  g: GameState,
-  top: number,
-  h: number,
-  cols: number,
-  progress: number,
-) {
-  const risen = g.risen!;
-  const mid = cols >> 1;
-  const ground = top + h - 1;
-  const lift = Math.min(h - 2, 1 + Math.floor(progress * 3));
-  const tone = progress < 0.7 ? C.green : C.dim;
-
-  risen.creatures.slice(0, 5).forEach((c, i) => {
-    const x = mid - 2 - i * 2;
-    const y = ground - lift;
-    if (y > top && x > 0) grid.put(x, y, CREATURES[c].glyph, tone, C.bg);
-  });
-
-  const names = [...new Set(risen.creatures.map((c) => CREATURES[c].short.toUpperCase()))];
-  const word = `${names.join(" ")} ${risen.creatures.length > 1 ? "RISE" : "RISES"}`;
-  grid.center(0, top + 1, cols, word.slice(0, cols), tone, C.shade);
 }
 
 // Names hug the outside edge and blows land against the divider, so damage
@@ -174,13 +166,15 @@ function side(
   u: BattleUnit,
   landing: Hit[],
   mirrored: boolean,
+  rise: Rise | null,
 ) {
   const t = CREATURES[u.creature];
   const struck = landing.find((h) => h.id === u.id);
-  const down = u.hp <= 0;
-  const ink = down ? C.frame : struck ? C.hot : C.ink;
+  const woken = rise?.ids.has(u.id) === true && !rise.beam;
+  const down = u.hp <= 0 && !woken;
+  const ink = down ? C.frame : C.ink;
   const glyph = down ? "☠" : t.glyph;
-  const tone = down ? C.frame : struck ? C.hot : COL(t.color);
+  const tone = down ? C.frame : struck ? C.ink : COL(t.color);
 
   const name = t.short.slice(0, Math.max(1, w - 2));
   if (mirrored) {
@@ -193,10 +187,12 @@ function side(
 
   if (struck) {
     const hurt = `-${struck.n}`;
-    grid.text(mirrored ? x : x + w - hurt.length, y, hurt, C.hot);
+    grid.text(mirrored ? x : x + w - hurt.length, y, hurt, C.ink);
   } else if (u.withered > 0 && !down) {
     grid.put(mirrored ? x : x + w - 1, y, "∿", C.violet);
   }
 
-  bar(grid, x, y + 1, w, hpFrac(u), u.faction === "player" ? C.green : C.red, mirrored);
+  // One that has got up is one of yours now, whatever side it fought on
+  const ours = u.faction === "player" || woken;
+  bar(grid, x, y + 1, w, woken ? 1 : hpFrac(u), ours ? C.green : C.red, mirrored);
 }
