@@ -1,7 +1,7 @@
 // Run: node scripts/check-layout.ts
-import { MAX_COLS, MIN_COLS, computeLayout } from "../src/layout.ts";
+import { MAX_COLS, MIN_COLS, MIN_ROWS, TARGET_TILE_CSS, computeLayout } from "../src/layout.ts";
 import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
-import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
+import { PANELS, SHEET_COLS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
 import { advance, commandCap, newGame, orderHero, raise, sendSquad } from "../src/sim/game.ts";
@@ -39,6 +39,11 @@ for (const c of cases) {
   const possible = Math.floor((c.innerWidth * c.dpr) / TILE);
   ok(`${c.name}: minimum columns when possible`, l.cols >= Math.min(MIN_COLS, possible));
   ok(`${c.name}: at least one row`, l.rows >= 1);
+  // Black bars either side of the board are the thing this is here to catch
+  ok(
+    `${c.name}: takes the width it is given`,
+    l.cols >= MAX_COLS || l.cssW > c.innerWidth - l.cssCell,
+  );
 
   // The map is bigger than any screen now, so what matters is that the camera
   // cannot be pushed past its edges and always shows something
@@ -52,6 +57,14 @@ for (const c of cases) {
     ok(`${c.name}: camera never runs off the left`, size.w <= l.cols || cam.x >= 0);
     ok(`${c.name}: camera never runs off the top`, size.h <= view || cam.y >= 0);
   }
+}
+
+// A desk monitor should be played on, not framed by it
+{
+  const l = computeLayout({ innerWidth: 1920, innerHeight: 1080, dpr: 1, reserved: 0 });
+  ok("a desktop window is filled across", l.cssW > 1920 - l.cssCell);
+  ok("its tiles are bigger than a phone's", l.cssCell > TARGET_TILE_CSS);
+  ok("and it keeps the rows a fight needs", l.rows >= MIN_ROWS);
 }
 
 // A viewport shorter than the chrome must not produce a negative or zero grid
@@ -95,6 +108,8 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
           for (const l of spec.lines) {
             const w = cells(l.text) + (l.tail ? cells(l.tail.text) + 1 : 0);
             ok(`${panel}/${cols}: "${l.text}" fits`, w <= cols - 4);
+            // A wide grid must not stretch prose into one long line of it
+            ok(`${panel}/${cols}: "${l.text}" stays readable`, w <= SHEET_COLS);
           }
         }
       }
@@ -247,6 +262,21 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   const row0 = Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},0`)?.ch ?? " ").join("");
   ok("the board says how many he has", row0.includes(`${g.reserve.length}/${commandCap(g)}`));
   ok("and marks it as bodies", row0.includes("†"));
+
+  // A desktop grid is wide and short, and the fight still has to have its arena
+  const desk = computeLayout({ innerWidth: 1920, innerHeight: 1080, dpr: 1, reserved: 0 });
+  stub.cols = desk.cols;
+  stub.rows = desk.rows;
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
+  ok("they still fight where you can see it", [...cells.values()].some((c) => c.ch === "▔"));
+
+  // and the board is held together in the middle instead of stretched across it
+  const drawnAt = [...cells.entries()]
+    .filter(([at, c]) => c.ch !== " " && Number(at.split(",")[1]) < desk.rows - BTN_ROWS)
+    .map(([at]) => Number(at.split(",")[0]));
+  ok("with the width to spare left spare", Math.min(...drawnAt) >= 4);
+  ok("on both sides of it", Math.max(...drawnAt) <= desk.cols - 5);
 }
 
 // Anything the code draws has to exist in the sheet, or it renders as nothing at

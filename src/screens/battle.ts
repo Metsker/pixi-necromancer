@@ -1,4 +1,4 @@
-import type { Grid } from "../gfx/grid.ts";
+import { inset, type Surface } from "../gfx/surface.ts";
 import {
   CREATURES,
   KIND_NAME,
@@ -13,6 +13,7 @@ import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit in the roster
 const LUNGE = 2; // how far a fighter steps into the middle to land a blow
+const BOARD = 44; // the widest the board gets, so a desk monitor does not stretch it
 
 // How long a blow stays lit, in ticks, and how long a mend does. A blow is a
 // flash; a mend is worth looking at.
@@ -28,10 +29,13 @@ type Rise = { ids: Set<number>; beam: boolean; moved: boolean };
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
-export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed: number) {
+export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, speed: number) {
   const b = f.battle!;
   const n = g.nodes[b.node];
-  const { cols, rows } = grid;
+  const rows = full.rows;
+  // Held together in the middle of a wide screen, rather than pulled apart by it
+  const cols = Math.min(full.cols, BOARD);
+  const grid = cols === full.cols ? full : inset(full, (full.cols - cols) >> 1, cols);
   const last = rows - BTN_ROWS;
   const half = (cols - 1) >> 1; // the divider column; the two blocks flank it
   const rightX = half + 1;
@@ -110,7 +114,8 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
 
   for (const line of b.log.slice(-(last - y))) grid.text(0, y++, line.slice(0, cols), C.dim);
 
-  buttons(grid, hits, [
+  // The strip stays the width of the screen: it is what a thumb reaches for
+  buttons(full, hits, [
     { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
     { label: "MAP", act: { t: "back" } },
   ]);
@@ -123,7 +128,7 @@ const perRank = (cols: number) => Math.max(1, Math.floor(((cols >> 1) - 2) / 3))
 // the blow that did it, and the number floats off it. When the fighting stops,
 // whatever he raised takes the light and crosses to the end of his line.
 function drawArena(
-  grid: Grid,
+  grid: Surface,
   ours: BattleUnit[],
   theirs: BattleUnit[],
   top: number,
@@ -192,7 +197,7 @@ function drawArena(
 // Names hug the outside edge and blows land against the divider, so damage
 // always appears in the middle where the fighting is
 function side(
-  grid: Grid,
+  grid: Surface,
   x: number,
   w: number,
   y: number,

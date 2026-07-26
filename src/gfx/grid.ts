@@ -1,11 +1,12 @@
 import { Container, Sprite, Texture } from "pixi.js";
 import { TILE } from "../tilemap.ts";
 import type { GlyphSet } from "./glyphs.ts";
+import type { Surface } from "./surface.ts";
 
 // A character grid over Pixi: two sprite pools, one for cell fills and one for
 // glyphs. Everything the game draws goes through put(), so a tap can be turned
 // back into a cell with nothing but arithmetic.
-export class Grid {
+export class Grid implements Surface {
   readonly root = new Container();
   cols = 0;
   rows = 0;

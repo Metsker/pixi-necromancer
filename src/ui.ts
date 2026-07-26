@@ -1,4 +1,4 @@
-import type { Grid } from "./gfx/grid.ts";
+import type { Surface } from "./gfx/surface.ts";
 import type { Stat } from "./sim/data.ts";
 import { PALETTE } from "./tilemap.ts";
 
@@ -100,7 +100,7 @@ export function wrap(s: string, width: number): string[] {
 // Half-height blocks, so bars on neighbouring rows stay separate bars. Mirrored
 // bars fill from the right, so both sides drain towards the middle.
 export function bar(
-  grid: Grid,
+  grid: Surface,
   x: number,
   y: number,
   w: number,
@@ -115,7 +115,7 @@ export function bar(
   }
 }
 
-export function box(grid: Grid, x: number, y: number, w: number, h: number) {
+export function box(grid: Surface, x: number, y: number, w: number, h: number) {
   grid.fill(x, y, w, h, C.shade);
   for (let i = 1; i < w - 1; i++) {
     grid.put(x + i, y, "─", C.frame);
@@ -139,7 +139,7 @@ export type Line = { text: string; act?: Act; fg?: number; tail?: { text: string
 const rowsFor = (l: Line) => (l.act || l.tail ? 2 : 1);
 
 export function sheet(
-  grid: Grid,
+  grid: Surface,
   hits: Hits,
   title: string,
   lines: Line[],
@@ -190,7 +190,7 @@ export function sheet(
 }
 
 export function buttons(
-  grid: Grid,
+  grid: Surface,
   hits: Hits,
   items: { label: string; act: Act; color?: number }[],
 ) {

@@ -2,7 +2,9 @@ import { TILE } from "./tilemap.ts";
 
 export const TARGET_TILE_CSS = 18;
 export const MIN_COLS = 20;
-export const MAX_COLS = 44;
+// A fight needs an arena, a roster and a few lines of log under it
+export const MIN_ROWS = 28;
+export const MAX_COLS = 64;
 export const MAX_ROWS = 64;
 
 export type Viewport = {
@@ -20,7 +22,9 @@ export function computeLayout({ innerWidth, innerHeight, dpr, reserved }: Viewpo
   const wDev = Math.max(TILE, innerWidth * dpr);
   const hDev = Math.max(TILE, (innerHeight - reserved) * dpr);
 
-  let scale = Math.max(1, Math.round((TARGET_TILE_CSS * dpr) / TILE));
+  // A big window gets bigger tiles, not more of them, up to a playable grid
+  const fill = Math.floor(Math.min(wDev / (TILE * MIN_COLS), hDev / (TILE * MIN_ROWS)));
+  let scale = Math.max(1, Math.round((TARGET_TILE_CSS * dpr) / TILE), fill);
   while (scale > 1 && Math.floor(wDev / (TILE * scale)) < MIN_COLS) scale -= 1;
 
   const cell = TILE * scale;

@@ -16,6 +16,9 @@ import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
+// The widest a line of a sheet is allowed to get, however wide the grid is
+export const SHEET_COLS = 40;
+
 export type PanelId = "" | "node" | "roster" | "army" | "unit" | "menu" | "confirm";
 
 export type Ui = {
@@ -73,7 +76,8 @@ const doing = (f: Force) =>
 // What a sheet says and what its lines do, built in one place and at a known
 // width, so a check can hold every panel to the narrowest grid there is
 export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spec | null {
-  const wide = Math.max(4, cols - 6);
+  // Capped, or a desk monitor turns a sheet of prose into one long line of it
+  const wide = Math.min(SHEET_COLS, Math.max(4, cols - 6));
   const say = (s: string, fg: number): Line[] => wrap(s, wide).map((text) => ({ text, fg }));
 
   switch (panel) {
