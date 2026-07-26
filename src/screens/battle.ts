@@ -57,6 +57,7 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   const swing = spoils ? 0 : age < 1 ? LUNGE : 1;
   // The white is a flash, not a state: it is gone well before the turn is
   const landing = spoils || age > FLASH_TICKS ? [] : b.hit;
+  const mending = spoils || age > FLASH_TICKS ? [] : b.mend;
 
   // What the room gave him back, held on screen for as long as the board is
   const mended = spoils && b.done === "win" ? b.healed : 0;
@@ -84,15 +85,15 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
 
   let y = head;
   if (arena) {
-    drawArena(grid, ourLine, theirLine, y, arena, cols, landing, swing, rise);
+    drawArena(grid, ourLine, theirLine, y, arena, cols, landing, mending, swing, rise);
     y += arena;
   }
   for (let x = 0; x < cols; x++) grid.put(x, y, "─", C.frame);
   y += 1;
 
   for (let i = 0; i < roster; i++) {
-    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, false, rise, mended);
-    if (theirLine[i]) side(grid, rightX, rightW, y, theirLine[i], landing, true, rise, 0);
+    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, mending, false, rise, mended);
+    if (theirLine[i]) side(grid, rightX, rightW, y, theirLine[i], landing, mending, true, rise, 0);
     if (ourLine[i] || theirLine[i]) grid.put(half, y, "│", C.frame);
     y += ROW_H;
   }
@@ -122,6 +123,7 @@ function drawArena(
   h: number,
   cols: number,
   landing: Hit[],
+  mending: Hit[],
   swing: number,
   rise: Rise | null,
 ) {
@@ -134,6 +136,7 @@ function drawArena(
 
   const threw = new Set(landing.map((hit) => hit.by));
   const took = new Map(landing.map((hit) => [hit.id, hit.n]));
+  const mended = new Map(mending.map((m) => [m.id, m.n]));
   const wide = perRank(cols);
 
   const line = (list: BattleUnit[], dir: 1 | -1) => {
@@ -157,7 +160,18 @@ function drawArena(
         grid.put(x, y, down ? "☠" : t.glyph, C.shade, C.violet);
         return;
       }
-      grid.put(x, y, down ? "☠" : t.glyph, down ? C.frame : hurt ? C.ink : COL(t.color), C.bg);
+      const put = mended.get(u.id);
+      grid.put(
+        x,
+        y,
+        down ? "☠" : t.glyph,
+        down ? C.frame : hurt ? C.ink : put ? C.green : COL(t.color),
+        C.bg,
+      );
+      if (put) {
+        const back = `+${put}`;
+        grid.text(x - (back.length >> 1), y - 1, back, C.green, C.bg);
+      }
       if (!knocked) return;
       grid.put(x + dir, y, "✕", C.ink, C.bg);
       const num = `${hurt}`;
@@ -177,17 +191,19 @@ function side(
   y: number,
   u: BattleUnit,
   landing: Hit[],
+  mending: Hit[],
   mirrored: boolean,
   rise: Rise | null,
   mended: number,
 ) {
   const t = CREATURES[u.creature];
   const struck = landing.find((h) => h.id === u.id);
+  const put = mending.find((h) => h.id === u.id);
   const woken = rise?.ids.has(u.id) === true && !rise.beam;
   const down = u.hp <= 0 && !woken;
   const ink = down ? C.frame : C.ink;
   const glyph = down ? "☠" : t.glyph;
-  const tone = down ? C.frame : struck ? C.ink : COL(t.color);
+  const tone = down ? C.frame : struck ? C.ink : put ? C.green : COL(t.color);
 
   const name = t.short.slice(0, Math.max(1, w - 2));
   if (mirrored) {
@@ -201,6 +217,9 @@ function side(
   if (struck) {
     const hurt = `-${struck.n}`;
     grid.text(mirrored ? x : x + w - hurt.length, y, hurt, C.ink);
+  } else if (put) {
+    const back = `+${put.n}`;
+    grid.text(mirrored ? x : x + w - back.length, y, back, C.green);
   } else if (mended > 0 && u.creature === "hero") {
     const back = `+${mended}`;
     grid.text(mirrored ? x : x + w - back.length, y, back, C.green);

@@ -47,8 +47,9 @@ the order you tapped it - first tapped, first hit.
 Each thing he raises is for something. A **bone knight** is a wall that halves
 what it takes and barely hits back. A **grave hound** is the heaviest blow in the
 game and made of paper. A **corpse wisp** mends whoever is worst off and can
-hardly fight. **Rats** are worth what you have a lot of them. He hits about as
-hard as a hound, so the line is where the damage is, not him.
+hardly fight. **Rats** are worth what you have a lot of them. He is a hundred
+hit points to a bone knight's seventy, so he is not the wall and he is not the
+army - he walks at the back of his own line unless you move him up it.
 
 When the room falls the board stays up for a beat. A white beam comes down out
 of the ceiling onto each body he is taking, the colour comes back into it, and

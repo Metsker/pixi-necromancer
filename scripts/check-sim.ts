@@ -215,7 +215,7 @@ const unit = (over: Partial<BattleUnit>): BattleUnit => ({
   hp: 10, maxHp: 10, dmg: 2, speed: 3, slot: slots++, tier: 0, withered: 0, ...over,
 });
 const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
-  node: 0, units, hit: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
+  node: 0, units, hit: [], mend: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
   round: 0, log: [], done: "", healed: 0, nextId: units.length,
 });
 
@@ -235,6 +235,19 @@ ok("bulwark never fully blocks", ABILITIES.bulwark.taken!(unit({}), 1, battle([]
   ok("wither sticks for its turns", target.withered === TUNING.witherTurns);
 }
 {
+  // A mend is reported the same way a blow is, so the board can show it
+  const me = unit({ id: 0, creature: "wisp", hp: 26, maxHp: 26 });
+  const hurt = unit({ id: 1, hp: 4, maxHp: 60 });
+  const bt = battle([me, hurt, unit({ id: 2, faction: "enemy", hp: 40, maxHp: 40 })], "player");
+  bt.cursor.player = 0;
+  let guard = 20;
+  while (!bt.mend.length && guard-- > 0) takeTurn(bt);
+  ok("mending is reported like a blow", bt.mend.length === 1);
+  ok("with who did it and how much", bt.mend[0].by === me.id && bt.mend[0].n > 0);
+  ok("and it landed on the one who needed it", bt.mend[0].id === hurt.id);
+}
+
+{
   // The mender tops up whoever is worst off, and never past their ceiling
   const me = unit({ id: 0, hp: 10, maxHp: 10 });
   const hurt = unit({ id: 1, hp: 3, maxHp: 60 });
@@ -244,6 +257,20 @@ ok("bulwark never fully blocks", ABILITIES.bulwark.taken!(unit({}), 1, battle([]
   const brimming = unit({ id: 2, hp: 10, maxHp: 10 });
   ABILITIES.siphon.onAttack!(me, unit({ faction: "enemy" }), battle([me, brimming]));
   ok("and nothing goes over the top", brimming.hp === 10);
+}
+
+{
+  // He walks at the back and stays there as the line grows
+  const g = newGame(7373);
+  ok("he is behind what he has raised", bandOf(g, heroForce(g)).at(-1)!.creature === "hero");
+  raise(g, "knight");
+  raise(g, "hound");
+  ok("and behind what he raises next", bandOf(g, heroForce(g)).at(-1)!.creature === "hero");
+  // ...unless you put him somewhere, and then he stays put
+  moveUp(g, bandOf(g, heroForce(g)).length - 1);
+  const at = bandOf(g, heroForce(g)).findIndex((u) => u.creature === "hero");
+  raise(g, "rat");
+  ok("moving him up sticks", bandOf(g, heroForce(g)).findIndex((u) => u.creature === "hero") === at);
 }
 ok("rend only bites the wounded", ABILITIES.rend.bonus!(unit({}), unit({ hp: 10 }), battle([])) === 0);
 ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle([])) === TUNING.rendBonus);

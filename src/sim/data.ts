@@ -49,6 +49,7 @@ export type Battle = {
   node: number;
   units: BattleUnit[];
   hit: Hit[];
+  mend: Hit[]; // who got put back together this turn, and by how much
   // Whose line swings first this fight, decided on the way in. The two sides
   // then alternate, so twice the bodies is not twice the blows.
   lead: Faction;
@@ -127,8 +128,8 @@ export const TUNING = {
   idlePoll: 10,
   maxRounds: 100,
 
-  heroHp: 260,
-  heroDmg: 14,
+  heroHp: 100,
+  heroDmg: 22,
   startingMinions: 2,
   // What a room he takes gives him back, as a share of what he can hold. Not
   // all of it: the run is meant to wear him down.
@@ -138,7 +139,7 @@ export const TUNING = {
   squadCap: 6,
   willPerPoint: 1,
   mightPerPoint: 3,
-  wardPerPoint: 30,
+  wardPerPoint: 40,
   xpPerLevel: 26,
 
   raiseChance: 0.5,
@@ -159,7 +160,7 @@ export const TUNING = {
   splitTiers: 1,
 
   roomBase: 2,
-  tierHp: 4,
+  tierHp: 2,
   tierDmgAt: 3,
   logLines: 40,
 };
@@ -180,7 +181,7 @@ export type Template = {
 
 // color is an index into PALETTE
 export const CREATURES: Record<CreatureId, Template> = {
-  hero:    { name: "Necromancer", short: "You",    role: "himself", glyph: "🕱", color: 20, hp: 260, dmg: 14, speed: 3, xp: 0,  ability: null,      tag: "" },
+  hero:    { name: "Necromancer", short: "You",    role: "himself", glyph: "🕱", color: 20, hp: 100, dmg: 22, speed: 3, xp: 0,  ability: null,      tag: "" },
   rat:     { name: "Plague Rat",  short: "Rat",    role: "swarm",   glyph: "⚇", color: 15, hp: 20,  dmg: 4,  speed: 5, xp: 6,  ability: "swarm",   tag: "+2 dmg per ally" },
   hound:   { name: "Grave Hound", short: "Hound",  role: "heavy",   glyph: "⋒", color: 14, hp: 26,  dmg: 12, speed: 5, xp: 12, ability: "rend",    tag: "+6 vs wounded" },
   knight:  { name: "Bone Knight", short: "Knight", role: "wall",    glyph: "⌤", color: 22, hp: 70,  dmg: 3,  speed: 2, xp: 14, ability: "bulwark", tag: "halves what it takes" },
@@ -232,7 +233,7 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
 
 export const STAT_LABEL: Record<Stat, string> = {
   might: "MIGHT  +3 dmg",
-  ward: "WARD  +30 hp",
+  ward: "WARD  +40 hp",
   will: "WILL  +1 slot",
 };
 

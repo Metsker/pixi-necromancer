@@ -81,12 +81,13 @@ export const tierForDist = (dist: number, far: number) =>
   clamp(Math.round(((dist - 1) * (TUNING.tiers - 1)) / Math.max(1, far - 1)), 0, TUNING.tiers - 1);
 
 function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
-  if (kind === "boss") return ["ossuary", "warden", "knight"];
+  if (kind === "boss") return ["ossuary", "warden"];
   // Rooms near the gate are small enough that a scouting pair has a real chance;
   // the deep ones are not
   const grow = tier >= 2 ? 1 : 0;
   const base = TUNING.roomBase;
-  const n = kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow;
+  // Never nothing: a room with no one in it is a room that wins itself
+  const n = Math.max(1, kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow);
   const pool = tier < 2 ? EARLY_POOL : LATE_POOL;
   return Array.from({ length: n }, () => pick(pool));
 }
@@ -275,7 +276,11 @@ export const threatOf = (n: MapNode): 0 | 1 | 2 => {
 export function raise(g: GameState, creature: CreatureId): boolean {
   if (fielded(g) >= commandCap(g)) return false;
   const t = CREATURES[creature];
+  // He walks at the back unless you have deliberately moved him up, and stays
+  // there as the line grows
+  const trailing = g.front >= g.reserve.length;
   g.reserve.push({ id: g.nextUnit++, creature, hp: t.hp, maxHp: t.hp });
+  if (trailing) g.front = g.reserve.length;
   return true;
 }
 
@@ -327,7 +332,10 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
       const hurt = living(b, s.faction)
         .filter((u) => u.hp < u.maxHp)
         .sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
-      if (hurt) hurt.hp = Math.min(hurt.maxHp, hurt.hp + TUNING.siphonHeal);
+      if (!hurt) return;
+      const back = Math.min(hurt.maxHp - hurt.hp, TUNING.siphonHeal);
+      hurt.hp += back;
+      if (back > 0) b.mend.push({ id: hurt.id, by: s.id, n: back });
     },
   },
   rend: { bonus: (_s, t) => (t.hp * 2 <= t.maxHp ? TUNING.rendBonus : 0) },
@@ -410,6 +418,7 @@ export function orderFor(b: Battle, side: BattleUnit["faction"]): number[] {
 export function takeTurn(b: Battle) {
   if (b.done) return;
   b.hit = [];
+  b.mend = [];
   const side = b.next;
   const list = orderFor(b, side);
   if (list.length) {
@@ -442,6 +451,7 @@ function makeBattle(g: GameState, f: Force): Battle {
     node: f.at,
     units: [],
     hit: [],
+    mend: [],
     lead: "player",
     next: "player",
     cursor: { player: 0, enemy: 0 },
@@ -790,7 +800,7 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 5;
+const SAVE_VERSION = 6;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
