@@ -7,6 +7,7 @@ type Voice = {
   f: number; // hz, or the band the noise is squeezed into
   to?: number; // where it slides by the end
   at?: number; // seconds after the sound begins
+  atk?: number; // how long it takes to arrive - long enough and it swells
   dur: number;
   gain: number;
   q?: number; // how narrow the noise band is
@@ -20,14 +21,13 @@ const SOUNDS = {
     { wave: "square", f: 780, at: 0.045, dur: 0.06, gain: 0.1 },
   ],
   close: [{ wave: "square", f: 620, to: 380, dur: 0.06, gain: 0.1 }],
+  // Shuffling a line is done over and over, so it gets a dry tick with no pitch
+  // in it: a blip you hear eight times running is a blip you come to hate.
+  move: [{ f: 420, to: 220, dur: 0.035, gain: 0.09, q: 2.2 }],
   type: [{ wave: "square", f: 1500, to: 1200, dur: 0.014, gain: 0.05 }],
   // the map
   step: [{ f: 260, to: 150, dur: 0.07, gain: 0.07, q: 1.4 }],
   send: [{ f: 1800, to: 380, dur: 0.28, gain: 0.09, q: 0.6 }],
-  lurk: [
-    { wave: "sine", f: 78, to: 52, dur: 0.6, gain: 0.22 },
-    { f: 320, to: 120, dur: 0.5, gain: 0.06, q: 1.8 },
-  ],
   // blows
   hit: [
     { f: 1500, to: 420, dur: 0.08, gain: 0.16, q: 0.8 },
@@ -42,9 +42,12 @@ const SOUNDS = {
     { f: 700, to: 130, dur: 0.3, gain: 0.1, q: 0.6 },
   ],
   // the dead
+  // Weight, then a falling minor, then a breath drawn in. Anything that climbs
+  // as it arrives is a power-up, and nothing here is pleased to be standing.
   rise: [
-    { wave: "triangle", f: 110, to: 440, dur: 0.34, gain: 0.16 },
-    { wave: "sine", f: 220, to: 880, at: 0.1, dur: 0.3, gain: 0.1 },
+    { wave: "sine", f: 55, dur: 0.5, gain: 0.2, atk: 0.05 },
+    { wave: "triangle", f: 165, to: 131, dur: 0.55, gain: 0.09, atk: 0.12 },
+    { f: 240, to: 900, dur: 0.4, gain: 0.07, q: 1.2, atk: 0.22 },
   ],
   eat: [
     { f: 340, to: 110, dur: 0.16, gain: 0.16, q: 0.9 },
@@ -145,8 +148,10 @@ function voice(c: AudioContext, v: Voice, t: number, bend: number) {
   const t0 = t + (v.at ?? 0);
   const t1 = t0 + v.dur;
   const g = c.createGain();
+  // Never longer than half of it, or a sound spends its whole life arriving
+  const atk = Math.min(v.atk ?? ATTACK, v.dur / 2);
   g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(v.gain, t0 + ATTACK);
+  g.gain.exponentialRampToValueAtTime(v.gain, t0 + atk);
   g.gain.exponentialRampToValueAtTime(0.0001, t1);
   g.connect(bus!);
 

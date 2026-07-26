@@ -42,6 +42,9 @@ const ACT_SFX: Partial<Record<Act["t"], SfxName>> = {
   inspect: "open",
   watch: "open",
   restart: "open",
+  up: "move",
+  toggle: "move",
+  pick: "move",
   send: "send",
   take: "buy",
   path: "rise",
@@ -119,14 +122,12 @@ async function main() {
 
   // Sound follows what the screen shows rather than what the sim does: the sim
   // stays headless, and a frame that ran ten ticks still only makes one noise.
-  // Foes only ever appear on the map, so their total going up is a room filling.
   const snap = () => ({
     cleared: g.cleared,
     level: g.level,
     over: g.over,
     risen: g.risen?.at ?? -1,
     at: g.forces[0].at,
-    foes: g.nodes.reduce((n, x) => n + x.foes.length, 0),
   });
   let seen = snap();
   let lastSwing: unknown = null;
@@ -137,7 +138,6 @@ async function main() {
     else if (now.level > seen.level) sfx("level");
     else if (now.cleared > seen.cleared) sfx("clear");
     if (now.risen !== seen.risen) sfx("rise");
-    if (now.foes > seen.foes) sfx("lurk");
     if (now.at !== seen.at) sfx("step");
     seen = now;
 
