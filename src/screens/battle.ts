@@ -14,8 +14,10 @@ import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 const ROW_H = 2; // a name row and a bar row per unit in the roster
 const LUNGE = 2; // how far a fighter steps into the middle to land a blow
 
-// How long a blow stays lit, in ticks
+// How long a blow stays lit, in ticks, and how long a mend does. A blow is a
+// flash; a mend is worth looking at.
 const FLASH_TICKS = 1;
+const MEND_TICKS = 3;
 
 // The three beats of getting up: the light finds it, the colour comes back,
 // and then it is standing at the end of your line.
@@ -57,7 +59,7 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   const swing = spoils ? 0 : age < 1 ? LUNGE : 1;
   // The white is a flash, not a state: it is gone well before the turn is
   const landing = spoils || age > FLASH_TICKS ? [] : b.hit;
-  const mending = spoils || age > FLASH_TICKS ? [] : b.mend;
+  const mending = spoils || age > MEND_TICKS ? [] : b.mend;
 
   // What the room gave him back, held on screen for as long as the board is
   const mended = spoils && b.done === "win" ? b.healed : 0;
@@ -68,9 +70,14 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
     rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL, moved: p >= WAKE_UNTIL };
   }
 
-  // Once they have crossed they are on his side of the board, in the roster too
+  // Once they have crossed they are on his side of the board, in the roster too.
+  // They land where a raise actually lands: at the end of what he is holding,
+  // which is in front of him whenever he is walking at the back of his own line.
   const crossed = rise?.moved ? theirs.filter((u) => rise.ids.has(u.id)) : [];
-  const ourLine = [...ours, ...crossed];
+  const trailing = ours.length > 0 && ours[ours.length - 1].creature === "hero";
+  const ourLine = trailing
+    ? [...ours.slice(0, -1), ...crossed, ours[ours.length - 1]]
+    : [...ours, ...crossed];
   const theirLine = rise?.moved ? theirs.filter((u) => !rise.ids.has(u.id)) : theirs;
   const shown = Math.max(ourLine.length, theirLine.length);
 

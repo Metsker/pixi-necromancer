@@ -102,6 +102,51 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   }
 }
 
+// A mend has to be as legible on the board as a blow is
+{
+  type Cell = { ch: string; fg: number; bg: number };
+  const cells = new Map<string, Cell>();
+  const stub = {
+    cols: 24,
+    rows: 52,
+    cssCell: 16,
+    put(x: number, y: number, ch: string, fg: number, bg?: number) {
+      const was = cells.get(`${x},${y}`);
+      cells.set(`${x},${y}`, { ch, fg, bg: bg ?? was?.bg ?? C.bg });
+    },
+    fill(x: number, y: number, w: number, h: number, bg: number) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.put(x + i, y + j, " ", bg, bg);
+    },
+    text(x: number, y: number, str: string, fg: number, bg?: number) {
+      [...str].forEach((ch, i) => this.put(x + i, y, ch, fg, bg));
+    },
+    center(x: number, y: number, w: number, str: string, fg: number, bg?: number) {
+      const t = [...str].slice(0, w);
+      this.text(x + Math.max(0, (w - t.length) >> 1), y, t.join(""), fg, bg);
+    },
+  };
+
+  const g = newGame(8642);
+  const f = g.forces[0];
+  orderHero(g, g.nodes.find((n) => n.state === "open")!.id);
+  advance(g, TUNING.marchTicks + 1);
+  const b = f.battle!;
+  const mended = b.units.find((u) => u.faction === "player")!;
+  mended.hp = 1;
+  b.mend = [{ id: mended.id, by: mended.id, n: 7 }];
+  f.next = g.time + TUNING.turnTicks;
+
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
+  const drawn = [...cells.values()];
+  ok("a mend is written on the board", drawn.some((c) => c.ch === "7" && c.fg === C.green));
+  ok("with a plus in front of it", drawn.some((c) => c.ch === "+" && c.fg === C.green));
+  ok(
+    "and the one who got it goes green",
+    drawn.some((c) => c.ch === CREATURES[mended.creature].glyph && c.fg === C.green),
+  );
+}
+
 // Every creature gets its own sheet, and the longest name in the pack is what
 // decides whether that sheet fits
 {
@@ -166,6 +211,9 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   b.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
   b.done = "win";
   const body = b.units.find((u) => u.faction === "enemy")!;
+  // Something with a name nothing already in his line shares, or the scan below
+  // cannot tell which row it is looking at
+  body.creature = "warden";
   g.risen = { creatures: [body.creature], units: [body.id], node: b.node, at: g.time };
   f.mode = "spoils";
   f.next = g.time + TUNING.spoilsTicks;
@@ -179,6 +227,21 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   const lit = drawn.filter((c) => c.bg === C.violet && c.ch !== " " && c.ch !== "║");
   ok("and it is behind the body, not over it", lit.length === 1);
   ok("the body is still legible in it", lit[0].fg === C.shade);
+
+  // A body that has crossed stands where a raise actually puts it: at the end of
+  // what he is holding, in front of him, not behind him
+  f.next = g.time + Math.ceil(TUNING.spoilsTicks * 0.2);
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
+  const names: string[] = [];
+  for (let y = 0; y < stub.rows; y++) {
+    const row = Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},${y}`)?.ch ?? " ").join("");
+    for (const who of ["You", CREATURES[body.creature].short]) {
+      if (row.includes(who) && !names.includes(who)) names.push(who);
+    }
+  }
+  ok("the one that got up is on his side of it", names.length === 2);
+  ok("and stands in front of him, where a raise lands", names[0] !== "You");
 
   // What he has to hand is on the board too, because it is the number you spend
   const row0 = Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},0`)?.ch ?? " ").join("");
