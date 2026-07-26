@@ -14,16 +14,17 @@ type Voice = {
 };
 
 const SOUNDS = {
-  // the sheets
-  tap: [{ wave: "square", f: 940, to: 700, dur: 0.045, gain: 0.12 }],
+  // The sheets. Triangle rather than square: the same note without the buzz on
+  // it, which is what makes a square wave tiring to be tapped at all evening.
+  tap: [{ wave: "triangle", f: 940, to: 700, dur: 0.05, gain: 0.16 }],
   open: [
-    { wave: "square", f: 520, dur: 0.05, gain: 0.1 },
-    { wave: "square", f: 780, at: 0.045, dur: 0.06, gain: 0.1 },
+    { wave: "triangle", f: 520, dur: 0.055, gain: 0.14 },
+    { wave: "triangle", f: 780, at: 0.045, dur: 0.07, gain: 0.14 },
   ],
-  close: [{ wave: "square", f: 620, to: 380, dur: 0.06, gain: 0.1 }],
+  close: [{ wave: "triangle", f: 620, to: 380, dur: 0.07, gain: 0.14 }],
   // Shuffling a line is done over and over, so it gets a dry tick with no pitch
   // in it: a blip you hear eight times running is a blip you come to hate.
-  move: [{ f: 420, to: 220, dur: 0.035, gain: 0.09, q: 2.2 }],
+  move: [{ f: 300, to: 160, dur: 0.03, gain: 0.1, q: 1.2 }],
   type: [{ wave: "square", f: 1500, to: 1200, dur: 0.014, gain: 0.05 }],
   // the map
   step: [{ f: 260, to: 150, dur: 0.07, gain: 0.07, q: 1.4 }],
