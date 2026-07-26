@@ -135,7 +135,7 @@ function drawForces(
 ) {
   const hero = here.find((f) => f.kind === "hero");
   const out = here.filter((f) => f.kind === "squad");
-  if (hero && on(x, y)) grid.put(x, y, CREATURES.hero.glyph, C.gold, C.bg);
+  if (hero && on(x, y)) grid.put(x, y, CREATURES.hero.glyph, COL(CREATURES.hero.color), C.bg);
   if (!out.length) return;
   const at = hero ? x + 1 : x;
   if (!on(at, y)) return;

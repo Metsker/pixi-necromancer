@@ -597,6 +597,16 @@ ok("rooms are actually being cleared", clearedTotal / PROBES >= 5);
 ok("the probe saw a lot of chatter", chatter.size > 10);
 for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <= MIN_COLS);
 
+// Two creatures sharing a colour is two creatures you cannot tell apart on the
+// board, which is the one thing the board is for
+{
+  const used = new Map<number, string>();
+  for (const [id, t] of Object.entries(CREATURES)) {
+    ok(`${id}: nothing else wears its colour`, !used.has(t.color));
+    used.set(t.color, id);
+  }
+}
+
 // Ability tags are shown in the roster; a lie there is a real bug
 for (const [id, t] of Object.entries(CREATURES)) {
   ok(`${id}: an ability implies a tag`, !t.ability || t.tag.length > 0);

@@ -12,7 +12,7 @@ import {
   type Stat,
 } from "../sim/data.ts";
 import { bandOf, canOrder, canSend, heroDmg, heroForce, reserve, squads } from "../sim/game.ts";
-import { C, Hits, type Line, sheet, wrap } from "../ui.ts";
+import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
@@ -254,7 +254,7 @@ function armySpec(g: GameState, wide: number): Spec {
     const you = u.creature === "hero";
     lines.push({
       text: ` ${k + 1}.${t.glyph}${(you ? "You" : t.short).padEnd(6)}${u.hp}`,
-      fg: you ? C.gold : C.mid,
+      fg: you ? COL(CREATURES.hero.color) : C.mid,
       act: { t: "inspect", id: u.id },
       tail: k > 0 ? { text: "▲", act: { t: "up", k } } : undefined,
     });
