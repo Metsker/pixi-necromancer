@@ -61,7 +61,7 @@ export const crtFilter = () =>
     resolution: "inherit",
     resources: {
       crt: new UniformGroup({
-        uCurve: { value: 0.017, type: "f32" },
+        uCurve: { value: 0.025, type: "f32" },
         uScan: { value: 0.22, type: "f32" },
         uPitch: { value: 3, type: "f32" },
         uSplit: { value: 1, type: "f32" },
