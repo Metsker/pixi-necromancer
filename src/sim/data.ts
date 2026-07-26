@@ -122,8 +122,8 @@ export const TUNING = {
   idlePoll: 10,
   maxRounds: 60,
 
-  heroHp: 90,
-  heroDmg: 8,
+  heroHp: 100,
+  heroDmg: 9,
   startingMinions: 2,
   // A room he takes is a room he can rest in, so his question is only ever
   // whether he can win this one, not how much the last one cost
@@ -154,7 +154,7 @@ export const TUNING = {
   splitTiers: 2,
 
   roomBase: 3,
-  tierHp: 12,
+  tierHp: 10,
   tierDmgAt: 3,
   logLines: 40,
 };
@@ -174,7 +174,7 @@ export type Template = {
 
 // color is an index into PALETTE
 export const CREATURES: Record<CreatureId, Template> = {
-  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 16, hp: 90,  dmg: 8, speed: 3, xp: 0,  ability: null,      tag: "" },
+  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 16, hp: 100, dmg: 9, speed: 3, xp: 0,  ability: null,      tag: "" },
   rat:     { name: "Plague Rat",  short: "Rat",    glyph: "⚇", color: 15, hp: 18,  dmg: 3, speed: 5, xp: 6,  ability: "swarm",   tag: "+1 dmg per ally" },
   hound:   { name: "Grave Hound", short: "Hound",  glyph: "⋒", color: 14, hp: 26,  dmg: 4, speed: 5, xp: 9,  ability: "rend",    tag: "+3 vs wounded" },
   knight:  { name: "Bone Knight", short: "Knight", glyph: "⌤", color: 22, hp: 40,  dmg: 3, speed: 2, xp: 12, ability: "bulwark", tag: "halves damage" },

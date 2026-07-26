@@ -269,6 +269,25 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
+  // He walks off a room he takes. What he raised does not.
+  const g = newGame(3939);
+  raise(g, "knight");
+  const target = openRooms(g)[0].id;
+  orderHero(g, target);
+  advance(g, TUNING.marchTicks + 1);
+  const band = g.forces[0].battle!.units.filter((u) => u.faction === "player");
+  const hero = band.find((u) => u.creature === "hero")!;
+  const mate = band.find((u) => u.creature !== "hero")!;
+  hero.hp = 40;
+  mate.hp = 3;
+  g.forces[0].battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 1));
+  advance(g, TUNING.turnTicks * 40);
+  ok("the room fell", g.nodes[target].state === "cleared");
+  ok("he walks it off", heroUnit(g)!.hp === heroUnit(g)!.maxHp);
+  ok("a body keeps what it has left", reserve(g).some((u) => u.hp === 3));
+}
+
+{
   // He is not pinned to the front of his own line
   const g = newGame(4545);
   raise(g, "knight");

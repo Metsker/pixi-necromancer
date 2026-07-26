@@ -21,8 +21,10 @@ Ossuary waits at whatever room stands furthest from the way in.
 Nothing waits for you. The clock runs at x1, x2 or x4, or you hold it, and any
 sheet you have to answer stops it by itself.
 
-You walk in with whatever you have not sent away, and a room you take is a room
-you rest in - everyone who walks out of it walks out whole. Only what he is
+You walk in with whatever you have not sent away. A room you take is a room you
+rest in, but only for you: nothing he raised ever heals. What a body has when it
+gets up is what it has for the rest of the run, so a wounded one is a resource
+running out. Only what he is
 standing over gets up, and only he reads the walls: a room a squad took keeps
 its piece of the story until he goes through it himself.
 

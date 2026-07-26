@@ -648,8 +648,9 @@ function settle(g: GameState, f: Force, b: Battle) {
     log(g, "The dark has you.");
     return;
   }
+  // He rests off a room he takes. Nothing he raised does: what a body has left
+  // is what it got up with, and it only ever goes down from there.
   h.hp = Math.min(h.maxHp, h.hp + TUNING.restHeal);
-  for (const m of g.reserve) m.hp = Math.min(m.maxHp, m.hp + TUNING.restHeal);
 }
 
 // The beat is over: put the board away and get on with it
