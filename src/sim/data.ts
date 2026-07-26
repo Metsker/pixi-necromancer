@@ -140,7 +140,7 @@ export const TUNING = {
   wardPerPoint: 50,
   xpPerLevel: 26,
 
-  raiseChance: 0.9,
+  raiseChance: 0.5,
   squadXpCut: 1,
   reinforceEvery: 260,
   reinforceAfter: 700,

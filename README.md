@@ -61,7 +61,8 @@ A room you leave standing does not stay the size you found it. That is the only
 clock pressure there is, and it is what makes spending a squad worth it.
 
 Every room won pays experience and crafting materials that nothing spends yet.
-Some rooms give up a piece of the story when he takes them.
+Every corpse he stands over is a coin flip to get up - a crypt is the exception,
+and gives up all of its dead. Some rooms give up a piece of the story too.
 
 Fights resolve on their own, your side on the left and theirs on the right. Your
 side is commanded and focuses whatever is nearest to dead; theirs is not

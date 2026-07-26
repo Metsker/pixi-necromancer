@@ -490,16 +490,34 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // A room he takes himself does raise what it kills
-  let rose = 0;
-  for (let seed = 0; seed < 20; seed++) {
+  // Every corpse is a coin flip, and over enough of them it lands like one
+  let fallen = 0;
+  let up = 0;
+  let crypts = 0;
+  let cryptUp = 0;
+  for (let seed = 0; seed < 120; seed++) {
     const g = newGame(6100 + seed * 7);
+    const room = g.nodes[openRooms(g)[0].id];
     const before = g.reserve.length;
-    orderHero(g, openRooms(g)[0].id);
+    const bodies = room.foes.length;
+    const crypt = room.kind === "crypt";
+    orderHero(g, room.id);
     advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
-    if (g.reserve.length > before) rose += 1;
+    if (room.state !== "cleared") continue;
+    const got = g.reserve.length - before;
+    if (crypt) {
+      crypts += bodies;
+      cryptUp += got;
+      continue;
+    }
+    fallen += bodies;
+    up += got;
   }
-  ok("standing over them is what raises them", rose > 5);
+  ok("a decent sample of corpses", fallen > 100);
+  const rate = up / fallen;
+  ok(`corpses come up about half the time (${(rate * 100).toFixed(0)}%)`, rate > 0.38 && rate < 0.62);
+  ok("a crypt gives up all of its dead", crypts === 0 || cryptUp === crypts);
+  console.log(`raising: ${up}/${fallen} got up, and ${cryptUp}/${crypts} in crypts`);
 }
 
 {
