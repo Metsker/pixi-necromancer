@@ -5,11 +5,11 @@ import {
   KIND_NAME,
   KIND_NOTE,
   SQUAD_GLYPH,
+  STAT_IDS,
   STAT_LABEL,
   type CreatureId,
   type Force,
   type GameState,
-  type Stat,
 } from "../sim/data.ts";
 import { bandOf, canOrder, canSend, heroDmg, heroForce, reserve, squads } from "../sim/game.ts";
 import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
@@ -94,9 +94,7 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         title: "MENU",
         minWidth: Math.min(wide, 16),
         lines: [
-          { text: `might ${g.build.might}`, fg: C.mid },
-          { text: `ward  ${g.build.ward}`, fg: C.mid },
-          { text: `will  ${g.build.will}`, fg: C.mid },
+          ...STAT_IDS.map((s) => ({ text: `${s.padEnd(6)}${g.build[s]}`, fg: C.mid })),
           { text: "" },
           ...say(`rooms taken ${g.cleared}`, C.dim),
           ...say(`dead ${g.lost}`, C.dim),
@@ -120,11 +118,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
       return {
         title: `LEVEL ${g.level + 1}`,
         minWidth: 0,
-        lines: [
-          { text: STAT_LABEL.might, act: { t: "stat", s: "might" as Stat } },
-          { text: STAT_LABEL.ward, act: { t: "stat", s: "ward" as Stat } },
-          { text: STAT_LABEL.will, act: { t: "stat", s: "will" as Stat } },
-        ],
+        // Built from the list, so a new one cannot be added and go unoffered
+        lines: STAT_IDS.map((s) => ({ text: STAT_LABEL[s], act: { t: "stat", s } })),
       };
     case "lore": {
       const piece = LORE[g.loreQueue[0] ?? 0];
@@ -179,12 +174,15 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
     say(tally(n.foes), C.mid);
   }
 
-  // Anything fighting here can be watched, whoever it belongs to
-  const busy = g.forces.filter((f) => f.mode === "fight" && f.at === n.id);
+  // Anything fighting here can be watched, whoever it belongs to - and a room he
+  // has taken but not left is the one place he still has something to do
+  const busy = g.forces.filter(
+    (f) => f.at === n.id && (f.mode === "fight" || (f.kind === "hero" && f.mode === "spoils")),
+  );
   lines.push({ text: "" });
   for (const f of busy) {
     lines.push({
-      text: f.kind === "hero" ? "watch the fight" : "watch the squad",
+      text: f.mode === "spoils" ? "take the dead" : f.kind === "hero" ? "watch the fight" : "watch the squad",
       act: { t: "watch", id: f.id },
     });
   }

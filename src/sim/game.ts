@@ -31,6 +31,12 @@ export const squads = (g: GameState) =>
 export const forcesAt = (g: GameState, id: number) =>
   g.forces.filter((f) => f.mode !== "gone" && f.at === id);
 export const commandCap = (g: GameState) => TUNING.baseCap + g.build.will * TUNING.willPerPoint;
+export const manaCap = (g: GameState) => TUNING.manaBase + g.build.mana * TUNING.manaPerPoint;
+export const manaCost = (c: CreatureId) => CREATURES[c].mana;
+
+// A force standing in a room it has not finished with. Neither can be given a
+// new order: the board is still up and the dead on it are still his to ask.
+export const busy = (f: Force) => f.mode === "fight" || f.mode === "spoils";
 
 // Everything he is holding up, wherever it is standing. A squad is still his
 // until it is dead, so it still costs him a slot.
@@ -302,6 +308,9 @@ export function chooseStat(g: GameState, s: Stat) {
     h.maxHp += TUNING.wardPerPoint;
     h.hp += TUNING.wardPerPoint;
   }
+  // What the ceiling goes up by, he has to hand: a pool you cannot use yet is
+  // not a level-up, it is a promise
+  if (s === "mana") g.mana += TUNING.manaPerPoint;
 }
 
 // ---------------------------------------------------------------- abilities
@@ -459,6 +468,7 @@ function makeBattle(g: GameState, f: Force): Battle {
     log: [],
     done: "",
     healed: 0,
+    taken: [],
     nextId: 0,
   };
 
@@ -504,11 +514,11 @@ function makeBattle(g: GameState, f: Force): Battle {
 // ---------------------------------------------------------------- orders
 
 export const canOrder = (g: GameState, id: number) =>
-  !g.over && heroForce(g).mode !== "fight" && routeTo(g, heroForce(g).at, id) !== null;
+  !g.over && !busy(heroForce(g)) && routeTo(g, heroForce(g).at, id) !== null;
 
 export const canSend = (g: GameState, id: number) =>
   !g.over &&
-  heroForce(g).mode !== "fight" &&
+  !busy(heroForce(g)) &&
   g.reserve.length > 0 &&
   g.nodes[id]?.state === "open" &&
   routeTo(g, heroForce(g).at, id) !== null;
@@ -676,6 +686,51 @@ function settle(g: GameState, f: Force, b: Battle) {
   b.healed = h.hp - before;
   const shown = b.units.find((u) => u.src === h.id);
   if (shown) shown.hp = h.hp;
+
+  // The room is his and nothing hurries him out of it. The board stays up until
+  // he says so, because what to do with the dead on it is the decision.
+  f.next = HELD;
+  if (offered(g, b).length) log(g, "The dead wait.");
+}
+
+// A won room waits: no tick ever comes round to end it
+export const HELD = Number.MAX_SAFE_INTEGER;
+
+// Bodies in this room he could still ask, cost aside
+export const offered = (g: GameState, b: Battle) =>
+  b.units.filter(
+    (u) => u.faction === "enemy" && u.hp <= 0 && !b.taken.includes(u.id) && manaCost(u.creature) > 0,
+  );
+
+// One body, bought. The free ones a room gives up are luck; this is the choice.
+export function reap(g: GameState, unitId: number): boolean {
+  const f = heroForce(g);
+  const b = f.battle;
+  if (!b || f.mode !== "spoils" || b.done !== "win" || f.kind !== "hero") return false;
+  const u = b.units.find((o) => o.id === unitId);
+  if (!u || !offered(g, b).includes(u)) return false;
+  const cost = manaCost(u.creature);
+  if (g.mana < cost) {
+    log(g, "Not enough of you.");
+    return false;
+  }
+  if (!raise(g, u.creature)) {
+    log(g, "No room for it.");
+    return false;
+  }
+  g.mana -= cost;
+  b.taken.push(u.id);
+  g.risen = { creatures: [u.creature], units: [u.id], node: b.node, at: g.time };
+  log(g, `${CREATURES[u.creature].short} rises.`.slice(0, 20));
+  return true;
+}
+
+// He is done with the room. Nothing else ends the spoils.
+export function leaveRoom(g: GameState): boolean {
+  const f = heroForce(g);
+  if (f.mode !== "spoils") return false;
+  finish(g, f);
+  return true;
 }
 
 // The beat is over: put the board away and get on with it
@@ -711,6 +766,8 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   n.state = "cleared";
   g.cleared += 1;
   unlock(g);
+  // A room that stops fighting back is a room he gets some of himself back in
+  g.mana = Math.min(manaCap(g), g.mana + Math.ceil(manaCap(g) * TUNING.manaRegen));
 
   // Split spawns are not corpses anybody left behind, so they pay nothing
   const fallen = b.units.filter((u) => u.faction === "enemy" && u.hp <= 0 && u.tier === 0);
@@ -723,8 +780,8 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   const spoils = RES_IDS.filter((k) => res[k] > 0).map((k) => `${RESOURCES[k].glyph}${res[k]}`);
   log(g, `+${xp}xp ${spoils.join(" ")}`.slice(0, 20));
 
-  // Only what he is standing over gets up. A squad wins the room and leaves
-  // the dead where they lie, which is why a squad is spent and not invested.
+  // Only what he is standing over gets up on its own, and now hardly any of it
+  // does. The rest of them he has to ask for, one at a time, and pay for.
   if (f.kind !== "hero") return;
   const rose: CreatureId[] = [];
   const bodies: number[] = [];
@@ -732,6 +789,7 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
     if (u.creature === "ossuary") continue;
     if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance) continue;
     if (!raise(g, u.creature)) break;
+    b.taken.push(u.id);
     rose.push(u.creature);
     bodies.push(u.id);
   }
@@ -767,7 +825,8 @@ export function newGame(seedValue: number): GameState {
     xp: 0,
     level: 0,
     unspent: 0,
-    build: { might: 0, ward: 0, will: 0 },
+    mana: TUNING.manaBase,
+    build: { might: 0, ward: 0, will: 0, mana: 0 },
     res: { bone: 0, ash: 0, salt: 0 },
     risen: null,
     seenLore: [],
@@ -800,12 +859,12 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 6;
+const SAVE_VERSION = 7;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
   "seed", "rng", "time", "nodes", "forces", "reserve", "front", "nextForce", "nextUnit", "xp",
-  "level", "unspent", "build", "res", "risen", "seenLore", "loreQueue", "cleared",
+  "level", "unspent", "mana", "build", "res", "risen", "seenLore", "loreQueue", "cleared",
   "lost", "log", "over",
 ];
 

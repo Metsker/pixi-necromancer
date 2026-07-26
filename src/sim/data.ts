@@ -1,6 +1,6 @@
 // Numbers and templates only - behaviour lives in game.ts
 export type Point = { x: number; y: number };
-export type Stat = "might" | "ward" | "will";
+export type Stat = "might" | "ward" | "will" | "mana";
 export type Resource = "bone" | "ash" | "salt";
 export type Faction = "player" | "enemy";
 export type AbilityId = "swarm" | "bulwark" | "wither" | "siphon" | "rend" | "toll" | "split";
@@ -59,6 +59,7 @@ export type Battle = {
   log: string[];
   done: "" | "win" | "loss";
   healed: number; // what the room gave him back, for the board to show
+  taken: number[]; // bodies out of this room that are his now, however they got up
   nextId: number;
 };
 
@@ -101,6 +102,7 @@ export type GameState = {
   xp: number;
   level: number;
   unspent: number;
+  mana: number; // what asking costs him; the ceiling is what he has built up to
   build: Record<Stat, number>;
   res: Record<Resource, number>;
   risen: Risen | null;
@@ -140,13 +142,18 @@ export const TUNING = {
   willPerPoint: 1,
   mightPerPoint: 3,
   wardPerPoint: 30,
+  manaPerPoint: 5,
   xpPerLevel: 26,
 
-  raiseChance: 0.5,
+  // What he can spend on the dead, and what a room he takes gives back of it
+  manaBase: 10,
+  manaRegen: 0.2,
+
+  raiseChance: 0.05,
   squadXpCut: 1,
   reinforceEvery: 260,
   reinforceAfter: 700,
-  riseTicks: 60,
+  riseTicks: 24,
   foeCap: 7,
 
   swarmPerAlly: 2,
@@ -175,20 +182,21 @@ export type Template = {
   dmg: number;
   speed: number;
   xp: number;
+  mana: number; // what asking this one back costs; 0 is one that never answers
   ability: AbilityId | null;
   tag: string;
 };
 
 // color is an index into PALETTE
 export const CREATURES: Record<CreatureId, Template> = {
-  hero:    { name: "Necromancer", short: "You",    role: "himself", glyph: "🕱", color: 20, hp: 100, dmg: 14, speed: 3, xp: 0,  ability: null,      tag: "" },
-  rat:     { name: "Plague Rat",  short: "Rat",    role: "swarm",   glyph: "⚇", color: 15, hp: 20,  dmg: 4,  speed: 5, xp: 6,  ability: "swarm",   tag: "+2 dmg per ally" },
-  hound:   { name: "Grave Hound", short: "Hound",  role: "heavy",   glyph: "⋒", color: 14, hp: 26,  dmg: 12, speed: 5, xp: 12, ability: "rend",    tag: "+6 vs wounded" },
-  knight:  { name: "Bone Knight", short: "Knight", role: "wall",    glyph: "⌤", color: 22, hp: 70,  dmg: 3,  speed: 2, xp: 14, ability: "bulwark", tag: "halves what it takes" },
-  moth:    { name: "Grave Moth",  short: "Moth",   role: "hex",     glyph: "⫙", color: 16, hp: 24,  dmg: 4,  speed: 4, xp: 10, ability: "wither",  tag: "blunts their blows" },
-  wisp:    { name: "Corpse Wisp", short: "Wisp",   role: "mender",  glyph: "◉", color: 21, hp: 26,  dmg: 2,  speed: 3, xp: 12, ability: "siphon",  tag: "mends the worst hurt" },
-  warden:  { name: "Tomb Warden", short: "Warden", role: "guard",   glyph: "⛨", color: 19, hp: 80,  dmg: 5,  speed: 2, xp: 18, ability: "toll",    tag: "hurts all when it falls" },
-  ossuary: { name: "The Ossuary", short: "Ossuary",role: "the end", glyph: "⚱", color: 17, hp: 150, dmg: 16, speed: 3, xp: 60, ability: "split",   tag: "splits when broken" },
+  hero:    { name: "Necromancer", short: "You",    role: "himself", glyph: "🕱", color: 20, hp: 100, dmg: 14, speed: 3, xp: 0,  mana: 0, ability: null,      tag: "" },
+  rat:     { name: "Plague Rat",  short: "Rat",    role: "swarm",   glyph: "⚇", color: 15, hp: 20,  dmg: 4,  speed: 5, xp: 6,  mana: 1, ability: "swarm",   tag: "+2 dmg per ally" },
+  hound:   { name: "Grave Hound", short: "Hound",  role: "heavy",   glyph: "⋒", color: 14, hp: 26,  dmg: 12, speed: 5, xp: 12, mana: 2, ability: "rend",    tag: "+6 vs wounded" },
+  knight:  { name: "Bone Knight", short: "Knight", role: "wall",    glyph: "⌤", color: 22, hp: 70,  dmg: 3,  speed: 2, xp: 14, mana: 3, ability: "bulwark", tag: "halves what it takes" },
+  moth:    { name: "Grave Moth",  short: "Moth",   role: "hex",     glyph: "⫙", color: 16, hp: 24,  dmg: 4,  speed: 4, xp: 10, mana: 2, ability: "wither",  tag: "blunts their blows" },
+  wisp:    { name: "Corpse Wisp", short: "Wisp",   role: "mender",  glyph: "◉", color: 21, hp: 26,  dmg: 2,  speed: 3, xp: 12, mana: 2, ability: "siphon",  tag: "mends the worst hurt" },
+  warden:  { name: "Tomb Warden", short: "Warden", role: "guard",   glyph: "⛨", color: 19, hp: 80,  dmg: 5,  speed: 2, xp: 18, mana: 4, ability: "toll",    tag: "hurts all when it falls" },
+  ossuary: { name: "The Ossuary", short: "Ossuary",role: "the end", glyph: "⚱", color: 17, hp: 150, dmg: 16, speed: 3, xp: 60, mana: 0, ability: "split",   tag: "splits when broken" },
 };
 
 export const RAISABLE: CreatureId[] = ["rat", "hound", "knight", "moth", "wisp", "warden"];
@@ -231,10 +239,17 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
   salt: { short: "salt", glyph: "⊙", color: 22 },
 };
 
+// Every one of these is offered at a level, in this order
+export const STAT_IDS: Stat[] = ["might", "ward", "will", "mana"];
+
 export const STAT_LABEL: Record<Stat, string> = {
   might: "MIGHT  +3 dmg",
   ward: "WARD  +30 hp",
   will: "WILL  +1 slot",
+  mana: "MANA  +5 asking",
 };
 
 export const SQUAD_GLYPH = "⸬";
+
+// What it costs him to ask, wherever that number is shown
+export const MANA_GLYPH = "◇";

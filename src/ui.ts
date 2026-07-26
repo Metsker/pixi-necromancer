@@ -49,6 +49,8 @@ export type Act =
   | { t: "ok" }
   | { t: "speed" }
   | { t: "watch"; id: number }
+  | { t: "reap"; id: number }
+  | { t: "leave" }
   | { t: "back" };
 
 export type Hit = { x: number; y: number; w: number; h: number; act: Act };

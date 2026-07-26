@@ -11,10 +11,12 @@ import {
   advance,
   chooseStat,
   clearSave,
+  leaveRoom,
   load,
   moveUp,
   newGame,
   orderHero,
+  reap,
   save,
   sendSquad,
 } from "./sim/game.ts";
@@ -146,6 +148,12 @@ async function main() {
       case "watch":
         ui.watch = a.id;
         ui.panel = "";
+        break;
+      case "reap":
+        reap(g, a.id);
+        break;
+      case "leave":
+        leaveRoom(g);
         break;
       case "back":
         ui.watch = null;

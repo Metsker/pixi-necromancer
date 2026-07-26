@@ -2,6 +2,7 @@ import type { Grid } from "../gfx/grid.ts";
 import {
   CREATURES,
   KIND_GLYPH,
+  MANA_GLYPH,
   RESOURCES,
   RES_IDS,
   SQUAD_GLYPH,
@@ -18,14 +19,15 @@ import {
   forcesAt,
   heroUnit,
   hpFrac,
+  manaCap,
   reserve,
   threatOf,
   xpNeeded,
 } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, buttons } from "../ui.ts";
 
-// log, status, resources; the button strip sits below it
-export const HUD_ROWS = 3;
+// log, status, asking, resources; the button strip sits below it
+export const HUD_ROWS = 4;
 
 // One room step in character cells
 export const ROOM_W = 6;
@@ -177,14 +179,20 @@ function drawHud(grid: Grid, g: GameState, y: number) {
   grid.put(x, y + 1, "†", C.violet);
   grid.text(x + 1, y + 1, `${fielded(g)}/${commandCap(g)}`, C.ink);
 
+  // What he has left to ask with, on its own line: it is the number that decides
+  // whether a body on the floor is worth anything to him
+  const pool = `${g.mana}/${manaCap(g)}`;
+  grid.put(0, y + 2, MANA_GLYPH, C.cyan);
+  grid.text(1, y + 2, pool, C.ink);
+  const xp = `xp${g.xp}/${xpNeeded(g)}`;
+  grid.text(Math.max(pool.length + 2, cols - xp.length), y + 2, xp, C.dim);
+
   x = 0;
   for (const r of RES_IDS) {
     const info = RESOURCES[r];
-    grid.put(x, y + 2, info.glyph, COL(info.color));
+    grid.put(x, y + 3, info.glyph, COL(info.color));
     const n = `${g.res[r]}`;
-    grid.text(x + 1, y + 2, n, C.mid);
+    grid.text(x + 1, y + 3, n, C.mid);
     x += n.length + 2;
   }
-  const xp = `xp${g.xp}/${xpNeeded(g)}`;
-  grid.text(Math.max(x, cols - xp.length), y + 2, xp, C.dim);
 }

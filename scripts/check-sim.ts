@@ -13,13 +13,18 @@ import {
   clearSave,
   commandCap,
   heroUnit,
+  leaveRoom,
   load,
+  manaCap,
+  manaCost,
   moveUp,
   nearestOpen,
   newGame,
   orderHero,
+  offered,
   powerOf,
   raise,
+  reap,
   reserve,
   routeTo,
   takeTurn,
@@ -216,7 +221,7 @@ const unit = (over: Partial<BattleUnit>): BattleUnit => ({
 });
 const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
   node: 0, units, hit: [], mend: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
-  round: 0, log: [], done: "", healed: 0, nextId: units.length,
+  round: 0, log: [], done: "", healed: 0, taken: [], nextId: units.length,
 });
 
 {
@@ -560,12 +565,13 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // Every corpse is a coin flip, and over enough of them it lands like one
+  // Almost nothing gets up on its own now. What this holds down is that the free
+  // ones stay a trickle: everything else on the floor has to be paid for.
   let fallen = 0;
   let up = 0;
   let crypts = 0;
   let cryptUp = 0;
-  for (let seed = 0; seed < 120; seed++) {
+  for (let seed = 0; seed < 300; seed++) {
     const g = newGame(6100 + seed * 7);
     const room = g.nodes[openRooms(g)[0].id];
     const before = g.reserve.length;
@@ -585,12 +591,92 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     fallen += bodies;
     up += got;
   }
-  ok("a decent sample of corpses", fallen > 100);
+  ok("a decent sample of corpses", fallen > 300);
   const rate = up / fallen;
-  ok(`corpses come up about half the time (${(rate * 100).toFixed(0)}%)`, rate > 0.38 && rate < 0.62);
-  ok("a crypt gives up all of its dead", crypts === 0 || cryptUp === crypts);
-  console.log(`raising: ${up}/${fallen} got up, and ${cryptUp}/${crypts} in crypts`);
+  ok(
+    `the odd one gets up by itself (${(rate * 100).toFixed(0)}%)`,
+    rate > TUNING.raiseChance / 3 && rate < TUNING.raiseChance * 3,
+  );
+  ok("a crypt still gives up all of its dead", crypts === 0 || cryptUp === crypts);
+  console.log(`raising: ${up}/${fallen} got up on their own, and ${cryptUp}/${crypts} in crypts`);
 }
+
+{
+  // A body on the floor is a decision now: the board waits, and what he can
+  // take off it is decided by what he has left to ask with
+  const g = newGame(8123);
+  ok("he starts with a full pool", g.mana === manaCap(g) && g.mana === TUNING.manaBase);
+  // Not a crypt: a crypt hands over its dead for nothing and there is nothing left to buy
+  const room = openRooms(g).find((n) => n.kind !== "crypt")!;
+  orderHero(g, room.id);
+  advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
+  ok("the room fell", room.state === "cleared");
+  ok("and nothing hurried him out of it", g.forces[0].mode === "spoils");
+  const before = g.mana;
+  ok("a cleared room gives some of him back", before > TUNING.manaBase - 1 || g.cleared > 0);
+
+  const b = g.forces[0].battle!;
+  const body = offered(g, b)[0];
+  ok("there is a body left to ask for", body !== undefined);
+  const cost = manaCost(body.creature);
+  const held = g.reserve.length;
+  const pool = g.mana;
+  ok("it answers", reap(g, body.id) === true);
+  ok("and it costs what it says on it", g.mana === pool - cost);
+  ok("it is standing with him now", g.reserve.length === held + 1);
+  ok("and the same body cannot be asked twice", reap(g, body.id) === false);
+  ok("the board knows it is his", b.taken.includes(body.id));
+
+  // Nothing to ask with is nothing to raise with
+  g.mana = 0;
+  const next = offered(g, b)[0];
+  if (next) ok("an empty pool raises nothing", reap(g, next.id) === false);
+  ok("and the pool cannot go under", g.mana === 0);
+
+  // He is pinned in the room until he says he is done with it
+  ok("he cannot be ordered out of a room he is holding", canOrder(g, g.forces[0].at) === false);
+  advance(g, TUNING.spoilsTicks * 20);
+  ok("and no amount of waiting moves him", g.forces[0].mode === "spoils");
+  ok("leaving is his to call", leaveRoom(g) === true);
+  ok("and then the room is behind him", g.forces[0].mode === "idle");
+  ok("leaving twice does nothing", leaveRoom(g) === false);
+}
+
+{
+  // What a level in it buys, and what a room pays back into it
+  const g = newGame(4141);
+  g.unspent = 1;
+  const cap = manaCap(g);
+  chooseStat(g, "mana");
+  ok("mana raises the ceiling", manaCap(g) === cap + TUNING.manaPerPoint);
+  ok("and hands him what it added", g.mana === TUNING.manaBase + TUNING.manaPerPoint);
+  g.mana = 0;
+  const room = g.nodes[openRooms(g)[0].id];
+  orderHero(g, room.id);
+  advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
+  if (room.state === "cleared") {
+    ok("a room he takes pays into it", g.mana === Math.ceil(manaCap(g) * TUNING.manaRegen));
+  }
+  g.mana = manaCap(g);
+  const full = g.mana;
+  const other = g.nodes.find((n) => n.state === "open" && n.kind !== "boss");
+  if (other) {
+    leaveRoom(g);
+    orderHero(g, other.id);
+    advance(g, TUNING.marchTicks * 8 + TUNING.turnTicks * TUNING.maxRounds * 16);
+    ok("and never over the top of it", g.mana <= full);
+  }
+}
+
+// What a body costs has to make sense against what a body is
+for (const [id, t] of Object.entries(CREATURES)) {
+  if (id === "hero" || id === "ossuary") continue;
+  ok(`${id}: it has a price`, t.mana >= 1);
+  ok(`${id}: and the price is affordable from a standing start`, t.mana <= TUNING.manaBase);
+}
+ok("a rat is the cheapest thing there is", CREATURES.rat.mana === 1);
+ok("and a warden is not", CREATURES.warden.mana > CREATURES.rat.mana);
+ok("the Ossuary never answers", CREATURES.ossuary.mana === 0);
 
 {
   // A room taken by proxy pays less of the lesson than one you walked into
@@ -640,7 +726,7 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 
 // ---------------------------------------------------------------- balance probe
 
-const STATS: Stat[] = ["might", "ward", "will"];
+const STATS: Stat[] = ["might", "ward", "will", "mana"];
 const PROBES = 30;
 
 // A bot that throws half its retinue ahead and walks in with the rest. The floor
@@ -653,6 +739,17 @@ function autoplay(seedValue: number) {
   while (!g.over && guard-- > 0) {
     while (g.unspent > 0) chooseStat(g, STATS[g.level % STATS.length]);
     g.loreQueue.length = 0;
+
+    // A room he has taken waits for him. It takes whatever it can afford off the
+    // floor, cheapest first, and then walks out - which is the floor of playing it.
+    const b = g.forces[0].battle;
+    if (g.forces[0].mode === "spoils" && b) {
+      for (const u of [...offered(g, b)].sort((x, z) => manaCost(x.creature) - manaCost(z.creature))) {
+        if (g.mana < manaCost(u.creature)) break;
+        if (!reap(g, u.id)) break;
+      }
+      leaveRoom(g);
+    }
 
     // The main line: keep the army together and push at the Ossuary. Squads are
     // measured separately, above - they are a cost you choose, not the default.

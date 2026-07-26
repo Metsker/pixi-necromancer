@@ -4,9 +4,9 @@ import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
 import { PANELS, SHEET_COLS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
-import { advance, commandCap, newGame, orderHero, raise, sendSquad } from "../src/sim/game.ts";
+import { advance, commandCap, manaCap, newGame, offered, orderHero, raise, sendSquad } from "../src/sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, cells } from "../src/ui.ts";
-import { CREATURES, RAISABLE, TUNING } from "../src/sim/data.ts";
+import { CREATURES, MANA_GLYPH, RAISABLE, STAT_IDS, TUNING } from "../src/sim/data.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -114,6 +114,20 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
         }
       }
     }
+  }
+}
+
+// A stat you can put a point in has to be on the sheet that spends the point
+{
+  const g = newGame(1234);
+  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null, unit: 0, typed: 0, loreId: null };
+  const level = panelSpec(g, ui, "level", MIN_COLS)!;
+  for (const s of STAT_IDS) {
+    ok(`${s}: it is offered at a level`, level.lines.some((l) => l.act?.t === "stat" && l.act.s === s));
+  }
+  const menu = panelSpec(g, ui, "menu", MIN_COLS)!;
+  for (const s of STAT_IDS) {
+    ok(`${s}: and the menu says what he has spent on it`, menu.lines.some((l) => l.text.startsWith(s)));
   }
 }
 
@@ -229,6 +243,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   // Something with a name nothing already in his line shares, or the scan below
   // cannot tell which row it is looking at
   body.creature = "warden";
+  b.taken.push(body.id);
   g.risen = { creatures: [body.creature], units: [body.id], node: b.node, at: g.time };
   f.mode = "spoils";
   f.next = g.time + TUNING.spoilsTicks;
@@ -244,8 +259,9 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   ok("the body is still legible in it", lit[0].fg === C.shade);
 
   // A body that has crossed stands where a raise actually puts it: at the end of
-  // what he is holding, in front of him, not behind him
-  f.next = g.time + Math.ceil(TUNING.spoilsTicks * 0.2);
+  // what he is holding, in front of him, not behind him. Getting up runs on its
+  // own clock now, so the way to get to the end of it is to have started earlier.
+  g.risen.at = g.time - Math.ceil(TUNING.riseTicks * 0.9);
   cells.clear();
   drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
   const names: string[] = [];
@@ -258,10 +274,53 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   ok("the one that got up is on his side of it", names.length === 2);
   ok("and stands in front of him, where a raise lands", names[0] !== "You");
 
-  // What he has to hand is on the board too, because it is the number you spend
-  const row0 = Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},0`)?.ch ?? " ").join("");
-  ok("the board says how many he has", row0.includes(`${g.reserve.length}/${commandCap(g)}`));
-  ok("and marks it as bodies", row0.includes("†"));
+  // What he has to hand is on the board too, because they are the numbers you spend
+  const row = (n: number) =>
+    Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},${n}`)?.ch ?? " ").join("");
+  ok("the board says how many he has", row(0).includes(`${g.reserve.length}/${commandCap(g)}`));
+  ok("and marks it as bodies", row(0).includes("†"));
+  ok("and says what he has left to ask with", row(1).includes(`${g.mana}/${manaCap(g)}`));
+  ok("marked as asking", row(1).includes(MANA_GLYPH));
+
+  // Every body still on the floor is something to tap, at a price he can read
+  const hits = new Hits();
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, hits, 1);
+  const spare = offered(g, b);
+  ok("there are bodies left on the floor", spare.length > 0);
+  for (const u of spare) {
+    ok(
+      `${u.creature}: tapping it asks for it`,
+      hits.list.some((h) => h.act.t === "reap" && h.act.id === u.id),
+    );
+  }
+  const board = [...cells.values()];
+  ok("what it costs is written by it", board.some((c) => c.ch === MANA_GLYPH && c.fg === C.cyan));
+  ok(
+    "and a body he can pay for is lit up",
+    board.some((c) => c.ch === "☠" && c.fg === C.cyan),
+  );
+
+  // Nothing to ask with, nothing to tap
+  const poor = { ...g, mana: 0 };
+  hits.clear();
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], poor, f, hits, 1);
+  ok("an empty pool still shows the price", [...cells.values()].some((c) => c.ch === MANA_GLYPH));
+  ok(
+    "but nothing on the floor is lit",
+    ![...cells.values()].some((c) => c.ch === "☠" && c.fg === C.cyan),
+  );
+
+  // Both readouts survive the narrowest board there is, rather than the room
+  // name being written over one of them
+  stub.cols = MIN_COLS;
+  cells.clear();
+  drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
+  const narrow = (n: number) =>
+    Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},${n}`)?.ch ?? " ").join("");
+  ok("a narrow board keeps its bodies", narrow(0).includes(`†${g.reserve.length}/${commandCap(g)}`));
+  ok("and keeps its asking", narrow(1).includes(`${MANA_GLYPH}${g.mana}/${manaCap(g)}`));
 
   // A desktop grid is wide and short, and the fight still has to have its arena
   const desk = computeLayout({ innerWidth: 1920, innerHeight: 1080, dpr: 1, reserved: 0 });
