@@ -11,7 +11,17 @@ import {
   type MapNode,
   type Point,
 } from "../sim/data.ts";
-import { canOrder, commandCap, forcesAt, heroUnit, reserve, threatOf, xpNeeded } from "../sim/game.ts";
+import {
+  canOrder,
+  commandCap,
+  fielded,
+  forcesAt,
+  heroUnit,
+  hpFrac,
+  reserve,
+  threatOf,
+  xpNeeded,
+} from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, buttons } from "../ui.ts";
 
 // log, status, resources; the button strip sits below it
@@ -139,7 +149,12 @@ function drawForces(
   if (!out.length) return;
   const at = hero ? x + 1 : x;
   if (!on(at, y)) return;
-  grid.put(at, y, SQUAD_GLYPH, out.some((f) => f.mode === "fight") ? C.hot : C.cyan, C.bg);
+  // How the squad is holding up, at a glance: whole, chewed, nearly gone
+  const hurt = out.flatMap((f) => f.units);
+  const left = hurt.length
+    ? hurt.reduce((n, u) => n + hpFrac(u), 0) / hurt.length
+    : 0;
+  grid.put(at, y, SQUAD_GLYPH, left > 0.66 ? C.green : left > 0.33 ? C.gold : C.hot, C.bg);
   if (out.length > 1 && on(at + 1, y)) {
     grid.put(at + 1, y, `${Math.min(9, out.length)}`, C.cyan, C.bg);
   }
@@ -160,7 +175,7 @@ function drawHud(grid: Grid, g: GameState, y: number) {
   grid.text(x + 1, y + 1, lvl, C.ink);
   x += lvl.length + 2;
   grid.put(x, y + 1, "†", C.violet);
-  grid.text(x + 1, y + 1, `${reserve(g).length}/${commandCap(g)}`, C.ink);
+  grid.text(x + 1, y + 1, `${fielded(g)}/${commandCap(g)}`, C.ink);
 
   x = 0;
   for (const r of RES_IDS) {

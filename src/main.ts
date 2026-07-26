@@ -27,7 +27,7 @@ const SPEEDS = [1, 2, 4, 0];
 const DRAG_SLOP = 10;
 const SAVE_EVERY = 4000;
 // Characters a second for a piece of the story arriving on screen
-const TYPE_CPS = 42;
+const TYPE_CPS = 26;
 
 const host = document.getElementById("stage")!;
 const safe = document.getElementById("safe")!;

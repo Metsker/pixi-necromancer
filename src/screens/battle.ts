@@ -8,7 +8,7 @@ import {
   type GameState,
   type Hit,
 } from "../sim/data.ts";
-import { commandCap, hpFrac, reserve } from "../sim/game.ts";
+import { commandCap, fielded, hpFrac } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit in the roster
@@ -43,7 +43,7 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
     : `round ${b.round + 1}${f.kind === "hero" ? "" : ", squad"}`;
   grid.center(0, 1, cols, beat, b.done === "win" ? C.green : b.done ? C.red : C.frame);
   // What he has to hand, in the corner, because it is the number you spend
-  const slots = `${reserve(g).length}/${commandCap(g)}`;
+  const slots = `${fielded(g)}/${commandCap(g)}`;
   grid.put(cols - slots.length - 1, 0, "†", C.violet);
   grid.text(cols - slots.length, 0, slots, C.mid);
 
@@ -58,6 +58,8 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   // The white is a flash, not a state: it is gone well before the turn is
   const landing = spoils || age > FLASH_TICKS ? [] : b.hit;
 
+  // What the room gave him back, held on screen for as long as the board is
+  const mended = spoils && b.done === "win" ? b.healed : 0;
   const raised = g.risen;
   let rise: Rise | null = null;
   if (spoils && raised && raised.node === b.node && g.time - raised.at <= TUNING.spoilsTicks) {
@@ -89,8 +91,8 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   y += 1;
 
   for (let i = 0; i < roster; i++) {
-    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, false, rise);
-    if (theirLine[i]) side(grid, rightX, rightW, y, theirLine[i], landing, true, rise);
+    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, false, rise, mended);
+    if (theirLine[i]) side(grid, rightX, rightW, y, theirLine[i], landing, true, rise, 0);
     if (ourLine[i] || theirLine[i]) grid.put(half, y, "│", C.frame);
     y += ROW_H;
   }
@@ -177,6 +179,7 @@ function side(
   landing: Hit[],
   mirrored: boolean,
   rise: Rise | null,
+  mended: number,
 ) {
   const t = CREATURES[u.creature];
   const struck = landing.find((h) => h.id === u.id);
@@ -198,6 +201,9 @@ function side(
   if (struck) {
     const hurt = `-${struck.n}`;
     grid.text(mirrored ? x : x + w - hurt.length, y, hurt, C.ink);
+  } else if (mended > 0 && u.creature === "hero") {
+    const back = `+${mended}`;
+    grid.text(mirrored ? x : x + w - back.length, y, back, C.green);
   } else if (u.withered > 0 && !down) {
     grid.put(mirrored ? x : x + w - 1, y, "∿", C.violet);
   }

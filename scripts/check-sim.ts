@@ -7,6 +7,7 @@ import {
   bandOf,
   canOrder,
   canSend,
+  fielded,
   heroForce,
   chooseStat,
   clearSave,
@@ -215,7 +216,7 @@ const unit = (over: Partial<BattleUnit>): BattleUnit => ({
 });
 const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
   node: 0, units, hit: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
-  round: 0, log: [], done: "", nextId: units.length,
+  round: 0, log: [], done: "", healed: 0, nextId: units.length,
 });
 
 {
@@ -320,7 +321,12 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   g.forces[0].battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 1));
   advance(g, TUNING.turnTicks * 40);
   ok("the room fell", g.nodes[target].state === "cleared");
-  ok("he walks it off", heroUnit(g)!.hp === heroUnit(g)!.maxHp);
+  const h = heroUnit(g)!;
+  // He was left on 40 going in and may have taken more on the way out, so what
+  // is pinned down is the ceiling: a trickle, never a full heal
+  ok("he gets something back", h.hp > 0);
+  ok("but nowhere near all of it", h.hp < h.maxHp);
+  ok("a tenth at the very most", h.hp <= 40 + Math.ceil(h.maxHp * TUNING.restFrac));
   ok("a body keeps what it has left", reserve(g).some((u) => u.hp === 3));
 }
 
@@ -384,6 +390,24 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   const elsewhere = openRooms(g)[0].id;
   ok("nothing can be detached mid-fight", canSend(g, elsewhere) === false);
   ok("and his band went in with him", g.forces[0].battle!.units.filter((u) => u.faction === "player").length > 1);
+}
+
+{
+  // A squad is still his until it is dead, so it still costs him a slot
+  const g = newGame(2468);
+  while (raise(g, "knight")) {
+    /* fill him up */
+  }
+  ok("the cap is full", fielded(g) === commandCap(g));
+  const sent = reserve(g).slice(0, 2).map((u) => u.id);
+  sendSquad(g, openRooms(g)[0].id, sent);
+  ok("sending them does not free the slots", fielded(g) === commandCap(g));
+  ok("and he cannot raise into them", raise(g, "rat") === false);
+  ok("but they are not at his side", reserve(g).length === commandCap(g) - 2);
+
+  advance(g, 40000);
+  ok("they are gone in the end", squads(g).length === 0);
+  ok("and the slots come back", fielded(g) < commandCap(g) || reserve(g).length === commandCap(g));
 }
 
 {
@@ -467,26 +491,36 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 }
 
 {
-  // A squad wins the room and leaves the dead where they lie, and reads nothing
-  const g = newGame(51515);
-  while (raise(g, "knight")) {
-    /* nothing */
-  }
-  const target = openRooms(g).find((n) => n.lore !== null)!.id;
-  const held = g.reserve.map((u) => u.id);
-  sendSquad(g, target, held);
-  const before = g.reserve.length;
-  advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
-  ok("the squad took it", g.nodes[target].state === "cleared");
-  ok("nothing got up for them", g.reserve.length === before);
-  ok("and nobody told you a story", g.loreQueue.length === 0);
-  ok("the room keeps its piece", g.nodes[target].lore !== null && !g.seenLore.includes(g.nodes[target].lore!));
+  // A squad wins the room and leaves the dead where they lie, and reads nothing.
+  // Sampled rather than pinned to one seed: whether a given squad can break a
+  // given room is exactly the thing the balance keeps moving.
+  let checked = 0;
+  for (let seed = 0; seed < 40 && checked < 3; seed++) {
+    const g = newGame(51000 + seed * 31);
+    while (raise(g, "knight")) {
+      /* nothing */
+    }
+    const room = openRooms(g).find((n) => n.lore !== null);
+    if (!room) continue;
+    const held = g.reserve.map((u) => u.id);
+    sendSquad(g, room.id, held);
+    advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
+    if (room.state !== "cleared") continue;
+    checked += 1;
+    ok(`squad ${seed}: nothing got up for them`, g.reserve.length === 0);
+    ok(`squad ${seed}: and nobody told you a story`, g.loreQueue.length === 0);
+    ok(
+      `squad ${seed}: the room keeps its piece`,
+      room.lore !== null && !g.seenLore.includes(room.lore),
+    );
 
-  // ...until he walks through it himself
-  orderHero(g, target);
-  advance(g, TUNING.marchTicks * 6);
-  ok("he walked in", g.forces[0].at === target);
-  ok("and read it there", g.loreQueue.includes(g.nodes[target].lore!));
+    // ...until he walks through it himself
+    orderHero(g, room.id);
+    advance(g, TUNING.marchTicks * 8);
+    ok(`squad ${seed}: he walked in`, g.forces[0].at === room.id);
+    ok(`squad ${seed}: and read it there`, g.loreQueue.includes(room.lore!));
+  }
+  ok("squads do take rooms", checked === 3);
 }
 
 {

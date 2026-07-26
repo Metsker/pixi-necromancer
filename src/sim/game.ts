@@ -31,6 +31,11 @@ export const squads = (g: GameState) =>
 export const forcesAt = (g: GameState, id: number) =>
   g.forces.filter((f) => f.mode !== "gone" && f.at === id);
 export const commandCap = (g: GameState) => TUNING.baseCap + g.build.will * TUNING.willPerPoint;
+
+// Everything he is holding up, wherever it is standing. A squad is still his
+// until it is dead, so it still costs him a slot.
+export const fielded = (g: GameState) =>
+  g.reserve.length + squads(g).reduce((n, f) => n + f.units.length, 0);
 export const heroDmg = (g: GameState) => TUNING.heroDmg + g.build.might * TUNING.mightPerPoint;
 export const xpNeeded = (g: GameState) => TUNING.xpPerLevel * (g.level + 1);
 export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp, 0, 1);
@@ -268,7 +273,7 @@ export const threatOf = (n: MapNode): 0 | 1 | 2 => {
 // Raised bodies wait with the necromancer. They are not part of his fight -
 // he goes in alone - they are what a squad is made out of.
 export function raise(g: GameState, creature: CreatureId): boolean {
-  if (g.reserve.length >= commandCap(g)) return false;
+  if (fielded(g) >= commandCap(g)) return false;
   const t = CREATURES[creature];
   g.reserve.push({ id: g.nextUnit++, creature, hp: t.hp, maxHp: t.hp });
   return true;
@@ -443,6 +448,7 @@ function makeBattle(g: GameState, f: Force): Battle {
     round: 0,
     log: [],
     done: "",
+    healed: 0,
     nextId: 0,
   };
 
@@ -653,9 +659,13 @@ function settle(g: GameState, f: Force, b: Battle) {
     log(g, "The dark has you.");
     return;
   }
-  // He rests off a room he takes. Nothing he raised does: what a body has left
-  // is what it got up with, and it only ever goes down from there.
-  h.hp = Math.min(h.maxHp, h.hp + TUNING.restHeal);
+  // A room he takes gives him a little back. Nothing he raised gets anything:
+  // what a body has left is what it got up with, and it only goes down.
+  const before = h.hp;
+  h.hp = Math.min(h.maxHp, h.hp + Math.ceil(h.maxHp * TUNING.restFrac));
+  b.healed = h.hp - before;
+  const shown = b.units.find((u) => u.src === h.id);
+  if (shown) shown.hp = h.hp;
 }
 
 // The beat is over: put the board away and get on with it
