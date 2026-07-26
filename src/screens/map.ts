@@ -1,13 +1,11 @@
 import type { Grid } from "../gfx/grid.ts";
 import {
-  CREATURES,
+  ARMY_GLYPH,
   KIND_GLYPH,
   MANA_GLYPH,
   RESOURCES,
   RES_IDS,
-  SQUAD_GLYPH,
   TUNING,
-  type Force,
   type GameState,
   type MapNode,
   type Point,
@@ -16,8 +14,6 @@ import {
   canOrder,
   commandCap,
   fielded,
-  forcesAt,
-  heroUnit,
   hpFrac,
   manaCap,
   reserve,
@@ -58,7 +54,7 @@ export function clampCam(cam: Point, cols: number, rows: number): Point {
 }
 
 export function centerOn(g: GameState, cols: number, rows: number): Point {
-  const at = nodeAt(g.nodes[g.forces[0].at]);
+  const at = nodeAt(g.nodes[g.at]);
   return clampCam({ x: at.x - (cols >> 1), y: at.y - (viewRows(rows) >> 1) }, cols, rows);
 }
 
@@ -93,8 +89,8 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     const y = p.y - cam.y;
     if (y < -1 || y > view || x < -2 || x > cols + 1) continue;
 
-    const here = forcesAt(g, n.id);
-    const busy = here.some((f) => f.mode === "fight");
+    const here = g.at === n.id;
+    const busy = here && g.mode === "fight";
     const locked = n.state === "locked";
     const cleared = n.state === "cleared";
     // The brackets say whether you can act on it and the glyph says how bad it
@@ -112,16 +108,15 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     if (on(x + 1, y)) grid.put(x + 1, y, ")", frame, C.bg);
     if (on(x, y)) {
       // A room you can still walk into is coloured by what is waiting in it
-      const ink = locked
-        ? C.frame
-        : busy
-          ? C.hot
-          : cleared
-            ? C.dim
-            : THREAT[threatOf(n)];
+      const ink = locked ? C.frame : busy ? C.hot : cleared ? C.dim : THREAT[threatOf(n)];
       grid.put(x, y, locked ? "?" : KIND_GLYPH[n.kind], ink, C.bg);
     }
-    drawForces(grid, here, x, y + 1, on);
+    // The army stands under the room it is in, coloured by how it is holding up
+    if (here && on(x, y + 1)) {
+      const troop = reserve(g);
+      const whole = troop.length ? troop.reduce((s, u) => s + hpFrac(u), 0) / troop.length : 0;
+      grid.put(x, y + 1, ARMY_GLYPH, whole > 0.66 ? C.green : whole > 0.33 ? C.gold : C.hot, C.bg);
+    }
 
     // Clipped to the map area, so a room just off the bottom cannot eat a hud tap
     const top = Math.max(0, y - 1);
@@ -137,39 +132,15 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
   ]);
 }
 
-// The necromancer, then anybody he has cut loose standing on the same room
-function drawForces(
-  grid: Grid,
-  here: Force[],
-  x: number,
-  y: number,
-  on: (x: number, y: number) => boolean,
-) {
-  const hero = here.find((f) => f.kind === "hero");
-  const out = here.filter((f) => f.kind === "squad");
-  if (hero && on(x, y)) grid.put(x, y, CREATURES.hero.glyph, COL(CREATURES.hero.color), C.bg);
-  if (!out.length) return;
-  const at = hero ? x + 1 : x;
-  if (!on(at, y)) return;
-  // How the squad is holding up, at a glance: whole, chewed, nearly gone
-  const hurt = out.flatMap((f) => f.units);
-  const left = hurt.length
-    ? hurt.reduce((n, u) => n + hpFrac(u), 0) / hurt.length
-    : 0;
-  grid.put(at, y, SQUAD_GLYPH, left > 0.66 ? C.green : left > 0.33 ? C.gold : C.hot, C.bg);
-  if (out.length > 1 && on(at + 1, y)) {
-    grid.put(at + 1, y, `${Math.min(9, out.length)}`, C.cyan, C.bg);
-  }
-}
-
 function drawHud(grid: Grid, g: GameState, y: number) {
   const cols = grid.cols;
   grid.text(0, y, (g.log[g.log.length - 1] ?? "").slice(0, cols), C.dim);
 
-  const h = heroUnit(g);
+  // What the army has left, as one number, because it is the health bar now
+  const troop = reserve(g);
+  const hp = `${troop.reduce((s, u) => s + u.hp, 0)}/${troop.reduce((s, u) => s + u.maxHp, 0)}`;
   let x = 0;
   grid.put(x, y + 1, "♥", C.hot);
-  const hp = h ? `${h.hp}/${h.maxHp}` : "--";
   grid.text(x + 1, y + 1, hp, C.ink);
   x += hp.length + 2;
   grid.put(x, y + 1, "★", C.gold);
@@ -179,8 +150,8 @@ function drawHud(grid: Grid, g: GameState, y: number) {
   grid.put(x, y + 1, "†", C.violet);
   grid.text(x + 1, y + 1, `${fielded(g)}/${commandCap(g)}`, C.ink);
 
-  // What he has left to ask with, on its own line: it is the number that decides
-  // whether a body on the floor is worth anything to him
+  // What is left to ask with, on its own line: it is the number that decides
+  // whether a body on the floor is worth anything
   const pool = `${g.mana}/${manaCap(g)}`;
   grid.put(0, y + 2, MANA_GLYPH, C.cyan);
   grid.text(1, y + 2, pool, C.ink);

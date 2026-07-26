@@ -1,142 +1,126 @@
 import { pick, rnd, rngState, seed as seedRng, setRngState, shuffle } from "./rng.ts";
 import { LORE } from "./lore.ts";
 import {
+  BOSS_FOES,
   CREATURES,
   EARLY_POOL,
   KIND_ROLL,
   LATE_POOL,
   RESOURCES,
   RES_IDS,
+  START_BAND,
+  START_POOL,
   TUNING,
   type AbilityId,
   type Battle,
   type BattleUnit,
   type CreatureId,
-  type Force,
+  type Faction,
   type GameState,
   type MapNode,
   type NodeKind,
   type Resource,
   type Unit,
 } from "./data.ts";
-import { PATHS, PERK_IDS, linksOf, rootId, type PathId, type Perks } from "./tree.ts";
+import { PERK_IDS, TREE, depthOf, linksOf, rootId, type ArmId, type Perks } from "./tree.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
-export const heroForce = (g: GameState) => g.forces[0];
-export const heroUnit = (g: GameState) => g.forces[0].units.find((u) => u.creature === "hero");
+// The share of a blow left after a cut. Nothing stacks past the soft cap, or a
+// deep enough build makes a thing that cannot be hurt.
+const left = (pct: number) => clamp(pct, 100 - TUNING.softCap, 100) / 100;
+
 export const reserve = (g: GameState) => g.reserve;
-export const squads = (g: GameState) =>
-  g.forces.filter((f) => f.kind === "squad" && f.mode !== "gone");
-export const forcesAt = (g: GameState, id: number) =>
-  g.forces.filter((f) => f.mode !== "gone" && f.at === id);
+
 // ---------------------------------------------------------------- the tree
 
-// Everything he has bought, as one bag of numbers. Twelve nodes is small enough
-// that summing it on demand is cheaper than keeping a copy honest.
+// Everything bought, as one bag of numbers. Nineteen nodes is small enough that
+// summing it on demand is cheaper than keeping a copy honest.
 export function perks(g: GameState): Perks {
   const out = Object.fromEntries(PERK_IDS.map((k) => [k, 0])) as Perks;
-  if (!g.path) return out;
-  for (const n of PATHS[g.path].nodes) {
-    if (!g.taken.includes(n.id)) continue;
-    for (const [k, v] of Object.entries(n.gives)) out[k as keyof Perks] += v;
+  for (const id of g.taken) {
+    for (const [k, v] of Object.entries(TREE[id].gives)) out[k as keyof Perks] += v;
   }
   return out;
 }
 
-// A node is buyable if it is beside one he already has - the same rule that
-// opens a room next to a room he has cleared.
-export const treeOpen = (g: GameState): number[] => {
-  if (!g.path) return [];
-  const p = PATHS[g.path];
-  if (!g.taken.length) return [rootId];
-  return p.nodes
-    .filter((n) => !g.taken.includes(n.id) && linksOf(p, n).some((id) => g.taken.includes(id)))
-    .map((n) => n.id);
-};
+const ownedIn = (g: GameState, arm: ArmId | "") =>
+  g.taken.filter((id) => TREE[id].arm === arm).length;
+
+// A node is buyable if it is beside one already bought - the same rule that
+// opens a room next to a room already cleared - and if the arm it belongs to is
+// deep enough to carry it. Distance out is the price of admission: nothing at
+// depth d opens until d-1 of its own arm is yours, so two arms may touch on the
+// board without one of them being a back door into the other.
+export const treeOpen = (g: GameState): number[] =>
+  TREE.filter(
+    (n) =>
+      !g.taken.includes(n.id) &&
+      linksOf(n).some((id) => g.taken.includes(id)) &&
+      ownedIn(g, n.arm) >= depthOf(n) - 1,
+  ).map((n) => n.id);
 
 export function takeNode(g: GameState, id: number): boolean {
   if (g.unspent <= 0 || !treeOpen(g).includes(id)) return false;
   g.unspent -= 1;
   g.taken.push(id);
-  const h = heroUnit(g);
-  const gives = PATHS[g.path as PathId].nodes[id].gives;
-  // What a node adds to the top of him he has to hand, and what it adds to the
-  // ceiling of the pool likewise: a number you cannot use yet is not a level-up
-  if (gives.hp && h) {
-    h.maxHp += gives.hp;
-    h.hp += gives.hp;
-  }
+  const gives = TREE[id].gives;
+  // What a node adds to the ceiling of the pool is his to hand: a number you
+  // cannot use yet is not a level-up
   if (gives.manaPool) g.mana += gives.manaPool;
-  // Stepping to the front of his own line is a thing he buys, and he is free to
-  // walk himself back down it afterwards if he decides he was wrong
-  if (gives.front) g.front = 0;
+  // ...and the same for anything already standing. A wall bought after the wall
+  // is up still has to make the wall bigger.
+  for (const u of g.reserve) {
+    const gain =
+      (gives.ratHp && u.creature === "rat" ? gives.ratHp : 0) +
+      (gives.wallHp && CREATURES[u.creature].taunt ? gives.wallHp : 0);
+    if (!gain) continue;
+    u.maxHp += gain;
+    u.hp += gain;
+  }
   return true;
 }
 
-// Chosen once, at the gate, and it is chosen. What he walks in with comes with it.
-export function choosePath(g: GameState, id: PathId): boolean {
-  if (g.path) return false;
-  g.path = id;
-  for (const c of PATHS[id].start) raise(g, c);
-  log(g, `${PATHS[id].name.toLowerCase()}.`);
-  return true;
-}
-
-export const commandCap = (g: GameState) =>
-  Math.max(1, TUNING.baseCap + (g.path ? PATHS[g.path].slots : 0) + perks(g).slots);
+export const commandCap = (g: GameState) => Math.max(1, TUNING.baseCap + perks(g).slots);
 export const manaCap = (g: GameState) => TUNING.manaBase + perks(g).manaPool;
 export const manaCost = (g: GameState, c: CreatureId) =>
   CREATURES[c].mana === 0 ? 0 : Math.max(1, CREATURES[c].mana + perks(g).raiseCost);
 
-// A force standing in a room it has not finished with. Neither can be given a
-// new order: the board is still up and the dead on it are still his to ask.
-export const busy = (f: Force) => f.mode === "fight" || f.mode === "spoils";
+// The army standing in a room it has not finished with. It cannot be given a new
+// order: the board is still up and the dead on it are still yours to ask.
+export const busy = (g: GameState) => g.mode === "fight" || g.mode === "spoils";
 
-// Everything he is holding up, wherever it is standing. A squad is still his
-// until it is dead, so it still costs him a slot.
-export const fielded = (g: GameState) =>
-  g.reserve.length + squads(g).reduce((n, f) => n + f.units.length, 0);
-export const heroDmg = (g: GameState) => TUNING.heroDmg + perks(g).dmg;
+export const fielded = (g: GameState) => g.reserve.length;
 
 // What a body actually hits for: what it is, plus what the tree makes of it,
 // plus whatever it has earned by not dying yet. The sheet and the board read
 // this same function, or the sheet lies about the thing you are about to spend.
 export const unitDmg = (g: GameState, u: Unit): number => {
-  if (u.creature === "hero") return heroDmg(g);
   const P = perks(g);
   const t = CREATURES[u.creature];
-  return t.dmg + P.minionDmg + P.vetDmg * u.rooms + (u.creature === "rat" ? P.ratDmg : 0);
+  const years = Math.min(u.rooms, TUNING.vetCap);
+  return t.dmg + P.minionDmg + P.vetDmg * years + (u.creature === "rat" ? P.ratDmg : 0);
 };
 export const xpNeeded = (g: GameState) => TUNING.xpPerLevel * (g.level + 1);
 export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp, 0, 1);
 
-// Everyone who walks in with him: whatever he has not sent away. The reserve is
-// his retinue when he fights and the pool a squad is drawn from when he does
-// not - it cannot be both at once, which is why nothing detaches mid-room.
-// The line he walks in with, in the order they stand. He is not pinned to the
-// front of it: put a knight there instead and the knight is what gets hit.
-export const bandOf = (g: GameState, f: Force): Unit[] => {
-  if (f.kind !== "hero") return f.units;
-  const at = clamp(g.front, 0, g.reserve.length);
-  return [...g.reserve.slice(0, at), ...f.units, ...g.reserve.slice(at)];
-};
+// Whether a body is a wall, which is the only thing that decides who gets hit.
+// The pack node hands it to hounds as well, but only on your side of the board.
+export const wallish = (u: { creature: CreatureId; faction?: Faction }, P: Perks) =>
+  CREATURES[u.creature].taunt || (P.packTaunt > 0 && u.creature === "hound" && u.faction !== "enemy");
 
-// Move whoever stands at `k` one place up the line
+const taunts = (b: Battle, u: BattleUnit) =>
+  CREATURES[u.creature].taunt ||
+  (b.perks.packTaunt > 0 && u.creature === "hound" && u.faction === "player");
+
+// Move whoever stands at `k` one place up the line. The order is the order they
+// swing in, so this is the whole of it: front of the line goes first.
 export function moveUp(g: GameState, k: number) {
-  const at = clamp(g.front, 0, g.reserve.length);
-  if (k <= 0 || k > g.reserve.length) return;
-  if (k === at) {
-    g.front = at - 1;
-    return;
-  }
-  if (k === at + 1) {
-    g.front = at + 1;
-    return;
-  }
-  const i = k < at ? k : k - 1;
-  [g.reserve[i - 1], g.reserve[i]] = [g.reserve[i], g.reserve[i - 1]];
+  if (k <= 0 || k >= g.reserve.length) return;
+  [g.reserve[k - 1], g.reserve[k]] = [g.reserve[k], g.reserve[k - 1]];
 }
+
+export const moveDown = (g: GameState, k: number) => moveUp(g, k + 1);
 
 export function log(g: GameState, line: string) {
   g.log.push(line);
@@ -152,14 +136,17 @@ export const tierForDist = (dist: number, far: number) =>
   clamp(Math.round(((dist - 1) * (TUNING.tiers - 1)) / Math.max(1, far - 1)), 0, TUNING.tiers - 1);
 
 function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
-  if (kind === "boss") return ["ossuary", "warden", "knight"];
-  // Rooms near the gate are small enough that a scouting pair has a real chance;
+  if (kind === "boss") return [...BOSS_FOES];
+  // Rooms near the gate are small enough that an opening band has a real chance;
   // the deep ones are not
-  const grow = tier >= 2 ? 1 : 0;
+  const grow = tier >= 4 ? 1 : 0;
   const base = TUNING.roomBase;
   // Never nothing: a room with no one in it is a room that wins itself
-  const n = Math.max(1, kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow);
-  const pool = tier < 2 ? EARLY_POOL : LATE_POOL;
+  const n = Math.max(
+    1,
+    kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow,
+  );
+  const pool = tier < 3 ? EARLY_POOL : LATE_POOL;
   return Array.from({ length: n }, () => pick(pool));
 }
 
@@ -260,7 +247,8 @@ function buildMap(g: GameState) {
   }
 
   assignLore(g);
-  g.nodes[id.get(gate)!].state = "cleared";
+  g.at = id.get(gate)!;
+  g.nodes[g.at].state = "cleared";
   unlock(g);
 }
 
@@ -307,25 +295,6 @@ export function routeTo(g: GameState, from: number, target: number): number[] | 
   return null;
 }
 
-// Nearest room still worth taking. A squad picks its own next fight, but it
-// will not walk into the boss on its own.
-export function nearestOpen(g: GameState, from: number): number | null {
-  const seen = new Set([from]);
-  const queue = [from];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    for (const id of g.nodes[cur].links) {
-      const n = g.nodes[id];
-      if (n.state === "open" && n.kind !== "boss") return id;
-      if (n.state === "cleared" && !seen.has(id)) {
-        seen.add(id);
-        queue.push(id);
-      }
-    }
-  }
-  return null;
-}
-
 // What is standing in a room, as one number: what it can take plus what it can
 // give. Three bands, because a map you have to read at a glance is a map with
 // three colours on it.
@@ -342,17 +311,14 @@ export const threatOf = (n: MapNode): 0 | 1 | 2 => {
 
 // ---------------------------------------------------------------- army
 
-// Raised bodies wait with the necromancer. They are not part of his fight -
-// he goes in alone - they are what a squad is made out of.
+// Raised bodies are the army. There is nobody else: what is standing is what
+// fights, and when none of it is standing the run is over.
 export function raise(g: GameState, creature: CreatureId): boolean {
   if (fielded(g) >= commandCap(g)) return false;
   const t = CREATURES[creature];
-  // He walks at the back unless you have deliberately moved him up, and stays
-  // there as the line grows
-  const trailing = g.front >= g.reserve.length;
-  const hp = t.hp + (creature === "rat" ? perks(g).ratHp : 0);
+  const P = perks(g);
+  const hp = t.hp + (creature === "rat" ? P.ratHp : 0) + (t.taunt ? P.wallHp : 0);
   g.reserve.push({ id: g.nextUnit++, creature, hp, maxHp: hp, rooms: 0 });
-  if (trailing) g.front = g.reserve.length;
   return true;
 }
 
@@ -374,35 +340,29 @@ type Hooks = {
   onDeath?: (self: BattleUnit, b: Battle) => void;
 };
 
-const living = (b: Battle, f: BattleUnit["faction"]) =>
-  b.units.filter((u) => u.faction === f && u.hp > 0);
+const living = (b: Battle, f: Faction) => b.units.filter((u) => u.faction === f && u.hp > 0);
 
 export const ABILITIES: Record<AbilityId, Hooks> = {
   swarm: {
-    // What he has bought is his, not theirs: their rats swarm at the base rate
+    // What you have bought is yours, not theirs: their rats swarm at the base rate
     bonus: (s, _t, b) => {
-      const his = s.faction === "player";
-      const per = TUNING.swarmPerAlly + (his ? b.perks.swarmPer : 0);
-      const cap = TUNING.swarmCap + (his ? b.perks.swarmCap : 0);
+      const mine = s.faction === "player";
+      const per = TUNING.swarmPerAlly + (mine ? b.perks.swarmPer : 0);
+      const cap = TUNING.swarmCap + (mine ? b.perks.swarmCap : 0);
       return Math.min(cap, (living(b, s.faction).length - 1) * per);
     },
   },
   bulwark: { taken: (_s, n) => Math.max(1, Math.ceil(n * TUNING.bulwarkCut)) },
   wither: {
-    onAttack: (_s, t) => {
-      t.withered = TUNING.witherTurns;
+    onAttack: (s, t, b) => {
+      t.withered = TUNING.witherTurns + (s.faction === "player" ? b.perks.witherLong : 0);
     },
   },
   siphon: {
     onAttack: (s, _t, b) => {
-      const wounded = living(b, s.faction).filter((u) => u.hp < u.maxHp);
-      // He is rarely the worst hurt - he has the deepest pool - so a lord has to
-      // buy the wisps' attention rather than wait for it
-      const first =
-        s.faction === "player" && b.perks.wispFirst
-          ? wounded.find((u) => u.creature === "hero")
-          : undefined;
-      const hurt = first ?? wounded.sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
+      const hurt = living(b, s.faction)
+        .filter((u) => u.hp < u.maxHp)
+        .sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
       if (!hurt) return;
       const back = Math.min(hurt.maxHp - hurt.hp, TUNING.siphonHeal);
       hurt.hp += back;
@@ -418,23 +378,22 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
     },
   },
   split: {
+    // One copy, not two. What is behind the wall has to be beatable by whatever
+    // is left of you after the wall.
     onDeath: (s, b) => {
       if (s.tier >= TUNING.splitTiers) return;
-      for (let i = 0; i < 2; i++) {
-        b.units.push({
-          id: b.nextId++,
-          src: -1,
-          creature: s.creature,
-          faction: s.faction,
-          hp: Math.ceil(s.maxHp / 2),
-          maxHp: Math.ceil(s.maxHp / 2),
-          dmg: Math.max(1, Math.floor(s.dmg * 0.6)),
-          speed: CREATURES[s.creature].speed,
-          slot: s.slot,
-          tier: s.tier + 1,
-          withered: 0,
-        });
-      }
+      b.units.push({
+        id: b.nextId++,
+        src: -1,
+        creature: s.creature,
+        faction: s.faction,
+        hp: Math.ceil(s.maxHp / 2),
+        maxHp: Math.ceil(s.maxHp / 2),
+        dmg: Math.max(1, Math.floor(s.dmg * 0.6)),
+        slot: s.slot,
+        tier: s.tier + 1,
+        withered: 0,
+      });
       blog(b, `${CREATURES[s.creature].short} splits.`);
     },
   },
@@ -461,43 +420,53 @@ function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
   hooks(u).onDeath?.(u, b);
 }
 
-// Everybody of his still standing further back than he is. A lord is fed by the
-// line behind him and gets weaker every time a piece of it falls over.
-const behind = (b: Battle, u: BattleUnit) =>
-  living(b, u.faction).filter((o) => o.slot > u.slot).length;
-
-const isLord = (u: BattleUnit) => u.creature === "hero" && u.faction === "player";
-
 function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   let raw = a.dmg + (hooks(a).bonus?.(a, d, b) ?? 0);
-  if (isLord(a)) raw += b.perks.lordDmg * behind(b, a);
-  if (a.withered > 0) raw *= TUNING.witherCut;
+  // What the dark has already touched is easier to break open
+  if (a.faction === "player" && d.withered > 0) raw += b.perks.hexDmg;
+  // ...and what it is holding swings softer, more so the deeper you bought in.
+  // Summed rather than multiplied: two debuffs on the same blow answer to one
+  // cap between them, or a full arm of them makes a fight one-sided.
+  let soften = 0;
+  if (a.withered > 0) {
+    soften += 100 - TUNING.witherCut * 100 + (a.faction === "enemy" ? b.perks.witherPow : 0);
+  }
+  if (a.faction === "enemy") soften += b.perks.dread;
+  if (soften > 0) raw *= left(100 - soften);
   let soaked = hooks(d).taken?.(d, raw, b) ?? raw;
-  // Capped, or a long enough line behind him would make him untouchable
-  if (isLord(d) && b.perks.wall) {
-    soaked *= 1 - Math.min(TUNING.wallCap, b.perks.wall * behind(b, d)) / 100;
+  if (d.faction === "player" && b.perks.wallCut && taunts(b, d)) {
+    soaked *= left(100 - b.perks.wallCut);
   }
   damage(b, d, Math.max(1, Math.round(soaked)), a.id);
   // Fires even on a killing blow, or a wisp would be punished for aiming well
   hooks(a).onAttack?.(a, d, b);
+  // Bought deep enough, the dark does not need a moth to carry it
+  if (a.faction === "player" && b.perks.witherAll) {
+    d.withered = TUNING.witherTurns + b.perks.witherLong;
+  }
 }
 
-// Whoever is standing at the head of the other line. Order is the tactic here:
-// what you put first is what gets hit, and ids run front to back.
-function frontOf(b: Battle, side: BattleUnit["faction"]): BattleUnit | undefined {
-  return living(b, side).sort((a, z) => a.slot - z.slot || a.id - z.id)[0];
+// Who on the other side can actually be reached. A blow lands on nobody in
+// particular - unless a wall is standing, and then it lands on the wall. That
+// is the whole of the tactics: break the wall before you can touch anything.
+export function targetFor(b: Battle, side: Faction): BattleUnit | undefined {
+  const live = living(b, side);
+  const wall = live.filter((u) => taunts(b, u));
+  const pool = wall.length ? wall : live;
+  return pool.length ? pool[Math.floor(rnd() * pool.length)] : undefined;
 }
 
-// A side's own queue, fastest first and front of the line to break a tie
-export function orderFor(b: Battle, side: BattleUnit["faction"]): number[] {
+// A side's own queue, front of the line first. Nothing hidden decides it: the
+// order you put them in is the order they swing in.
+export function orderFor(b: Battle, side: Faction): number[] {
   return living(b, side)
-    .sort((a, z) => z.speed - a.speed || a.slot - z.slot || a.id - z.id)
+    .sort((a, z) => a.slot - z.slot || a.id - z.id)
     .map((u) => u.id);
 }
 
 // The two lines take it in turns, one blow each, and each line cycles through
 // its own people. Bringing six against three means each of the six swings half
-// as often - the numbers buy you a deeper bench, not more blows.
+// as often - the numbers buy you a deeper bench and the opening blow, not more blows.
 export function takeTurn(b: Battle) {
   if (b.done) return;
   b.hit = [];
@@ -508,14 +477,16 @@ export function takeTurn(b: Battle) {
     const i = b.cursor[side] % list.length;
     const u = b.units.find((o) => o.id === list[i]);
     b.cursor[side] = i + 1 >= list.length ? 0 : i + 1;
-    if (b.cursor[side] === 0 && side === b.lead) b.round += 1;
-    const foe = u ? frontOf(b, side === "player" ? "enemy" : "player") : undefined;
+    const foe = u ? targetFor(b, side === "player" ? "enemy" : "player") : undefined;
     if (u && foe) {
       strike(b, u, foe);
       if (u.withered > 0) u.withered -= 1;
     }
   }
   b.next = side === "player" ? "enemy" : "player";
+  // An exchange is a blow from each side, whatever the two lines are made of,
+  // so the cap on a fight means the same thing however many are standing in it
+  if (b.next === b.lead) b.round += 1;
 
   if (!living(b, "enemy").length) b.done = "win";
   else if (!living(b, "player").length) b.done = "loss";
@@ -524,16 +495,15 @@ export function takeTurn(b: Battle) {
 }
 
 export function fight(b: Battle) {
-  let guard = TUNING.maxRounds * (b.units.length + 4) + 16;
+  let guard = TUNING.maxRounds * 2 + b.units.length + 16;
   while (!b.done && guard-- > 0) takeTurn(b);
 }
 
-function makeBattle(g: GameState, f: Force): Battle {
-  const n = g.nodes[f.at];
-  const P = perks(g);
+function makeBattle(g: GameState): Battle {
+  const n = g.nodes[g.at];
   const b: Battle = {
-    perks: P,
-    node: f.at,
+    perks: perks(g),
+    node: g.at,
     units: [],
     hit: [],
     mend: [],
@@ -548,8 +518,7 @@ function makeBattle(g: GameState, f: Force): Battle {
     nextId: 0,
   };
 
-  bandOf(g, f).forEach((u, slot) => {
-    const t = CREATURES[u.creature];
+  g.reserve.forEach((u, slot) => {
     b.units.push({
       id: b.nextId++,
       src: u.id,
@@ -559,7 +528,6 @@ function makeBattle(g: GameState, f: Force): Battle {
       hp: u.hp,
       maxHp: u.maxHp,
       dmg: unitDmg(g, u),
-      speed: t.speed,
       tier: 0,
       withered: 0,
     });
@@ -574,15 +542,18 @@ function makeBattle(g: GameState, f: Force): Battle {
       hp: t.hp + n.tier * TUNING.tierHp,
       maxHp: t.hp + n.tier * TUNING.tierHp,
       dmg: t.dmg + (n.tier >= TUNING.tierDmgAt ? 1 : 0),
-      speed: t.speed,
       slot,
       tier: 0,
       withered: 0,
     });
   });
-  b.lead = rnd() < 0.5 ? "player" : "enemy";
+
+  // The bigger line opens. Even sides toss for it.
+  const ours = g.reserve.length;
+  const theirs = n.foes.length;
+  b.lead = ours > theirs ? "player" : theirs > ours ? "enemy" : rnd() < 0.5 ? "player" : "enemy";
   b.next = b.lead;
-  blog(b, f.kind === "hero" ? "You step in." : "They go in.");
+  blog(b, ours > theirs ? "You are more." : theirs > ours ? "They are more." : "Even sides.");
   blog(b, b.lead === "player" ? "You swing first." : "They swing first.");
   return b;
 }
@@ -590,239 +561,120 @@ function makeBattle(g: GameState, f: Force): Battle {
 // ---------------------------------------------------------------- orders
 
 export const canOrder = (g: GameState, id: number) =>
-  !g.over && !busy(heroForce(g)) && routeTo(g, heroForce(g).at, id) !== null;
-
-export const canSend = (g: GameState, id: number) =>
   !g.over &&
-  !busy(heroForce(g)) &&
+  !busy(g) &&
   g.reserve.length > 0 &&
-  g.nodes[id]?.state === "open" &&
-  routeTo(g, heroForce(g).at, id) !== null;
+  routeTo(g, g.at, id) !== null;
 
-export function orderHero(g: GameState, id: number): boolean {
-  const f = heroForce(g);
+export function orderArmy(g: GameState, id: number): boolean {
   if (!canOrder(g, id)) return false;
-  const path = routeTo(g, f.at, id);
-  if (!path || !path.length) return false;
-  f.path = path;
-  f.mode = "march";
-  f.next = g.time + TUNING.marchTicks;
-  return true;
-}
-
-// Cut loose from the retinue and gone for good. It fights where you point it,
-// then finds its own next room, and it does not come back.
-export function sendSquad(g: GameState, id: number, unitIds: number[]): boolean {
-  const hero = heroForce(g);
-  if (!canSend(g, id)) return false;
-  // The order you picked them in is the order they stand in
-  const picked = unitIds
-    .map((id) => g.reserve.find((u) => u.id === id))
-    .filter((u): u is Unit => u !== undefined);
-  if (!picked.length) return false;
-  const path = routeTo(g, hero.at, id);
-  if (!path || !path.length) return false;
-
-  g.reserve = g.reserve.filter((u) => !picked.includes(u));
-  g.forces.push({
-    id: g.nextForce++,
-    kind: "squad",
-    units: picked,
-    at: hero.at,
-    path,
-    mode: "march",
-    next: g.time + TUNING.marchTicks,
-    battle: null,
-    rooms: 0,
-  });
-  log(g, `${picked.length} sent out.`);
+  const route = routeTo(g, g.at, id);
+  if (!route || !route.length) return false;
+  g.route = route;
+  g.mode = "march";
+  g.next = g.time + TUNING.marchTicks;
   return true;
 }
 
 // ---------------------------------------------------------------- the clock
 
-// Nothing moves until he has chosen what he is. That is the one gate: no other
-// code path can find itself running a run with no nature.
 export function advance(g: GameState, ticks: number) {
-  if (!g.path) return;
   for (let i = 0; i < ticks && !g.over; i++) step(g);
 }
 
 function step(g: GameState) {
   g.time += 1;
-  if (g.time > TUNING.reinforceAfter && g.time % TUNING.reinforceEvery === 0) reinforce(g);
-  // A copy, because a squad can be cut loose or wiped while the list is walked
-  for (const f of [...g.forces]) {
-    if (g.over) return;
-    if (f.mode === "gone" || g.time < f.next) continue;
-    if (f.mode === "march") march(g, f);
-    else if (f.mode === "fight") fightTurn(g, f);
-    else if (f.mode === "spoils") finish(g, f);
-    else if (f.mode === "idle" && f.kind === "squad") retarget(g, f);
+  if (g.time >= g.next) {
+    if (g.mode === "march") march(g);
+    else if (g.mode === "fight") fightTurn(g);
+    else if (g.mode === "spoils") finish(g);
+    else g.next = g.time + TUNING.idlePoll;
   }
   g.rng = rngState();
 }
 
-// A room you leave standing does not stay the size you found it. This is the
-// only clock pressure there is - after a grace period, because losing the first
-// room you walk into to something that moved in behind you is not pressure.
-function reinforce(g: GameState) {
-  const idle = g.nodes.filter(
-    (n) => n.state === "open" && n.kind !== "boss" && n.foes.length < TUNING.foeCap,
-  );
-  if (!idle.length) return;
-  const n = pick(idle);
-  n.foes.push(pick(n.tier < 2 ? EARLY_POOL : LATE_POOL));
-  log(g, "Something moves in.");
+function march(g: GameState) {
+  const next = g.route.shift();
+  if (next === undefined) return arrive(g);
+  g.at = next;
+  if (!g.route.length) return arrive(g);
+  g.next = g.time + TUNING.marchTicks;
 }
 
-function march(g: GameState, f: Force) {
-  const next = f.path.shift();
-  if (next === undefined) return arrive(g, f);
-  f.at = next;
-  if (!f.path.length) return arrive(g, f);
-  f.next = g.time + TUNING.marchTicks;
-}
-
-function arrive(g: GameState, f: Force) {
-  if (g.nodes[f.at].state === "open") {
-    f.battle = makeBattle(g, f);
-    f.mode = "fight";
-    f.next = g.time + TUNING.turnTicks;
+function arrive(g: GameState) {
+  if (g.nodes[g.at].state === "open") {
+    g.battle = makeBattle(g);
+    g.mode = "fight";
+    g.next = g.time + TUNING.turnTicks;
     return;
   }
-  f.mode = "idle";
-  f.next = g.time + TUNING.idlePoll;
-  if (f.kind === "squad") retarget(g, f);
-  else readLore(g, g.nodes[f.at]);
+  g.mode = "idle";
+  g.next = g.time + TUNING.idlePoll;
+  readLore(g, g.nodes[g.at]);
 }
 
-function retarget(g: GameState, f: Force) {
-  f.mode = "idle";
-  f.next = g.time + TUNING.idlePoll;
-  const target = nearestOpen(g, f.at);
-  if (target === null) return;
-  const path = routeTo(g, f.at, target);
-  if (!path || !path.length) return;
-  f.path = path;
-  f.mode = "march";
-  f.next = g.time + TUNING.marchTicks;
-}
-
-function fightTurn(g: GameState, f: Force) {
-  const b = f.battle!;
+function fightTurn(g: GameState) {
+  const b = g.battle!;
   takeTurn(b);
-  f.next = g.time + TUNING.turnTicks;
-  if (b.done) settle(g, f, b);
+  g.next = g.time + TUNING.turnTicks;
+  if (b.done) settle(g, b);
 }
 
-function settle(g: GameState, f: Force, b: Battle) {
+// The dark takes what is left of you. There is nobody standing behind the army.
+function dead(g: GameState) {
+  g.over = "dead";
+  log(g, "The dark has you.");
+}
+
+function settle(g: GameState, b: Battle) {
   // Survivors keep their wounds; the fallen do not come back
   const alive = new Map(
     b.units.filter((u) => u.faction === "player" && u.hp > 0).map((u) => [u.src, u.hp]),
   );
-  g.lost += bandOf(g, f).filter((u) => !alive.has(u.id)).length;
-  f.units = f.units.filter((u) => alive.has(u.id));
-  if (f.kind === "hero") g.reserve = g.reserve.filter((u) => alive.has(u.id));
-  for (const u of bandOf(g, f)) u.hp = alive.get(u.id)!;
+  g.lost += g.reserve.filter((u) => !alive.has(u.id)).length;
+  g.reserve = g.reserve.filter((u) => alive.has(u.id));
+  for (const u of g.reserve) u.hp = alive.get(u.id)!;
 
   // The board stays up for a beat afterwards. That beat is where the dead get
   // up, which is the one thing in this game worth stopping to watch.
-  f.mode = "spoils";
-  f.next = g.time + TUNING.spoilsTicks;
+  g.mode = "spoils";
+  g.next = g.time + TUNING.spoilsTicks;
 
-  if (b.done === "loss") {
-    if (f.kind === "hero") {
-      g.over = "dead";
-      log(g, "The dark has you.");
-    } else {
-      f.units = [];
-      log(g, "A squad is lost.");
-    }
-    return;
-  }
+  if (b.done === "loss") return dead(g);
 
   const n = g.nodes[b.node];
-  clearRoom(g, f, b, n);
-  f.rooms += 1;
+  clearRoom(g, b, n);
+  g.rooms += 1;
   if (n.kind === "boss") {
     g.over = "won";
     log(g, "It is finished.");
     return;
   }
-  if (f.kind !== "hero") return;
+  // A room can be won with nothing left standing - a warden's toll takes the
+  // last of you down on its way out - and a won room is still a lost run
+  if (!g.reserve.length) return dead(g);
 
-  const h = heroUnit(g);
-  if (!h) {
-    g.over = "dead";
-    log(g, "The dark has you.");
-    return;
-  }
-  // A room he takes gives him a little back. Nothing he raised gets anything:
-  // what a body has left is what it got up with, and it only goes down.
-  const before = h.hp;
-  h.hp = Math.min(h.maxHp, h.hp + Math.ceil(h.maxHp * TUNING.restFrac));
-  b.healed = h.hp - before;
-  const shown = b.units.find((u) => u.src === h.id);
-  if (shown) shown.hp = h.hp;
-
-  // The room is his and nothing hurries him out of it. The board stays up until
-  // he says so, because what to do with the dead on it is the decision.
-  f.next = HELD;
+  // The room is yours and nothing hurries you out of it. The board stays up
+  // until you say so, because what to do with the dead on it is the decision.
+  g.next = HELD;
   if (offered(g, b).length) log(g, "The dead wait.");
 }
 
 // A won room waits: no tick ever comes round to end it
 export const HELD = Number.MAX_SAFE_INTEGER;
 
-// Bodies in this room he could still ask, cost aside
+// Bodies in this room you could still ask, cost aside
 export const offered = (g: GameState, b: Battle) =>
   b.units.filter(
     (u) =>
       u.faction === "enemy" && u.hp <= 0 && !b.taken.includes(u.id) && manaCost(g, u.creature) > 0,
   );
 
-// The room he is standing in, if the board is still up and still his to work
-const held = (g: GameState): Battle | null => {
-  const f = heroForce(g);
-  const b = f.battle;
-  return b && f.kind === "hero" && f.mode === "spoils" && b.done === "win" ? b : null;
-};
+// The room you are standing in, if the board is still up and still yours to work
+export const held = (g: GameState): Battle | null =>
+  g.battle && g.mode === "spoils" && g.battle.done === "win" ? g.battle : null;
 
-// The cheapest body still on the floor. Nothing distinguishes one corpse from
-// another to a man eating them, so he takes whichever costs least.
-export const eatable = (g: GameState) => {
-  const b = held(g);
-  if (!b || !perks(g).eat) return null;
-  const u = [...offered(g, b)].sort((x, z) => manaCost(g, x.creature) - manaCost(g, z.creature))[0];
-  return u && g.mana >= manaCost(g, u.creature) ? u : null;
-};
-
-// A corpse is a meal instead of a servant. The pool pays either way, which is
-// what makes it a decision: every one he eats is one that never gets up.
-export function eat(g: GameState): boolean {
-  const b = held(g);
-  const u = eatable(g);
-  if (!b || !u) return false;
-  const P = perks(g);
-  const h = heroUnit(g);
-  if (!h) return false;
-  g.mana -= manaCost(g, u.creature);
-  b.taken.push(u.id);
-  h.maxHp += P.eatMaxHp;
-  const back = Math.min(h.maxHp - h.hp, P.eat + P.eatMaxHp);
-  h.hp += back;
-  b.healed += back;
-  const shown = b.units.find((o) => o.src === h.id);
-  if (shown) {
-    shown.maxHp = h.maxHp;
-    shown.hp = h.hp;
-  }
-  log(g, `you eat it. +${back}`.slice(0, 20));
-  return true;
-}
-
-// Whoever of his is worst off, which is the same one a wisp would go for
+// Whoever is worst off, which is the same one a wisp would go for
 export const mendable = (g: GameState) => {
   if (!held(g) || !perks(g).mend) return null;
   const u = g.reserve.filter((o) => o.hp < o.maxHp).sort((a, z) => hpFrac(a) - hpFrac(z))[0];
@@ -847,9 +699,8 @@ export function mend(g: GameState): boolean {
 
 // One body, bought. The free ones a room gives up are luck; this is the choice.
 export function reap(g: GameState, unitId: number): boolean {
-  const f = heroForce(g);
-  const b = f.battle;
-  if (!b || f.mode !== "spoils" || b.done !== "win" || f.kind !== "hero") return false;
+  const b = held(g);
+  if (!b) return false;
   const u = b.units.find((o) => o.id === unitId);
   if (!u || !offered(g, b).includes(u)) return false;
   const cost = manaCost(g, u.creature);
@@ -868,31 +719,40 @@ export function reap(g: GameState, unitId: number): boolean {
   return true;
 }
 
-// He is done with the room. Nothing else ends the spoils.
+// Whether unmaking this one is allowed at all. Never the last of them: an army
+// of nobody is a dead run, and that is not a button.
+export const canSell = (g: GameState, unitId: number) =>
+  held(g) !== null && g.reserve.length > 1 && g.reserve.some((u) => u.id === unitId);
+
+// A body given back to the pool it came out of. It always pays the same, and it
+// always pays less than the cheapest thing there is - so this is a slot you
+// wanted and a body you would rather have, never a way to make mana.
+export function sell(g: GameState, unitId: number): boolean {
+  if (!canSell(g, unitId)) return false;
+  const i = g.reserve.findIndex((u) => u.id === unitId);
+  const [gone] = g.reserve.splice(i, 1);
+  g.mana = Math.min(manaCap(g), g.mana + TUNING.sellMana);
+  const b = held(g)!;
+  const shown = b.units.find((o) => o.src === gone.id);
+  if (shown) shown.hp = 0;
+  log(g, `${CREATURES[gone.creature].short} unmade.`.slice(0, 20));
+  return true;
+}
+
+// You are done with the room. Nothing else ends the spoils.
 export function leaveRoom(g: GameState): boolean {
-  const f = heroForce(g);
-  if (f.mode !== "spoils") return false;
-  finish(g, f);
+  if (g.mode !== "spoils") return false;
+  finish(g);
   return true;
 }
 
 // The beat is over: put the board away and get on with it
-function finish(g: GameState, f: Force) {
-  const b = f.battle;
-  f.battle = null;
-  if (!b || b.done === "loss" || (f.kind === "squad" && !f.units.length)) {
-    if (f.kind === "squad") {
-      f.mode = "gone";
-      if (b && b.done !== "loss") log(g, "A squad is spent.");
-    }
-    return;
-  }
-  if (f.kind === "squad") {
-    retarget(g, f);
-    return;
-  }
-  f.mode = "idle";
-  f.next = g.time + TUNING.idlePoll;
+function finish(g: GameState) {
+  const b = g.battle;
+  g.battle = null;
+  if (!b || b.done === "loss") return;
+  g.mode = "idle";
+  g.next = g.time + TUNING.idlePoll;
   readLore(g, g.nodes[b.node]);
 }
 
@@ -903,29 +763,37 @@ function loot(n: MapNode): Record<Resource, number> {
   return { gold: rolls, keys: n.kind === "cache" || n.kind === "boss" ? 1 : 0 };
 }
 
-// Everything a won room pays, whoever won it. There is no sheet to stop and
-// read in a game that keeps running, so it all goes to the log.
-function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
+// Everything a won room pays. There is no sheet to stop and read in a game that
+// keeps running, so it all goes to the log.
+function clearRoom(g: GameState, b: Battle, n: MapNode) {
   n.state = "cleared";
   g.cleared += 1;
   unlock(g);
-  // A room that stops fighting back is a room he gets some of himself back in
+  // A room that stops fighting back is a room you get some of yourself back in
   g.mana = Math.min(manaCap(g), g.mana + Math.ceil(manaCap(g) * TUNING.manaRegen));
 
-  // Anything that lived through it has one more room behind it. It ticks for
-  // everybody; only a pack has bought anything that reads it.
+  // Anything that lived through it has one more room behind it, and gets a
+  // little of itself back for it. With nobody standing behind the army this is
+  // the only thing that heals without a node of the tree bought for it.
   const P = perks(g);
-  for (const u of f.kind === "hero" ? g.reserve : f.units) {
+  let mended = 0;
+  for (const u of g.reserve) {
     u.rooms += 1;
-    if (!P.vetHp) continue;
-    u.maxHp += P.vetHp;
-    u.hp += P.vetHp;
+    if (u.rooms <= TUNING.vetCap) u.maxHp += P.vetHp;
+    const before = u.hp;
+    u.hp = Math.min(u.maxHp, u.hp + P.vetHp + Math.ceil(u.maxHp * TUNING.restFrac));
+    mended += u.hp - before;
+    const shown = b.units.find((o) => o.src === u.id);
+    if (shown) {
+      shown.maxHp = u.maxHp;
+      shown.hp = u.hp;
+    }
   }
+  b.healed = mended;
 
   // Split spawns are not corpses anybody left behind, so they pay nothing
   const fallen = b.units.filter((u) => u.faction === "enemy" && u.hp <= 0 && u.tier === 0);
-  const raw = fallen.reduce((s, u) => s + CREATURES[u.creature].xp, 0);
-  const xp = f.kind === "squad" ? Math.max(1, Math.round(raw * TUNING.squadXpCut)) : raw;
+  const xp = fallen.reduce((s, u) => s + CREATURES[u.creature].xp, 0);
   gainXp(g, xp);
 
   const res = loot(n);
@@ -933,9 +801,8 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   const spoils = RES_IDS.filter((k) => res[k] > 0).map((k) => `${RESOURCES[k].glyph}${res[k]}`);
   log(g, `+${xp}xp ${spoils.join(" ")}`.slice(0, 20));
 
-  // Only what he is standing over gets up on its own, and now hardly any of it
-  // does. The rest of them he has to ask for, one at a time, and pay for.
-  if (f.kind !== "hero") return;
+  // Only a little of it gets up on its own. The rest has to be asked for, one
+  // at a time, and paid for.
   const rose: CreatureId[] = [];
   const bodies: number[] = [];
   for (const u of fallen) {
@@ -952,8 +819,6 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   }
 }
 
-// The story is his to read, not theirs to report. A room a squad took keeps its
-// piece until he walks through it himself.
 function readLore(g: GameState, n: MapNode) {
   if (n.lore === null || g.seenLore.includes(n.lore)) return;
   g.seenLore.push(n.lore);
@@ -962,6 +827,10 @@ function readLore(g: GameState, n: MapNode) {
 
 // ---------------------------------------------------------------- lifecycle
 
+// Three different things out of the early pool. Different, so no roll ever
+// hands out a band with nothing in it that can kill.
+export const rollBand = (): CreatureId[] => shuffle(START_POOL).slice(0, START_BAND);
+
 export function newGame(seedValue: number): GameState {
   seedRng(seedValue);
   const g: GameState = {
@@ -969,18 +838,20 @@ export function newGame(seedValue: number): GameState {
     rng: rngState(),
     time: 0,
     nodes: [],
-    forces: [],
-    // The dead go in first; he can be moved up the line if you want him there
     reserve: [],
-    front: TUNING.baseCap,
-    nextForce: 1,
+    at: 0,
+    route: [],
+    mode: "idle",
+    next: 0,
+    battle: null,
+    rooms: 0,
     nextUnit: 1,
     xp: 0,
     level: 0,
     unspent: 0,
     mana: TUNING.manaBase,
-    path: "",
-    taken: [],
+    // The middle of the board comes free: level one buys an arm, not the centre
+    taken: [rootId],
     res: { gold: 0, keys: 0 },
     risen: null,
     seenLore: [],
@@ -991,21 +862,7 @@ export function newGame(seedValue: number): GameState {
     over: "",
   };
   buildMap(g);
-
-  const gate = g.nodes.find((n) => n.kind === "gate")!;
-  g.forces.push({
-    id: 0,
-    kind: "hero",
-    units: [{ id: 0, creature: "hero", hp: TUNING.heroHp, maxHp: TUNING.heroHp, rooms: 0 }],
-    at: gate.id,
-    path: [],
-    mode: "idle",
-    next: 0,
-    battle: null,
-    rooms: 0,
-  });
-  // What he walks in with comes with the nature he picks, and nothing happens
-  // until he has picked one
+  for (const c of rollBand()) raise(g, c);
   log(g, "Into the dark.");
   g.rng = rngState();
   return g;
@@ -1014,13 +871,13 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 8;
+const SAVE_VERSION = 9;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
-  "seed", "rng", "time", "nodes", "forces", "reserve", "front", "nextForce", "nextUnit", "xp",
-  "level", "unspent", "mana", "path", "taken", "res", "risen", "seenLore", "loreQueue", "cleared",
-  "lost", "log", "over",
+  "seed", "rng", "time", "nodes", "reserve", "at", "route", "mode", "next", "battle", "rooms",
+  "nextUnit", "xp", "level", "unspent", "mana", "taken", "res", "risen", "seenLore", "loreQueue",
+  "cleared", "lost", "log", "over",
 ];
 
 export function save(g: GameState) {

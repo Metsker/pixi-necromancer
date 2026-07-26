@@ -1,194 +1,108 @@
-// The three natures, and what each one lets him buy. Numbers and templates
-// only - every key here is read at exactly one place in game.ts.
-import type { CreatureId } from "./data.ts";
+// One tree, three arms out of the middle. Numbers and templates only - every
+// key here is read at exactly one place in game.ts.
 
-export type PathId = "rat" | "pack" | "lord";
+export type ArmId = "swarm" | "bond" | "control";
 
 export type Perk =
-  // generic, threaded through all three: what the old stat menu used to sell
+  // swarm: more of them, cheaper to ask for, and rats worth having a lot of
   | "slots"
   | "manaPool"
-  | "dmg"
-  | "hp"
-  // rat king
   | "raiseCost"
   | "riseLuck"
   | "swarmPer"
   | "swarmCap"
   | "ratHp"
   | "ratDmg"
-  // pack
+  // bond: fewer of them, and a wall worth standing behind
   | "minionDmg"
   | "vetDmg"
   | "vetHp"
   | "mend"
-  // lord
-  | "front"
-  | "eat"
-  | "eatMaxHp"
-  | "wispFirst"
-  | "wall"
-  | "lordDmg";
+  | "wallHp"
+  | "wallCut"
+  | "packTaunt"
+  // control: what the dark does to the other side
+  | "witherPow"
+  | "witherLong"
+  | "witherAll"
+  | "hexDmg"
+  | "dread";
 
 export type Perks = Record<Perk, number>;
 
 export const PERK_IDS: Perk[] = [
-  "slots", "manaPool", "dmg", "hp",
-  "raiseCost", "riseLuck", "swarmPer", "swarmCap", "ratHp", "ratDmg",
-  "minionDmg", "vetDmg", "vetHp", "mend",
-  "front", "eat", "eatMaxHp", "wispFirst", "wall", "lordDmg",
+  "slots", "manaPool", "raiseCost", "riseLuck", "swarmPer", "swarmCap", "ratHp", "ratDmg",
+  "minionDmg", "vetDmg", "vetHp", "mend", "wallHp", "wallCut", "packTaunt",
+  "witherPow", "witherLong", "witherAll", "hexDmg", "dread",
 ];
 
-// col and row place it on the grid; the links are whatever it ends up beside,
-// which is the same rule the map uses and means the shape is the data
+// col and row place it on the board; the links are whatever it ends up beside,
+// which is the same rule the map uses and means the shape is the data. The arm
+// is what the gate counts, so two arms may touch without opening each other.
 export type TreeNode = {
   id: number;
   col: number;
   row: number;
+  arm: ArmId | "";
   name: string;
   note: string; // what it does, short enough for the narrowest sheet
   gives: Partial<Perks>;
 };
 
-export type Path = {
-  id: PathId;
-  name: string;
-  note: string;
-  hint: string; // what he walks in with, said at the gate
-  glyph: string;
-  color: number; // index into PALETTE
-  start: CreatureId[];
-  slots: number; // what the nature itself is worth in bodies, before any node
-  nodes: TreeNode[];
+export const TREE_COLS = 5;
+export const TREE_ROWS = 5;
+export const ROOT = { col: 2, row: 2 };
+
+export const ARM_IDS: ArmId[] = ["swarm", "bond", "control"];
+
+export const ARMS: Record<ArmId, { name: string; note: string; color: number }> = {
+  swarm: { name: "SWARM", note: "the many", color: 15 },
+  bond: { name: "BOND", note: "the few", color: 14 },
+  control: { name: "CONTROL", note: "the dark", color: 20 },
 };
 
-export const TREE_COLS = 3;
-export const TREE_ROWS = 4;
-export const ROOT = { col: 1, row: 0 };
+// Written out cell by cell, because the shape is the point. The root is index
+// zero and comes free: level one buys an arm, not the middle of the board.
+const LAID: [number, number, ArmId | "", string, string, Partial<Perks>][] = [
+  [2, 2, "", "THE GRAVE", "+1 body", { slots: 1 }],
 
-// Written in reading order, so a grid of twelve is twelve lines
-const grid = (rows: [string, string, Partial<Perks>][][]): TreeNode[] =>
-  rows.flatMap((row, r) =>
-    row.map(([name, note, gives], c) => ({ id: r * TREE_COLS + c, col: c, row: r, name, note, gives })),
-  );
+  // Up: more of them, cheaper, and rats worth keeping a lot of. It has no wall
+  // and nothing that mends - what it answers attrition with is replacement.
+  [2, 1, "swarm", "THE MANY", "+1 body", { slots: 1 }],
+  [1, 1, "swarm", "THIN BLOOD", "rats +18 hp", { ratHp: 18 }],
+  [3, 1, "swarm", "VERMIN", "rats +4 dmg", { ratDmg: 4 }],
+  [2, 0, "swarm", "GRAVE-GLUT", "more get up free", { riseLuck: 20 }],
+  [1, 0, "swarm", "CHEAP ASKING", "asking -1, +4", { raiseCost: -1, manaPool: 4 }],
+  [3, 0, "swarm", "KING OF RATS", "+2 bodies, teeth", { slots: 2, swarmPer: 2, swarmCap: 10, riseLuck: 15 }],
 
-export const PATHS: Record<PathId, Path> = {
-  // More of them, cheaper to ask for, and rats that are worth having a lot of
-  rat: {
-    id: "rat",
-    name: "RAT KING",
-    note: "the many",
-    hint: "3 rats, +1 body",
-    glyph: "⚇",
-    color: 15,
-    start: ["rat", "rat", "rat"],
-    slots: 1,
-    nodes: grid([
-      [
-        ["CHEAP ASKING", "asking -1", { raiseCost: -1 }],
-        ["THE MANY", "+1 body", { slots: 1 }],
-        ["THIN BLOOD", "rats +6 hp", { ratHp: 6 }],
-      ],
-      [
-        ["GRAVE-GLUT", "more get up free", { riseLuck: 10 }],
-        ["TEETH", "swarm +1 a head", { swarmPer: 1 }],
-        ["VERMIN", "rats +2 dmg", { ratDmg: 2 }],
-      ],
-      [
-        ["DEEP WELL", "+5 asking", { manaPool: 5 }],
-        ["THE HORDE", "+2 bodies", { slots: 2 }],
-        ["MIGHT", "+3 dmg", { dmg: 3 }],
-      ],
-      [
-        ["THIN BLOOD II", "asking -1 again", { raiseCost: -1 }],
-        ["WARD", "+30 hp", { hp: 30 }],
-        ["KING OF RATS", "+2 bodies, teeth", { slots: 2, ratDmg: 3, swarmCap: 6 }],
-      ],
-    ]),
-  },
+  // Left and down: fewer of them, each one worth mending and worth hiding behind
+  [1, 2, "bond", "THE FEW", "all +3 dmg", { minionDmg: 3 }],
+  [0, 2, "bond", "GRIT", "mend the worst", { mend: 8 }],
+  [1, 3, "bond", "STONE SKIN", "walls +20 hp", { wallHp: 20 }],
+  [0, 3, "bond", "HARD YEARS", "+2 hp a room", { vetHp: 2 }],
+  [1, 4, "bond", "UNBROKEN", "walls take -20%", { wallCut: 20 }],
+  [0, 4, "bond", "THE PACK", "old bones bite", { vetDmg: 2, minionDmg: 3, packTaunt: 1 }],
 
-  // Fewer of them, each one worth mending, each one worth more the longer it lasts
-  pack: {
-    id: "pack",
-    name: "PACK",
-    note: "the few",
-    hint: "1 hound, -1 body",
-    glyph: "⋒",
-    color: 14,
-    start: ["hound"],
-    slots: -1,
-    nodes: grid([
-      [
-        ["GRIT", "mend the worst", { mend: 8 }],
-        ["THE FEW", "minions +4 dmg", { minionDmg: 4 }],
-        ["VETERANCY", "+2 dmg a room", { vetDmg: 2 }],
-      ],
-      [
-        ["SPARE NOTHING", "mends +6 more", { mend: 6 }],
-        ["HARD YEARS", "+3 hp a room", { vetHp: 3 }],
-        ["OLD BLOOD", "+2 dmg a room", { vetDmg: 2 }],
-      ],
-      [
-        ["MANA", "+5 asking", { manaPool: 5 }],
-        ["LEANER", "-1 body, +5 dmg", { slots: -1, minionDmg: 5 }],
-        ["MIGHT", "+3 dmg", { dmg: 3 }],
-      ],
-      [
-        ["THE BOND", "mends +10 more", { mend: 10 }],
-        ["WARD", "+30 hp", { hp: 30 }],
-        ["THE PACK", "old bones bite", { vetDmg: 3, vetHp: 4, minionDmg: 5 }],
-      ],
-    ]),
-  },
+  // Right and down: nothing of yours gets better, everything of theirs gets worse
+  [3, 2, "control", "DREAD", "they hit -10%", { dread: 10 }],
+  [4, 2, "control", "HEX", "+3 vs withered", { hexDmg: 3 }],
+  [3, 3, "control", "DEEP WITHER", "wither cuts more", { witherPow: 15 }],
+  [4, 3, "control", "LONG WITHER", "wither holds +2", { witherLong: 2 }],
+  [3, 4, "control", "MANA", "+6 asking", { manaPool: 6 }],
+  [4, 4, "control", "THE HUSK", "it all withers", { witherAll: 1, dread: 6, hexDmg: 2 }],
+];
 
-  // He stands at the front of it and is fed by everything behind him
-  lord: {
-    id: "lord",
-    name: "LORD",
-    note: "yourself",
-    hint: "knight and wisp",
-    glyph: "⌤",
-    color: 22,
-    // A wall and a mender, because both of his answers are things standing
-    // behind him and one body behind him is not a line
-    start: ["knight", "wisp"],
-    slots: 0,
-    // He walks in at the back like anybody else. Stepping to the front is the
-    // root of the tree, not the nature - a man with no nodes at the head of his
-    // own line is dead by the third room, which is a trap and not a gamble. The
-    // wall sits next to the root so the first thing he can buy is the answer.
-    nodes: grid([
-      [
-        ["THE LINE", "-12% a body back", { wall: 12 }],
-        ["TAKE THE FRONT", "you go first", { front: 1, eat: 18, wall: 10 }],
-        ["STRONG BACK", "+3 dmg a body", { lordDmg: 3 }],
-      ],
-      [
-        ["UNBROKEN", "-8% a body back", { wall: 8 }],
-        ["WARD", "+30 hp", { hp: 30 }],
-        ["FIRST TENDED", "wisps mend you", { wispFirst: 1 }],
-      ],
-      [
-        ["MANA", "+5 asking", { manaPool: 5 }],
-        ["RETINUE", "+1 body", { slots: 1 }],
-        ["MIGHT", "+3 dmg", { dmg: 3 }],
-      ],
-      [
-        ["GRAVE-FED", "eating lifts you", { eatMaxHp: 6 }],
-        ["GLUTTON", "eating heals +12", { eat: 12 }],
-        ["THE LORD", "the line holds", { wall: 10, lordDmg: 4, hp: 40 }],
-      ],
-    ]),
-  },
-};
+export const TREE: TreeNode[] = LAID.map(([col, row, arm, name, note, gives], id) => ({
+  id, col, row, arm, name, note, gives,
+}));
 
-export const PATH_IDS: PathId[] = ["rat", "pack", "lord"];
+export const rootId = 0;
 
-export const rootId = ROOT.row * TREE_COLS + ROOT.col;
+// How far out a node sits. Distance is the price of admission: nothing at depth
+// d opens until d-1 of its own arm is already yours.
+export const depthOf = (n: TreeNode) => Math.abs(n.col - ROOT.col) + Math.abs(n.row - ROOT.row);
 
 // Whatever it ends up beside. Same rule as the map: orthogonal only, so every
 // join between two nodes is one straight run of line.
-export const linksOf = (p: Path, n: TreeNode): number[] =>
-  p.nodes
-    .filter((o) => Math.abs(o.col - n.col) + Math.abs(o.row - n.row) === 1)
-    .map((o) => o.id);
+export const linksOf = (n: TreeNode): number[] =>
+  TREE.filter((o) => Math.abs(o.col - n.col) + Math.abs(o.row - n.row) === 1).map((o) => o.id);

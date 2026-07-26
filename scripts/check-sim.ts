@@ -4,53 +4,52 @@ import { LORE } from "../src/sim/lore.ts";
 import {
   ABILITIES,
   advance,
-  bandOf,
   canOrder,
-  canSend,
-  fielded,
-  heroForce,
-  choosePath,
+  canSell,
   clearSave,
   commandCap,
-  eat,
-  eatable,
-  heroUnit,
+  fielded,
+  held,
   leaveRoom,
   load,
   manaCap,
   manaCost,
   mend,
   mendable,
+  moveDown,
   moveUp,
-  nearestOpen,
   newGame,
-  orderHero,
   offered,
+  orderArmy,
   perks,
   powerOf,
   raise,
   reap,
   reserve,
+  rollBand,
   routeTo,
+  save,
+  sell,
   takeNode,
   takeTurn,
+  targetFor,
   threatOf,
   treeOpen,
-  save,
-  sendSquad,
-  squads,
   unitDmg,
+  wallish,
   xpNeeded,
 } from "../src/sim/game.ts";
 import {
   CREATURES,
+  START_BAND,
+  START_POOL,
   TUNING,
   type Battle,
   type BattleUnit,
+  type CreatureId,
   type GameState,
-  type MapNode,
 } from "../src/sim/data.ts";
-import { PATHS, PATH_IDS, PERK_IDS, rootId, type PathId } from "../src/sim/tree.ts";
+import { ARM_IDS, PERK_IDS, TREE, depthOf, linksOf, rootId, type ArmId } from "../src/sim/tree.ts";
 
 // A memory-backed store, so the save path can be exercised outside a browser
 const store = new Map<string, string>();
@@ -70,27 +69,20 @@ function ok(label: string, cond: boolean) {
 }
 
 const openRooms = (g: GameState) => g.nodes.filter((n) => n.state === "open");
-
-// Nothing moves until he has chosen what he is, so every check walks in as
-// somebody. The rat king is the closest to how this played before there were
-// natures: he trails his own line and spends bodies rather than keeping them.
-const newRun = (seed: number, path: PathId = "rat") => {
-  const g = newGame(seed);
-  choosePath(g, path);
-  return g;
-};
+// Enough ticks for a march and the longest fight the cap allows
+const budgetFor = TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 2 + 64;
 
 // ---------------------------------------------------------------- map
 
-const g0 = newRun(12345);
+const g0 = newGame(12345);
 ok("node ids are their own index", g0.nodes.every((n, i) => n.id === i));
 ok("the grid has holes in it", g0.nodes.length < TUNING.mapCols * TUNING.mapRows);
 ok("but most of it is rooms", g0.nodes.length > TUNING.mapCols * TUNING.mapRows * 0.5);
-ok("the gate is where you start", g0.nodes[g0.forces[0].at].kind === "gate");
+ok("the gate is where you start", g0.nodes[g0.at].kind === "gate");
 ok("exactly one boss", g0.nodes.filter((n) => n.kind === "boss").length === 1);
 
 for (let seed = 1; seed <= 30; seed++) {
-  const g = newRun(seed * 7919);
+  const g = newGame(seed * 7919);
   ok(
     `seed ${seed}: links are orthogonal only`,
     g.nodes.every((n) =>
@@ -113,7 +105,7 @@ for (let seed = 1; seed <= 30; seed++) {
     `seed ${seed}: rooms sit where their coordinates say`,
     new Set(g.nodes.map((n) => `${n.col},${n.row}`)).size === g.nodes.length,
   );
-  ok(`seed ${seed}: the map is worth panning over`, g.nodes.length > 40);
+  ok(`seed ${seed}: the map is worth choosing from`, g.nodes.length > 25);
   ok(
     `seed ${seed}: every room below the gate has foes`,
     g.nodes.every((n) => n.kind === "gate" || n.foes.length > 0),
@@ -135,64 +127,56 @@ for (let seed = 1; seed <= 30; seed++) {
   ok(`seed ${seed}: the boss is the hardest room`, boss.tier === TUNING.tiers - 1);
   ok(
     `seed ${seed}: it is gentler near the gate than at the edge`,
-    g.nodes.filter((n) => away(n) <= 2 && n.kind !== "gate").every((n) => n.tier < TUNING.tiers - 1),
+    g.nodes.filter((n) => away(n) <= 1 && n.kind !== "gate").every((n) => n.tier < TUNING.tiers - 1),
   );
 }
 
-const a = newRun(999);
-ok("the same seed builds the same run", JSON.stringify(a) === JSON.stringify(newRun(999)));
-ok("different seeds differ", JSON.stringify(newRun(1000)) !== JSON.stringify(a));
+const a = newGame(999);
+ok("the same seed builds the same run", JSON.stringify(a) === JSON.stringify(newGame(999)));
+ok("different seeds differ", JSON.stringify(newGame(1000)) !== JSON.stringify(a));
 
 {
-  // Nothing moves in until you have had a chance to get going
-  const g = newRun(1717);
+  // A room you leave standing stays the size you found it. Nothing moves in
+  // behind you now: skipping a room is a choice, not a clock.
+  const g = newGame(1717);
   const before = g.nodes.map((n) => n.foes.length).join();
-  advance(g, TUNING.reinforceAfter);
-  ok("the map holds still at the start", g.nodes.map((n) => n.foes.length).join() === before);
-  advance(g, TUNING.reinforceEvery * 3);
-  ok("and then it starts filling in", g.nodes.map((n) => n.foes.length).join() !== before);
-  ok(
-    "but never past the cap",
-    g.nodes.every((n) => n.foes.length <= Math.max(TUNING.foeCap, n.kind === "boss" ? 3 : 0)),
-  );
+  advance(g, 4000);
+  ok("the map holds still", g.nodes.map((n) => n.foes.length).join() === before);
 }
 
 {
   // The colour on a room is what is standing in it, and all three show up
   const seen = new Set<number>();
   for (let seed = 0; seed < 20; seed++) {
-    const g = newRun(2200 + seed * 13);
+    const g = newGame(2200 + seed * 13);
     for (const n of g.nodes) {
       if (!n.foes.length) continue;
       seen.add(threatOf(n));
       ok(`seed ${seed}: threat is a band`, [0, 1, 2].includes(threatOf(n)));
     }
     const rooms = g.nodes.filter((n) => n.foes.length);
-    const worst = rooms.reduce((a, z) => (powerOf(z) > powerOf(a) ? z : a));
-    const softest = rooms.reduce((a, z) => (powerOf(z) < powerOf(a) ? z : a));
+    const worst = rooms.reduce((x, z) => (powerOf(z) > powerOf(x) ? z : x));
+    const softest = rooms.reduce((x, z) => (powerOf(z) < powerOf(x) ? z : x));
     ok(`seed ${seed}: the worst room is not the softest`, threatOf(worst) >= threatOf(softest));
   }
   ok("all three colours turn up on the map", seen.size === 3);
-  // and it has to move when the room does
-  const g = newRun(4242);
+  const g = newGame(4242);
   const n = g.nodes.find((x) => x.foes.length)!;
   const before = powerOf(n);
   n.foes.push("warden");
-  ok("something moving in makes it worse", powerOf(n) > before);
+  ok("something more in it makes it worse", powerOf(n) > before);
 }
 
 // ---------------------------------------------------------------- routing
 
 {
-  const g = newRun(4321);
-  const start = g.forces[0].at;
+  const g = newGame(4321);
+  const start = g.at;
   ok("a route to where you stand is empty", routeTo(g, start, start)!.length === 0);
   const near = openRooms(g)[0];
   ok("a route into an open room is one step", routeTo(g, start, near.id)!.length === 1);
-  const far = g.nodes.find((n) => n.state === "locked" && n.row > 3)!;
+  const far = g.nodes.find((n) => n.state === "locked")!;
   ok("there is no route into a sealed room", routeTo(g, start, far.id) === null);
-  ok("nearest open finds something", nearestOpen(g, start) !== null);
-  ok("the boss is never what a squad picks", g.nodes[nearestOpen(g, start)!].kind !== "boss");
 }
 
 // ---------------------------------------------------------------- lore
@@ -203,254 +187,271 @@ ok(
 );
 ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.lore === LORE.length - 1);
 
-// ---------------------------------------------------------------- army and the tree
+// ---------------------------------------------------------------- the band you walk in with
 
 {
-  const g = newRun(7);
-  ok("a rat king walks in with three", reserve(g).length === PATHS.rat.start.length);
+  const g = newGame(7);
+  ok("a run opens with a band", reserve(g).length === START_BAND);
+  ok(
+    "three different things, never three of one",
+    new Set(reserve(g).map((u) => u.creature)).size === START_BAND,
+  );
+  ok("all of them out of the early pool", reserve(g).every((u) => START_POOL.includes(u.creature)));
   while (raise(g, "rat")) {
     /* fill it */
   }
   ok("the command cap holds", reserve(g).length === commandCap(g));
   ok("a full reserve refuses another", raise(g, "rat") === false);
-  ok("and the nature itself is worth bodies", commandCap(g) === TUNING.baseCap + PATHS.rat.slots);
+  ok("the root of the tree is worth a body", commandCap(g) === TUNING.baseCap + 1);
   ok("the curve grows with level", xpNeeded({ ...g, level: 1 } as GameState) > xpNeeded(g));
 }
 
 {
-  // A nature is chosen once and it is chosen
-  const g = newGame(77);
-  ok("nothing runs before he is somebody", g.path === "");
-  const before = g.time;
-  advance(g, 100);
-  ok("and the clock does not either", g.time === before);
-  ok("choosing works", choosePath(g, "pack") === true);
-  ok("choosing again does not", choosePath(g, "lord") === false);
-  ok("and he is still what he chose", g.path === "pack");
-  ok("a pack walks in narrower", commandCap(g) === TUNING.baseCap + PATHS.pack.slots);
-  advance(g, 100);
-  ok("and now the clock runs", g.time > before);
+  // Over enough rolls, every opening can kill something. This is the one thing
+  // the distinct rule is here to guarantee.
+  const seen = new Set<string>();
+  for (let seed = 0; seed < 200; seed++) {
+    const g = newGame(9000 + seed * 13);
+    const band = reserve(g).map((u) => u.creature);
+    seen.add([...band].sort().join());
+    const punch = band.reduce((s, c) => s + CREATURES[c].dmg, 0);
+    ok(`roll ${seed}: it can kill something`, punch >= 12);
+    ok(`roll ${seed}: and it can take something`, band.reduce((s, c) => s + CREATURES[c].hp, 0) >= 60);
+  }
+  ok("more than one opening turns up", seen.size >= 3);
+  ok("and none of them is impossible", seen.size <= 4);
+  void rollBand;
+}
 
-  // Standing at the head of his own line is bought, not given: a man with no
-  // nodes at the front of it is dead by the third room
-  const l = newRun(78, "lord");
-  ok("a lord walks in at the back like anybody", bandOf(l, heroForce(l)).at(-1)!.creature === "hero");
-  l.unspent = 1;
-  takeNode(l, rootId);
-  ok("and taking the front is what moves him", bandOf(l, heroForce(l))[0].creature === "hero");
-  ok("nobody else's root does that", bandOf(newRun(78), heroForce(newRun(78))).at(-1)!.creature === "hero");
+// ---------------------------------------------------------------- the tree
+
+{
+  // The middle comes free. Level one buys an arm, not the centre.
+  const g = newGame(1001);
+  ok("the root is already yours", g.taken.join() === `${rootId}`);
+  ok("and every arm opens off it", treeOpen(g).length === ARM_IDS.length);
+  ok(
+    "one node of each arm, at the near edge of it",
+    ARM_IDS.every((arm) => treeOpen(g).filter((id) => TREE[id].arm === arm).length === 1),
+  );
+  ok("a point is needed", takeNode(g, treeOpen(g)[0]) === false);
+  g.unspent = 1;
+  const first = treeOpen(g)[0];
+  ok("and then it is yours", takeNode(g, first) === true);
+  ok("the point is spent", g.unspent === 0);
+  ok("buying it twice does nothing", takeNode(g, first) === false);
 }
 
 {
-  // Points buy nodes, nodes are only ever bought beside what he already has
-  const g = newRun(1001);
-  ok("nothing is bought at the gate", g.taken.length === 0);
-  ok("only the root is open", treeOpen(g).join() === `${rootId}`);
-  ok("a point is needed", takeNode(g, rootId) === false);
-  g.unspent = 2;
-  ok("and then it is his", takeNode(g, rootId) === true);
-  ok("the point is spent", g.unspent === 1);
-  ok("buying it twice does nothing", takeNode(g, rootId) === false);
-  const far = PATHS.rat.nodes.find((n) => !treeOpen(g).includes(n.id) && !g.taken.includes(n.id))!;
-  ok("nothing far off can be bought", takeNode(g, far.id) === false);
-  ok("but everything beside it can", treeOpen(g).every((id) => takeNode({ ...g, unspent: 1 }, id)));
+  // Distance out is the price of admission: the far end of an arm does not open
+  // until enough of that arm is already bought, whatever it is standing beside
+  const g = newGame(1002);
+  g.unspent = 40;
+  const deep = TREE.filter((n) => depthOf(n) >= 3);
+  ok("there is a far end to reach", deep.length > 0);
+  for (const n of deep) ok(`${n.name}: it is not open at the gate`, !treeOpen(g).includes(n.id));
 
-  // What a node adds to the top of him, he has to hand
-  const w = newRun(1002);
-  const ward = PATHS.rat.nodes.find((n) => n.gives.hp)!;
-  const hp = heroUnit(w)!.maxHp;
-  w.unspent = 12;
-  let guard = 20;
-  while (!w.taken.includes(ward.id) && guard-- > 0) {
-    const next = treeOpen(w).find((id) => id === ward.id) ?? treeOpen(w)[0];
-    takeNode(w, next);
+  // Two arms touching on the board is not a back door into either of them
+  const touching = TREE.filter(
+    (n) => n.arm && linksOf(n).some((id) => TREE[id].arm && TREE[id].arm !== n.arm),
+  );
+  ok("two arms do touch", touching.length >= 2);
+  for (const n of touching) {
+    const walk = newGame(1003);
+    walk.unspent = 40;
+    // Buy out one whole arm and nothing else
+    const other = TREE.filter((o) => o.arm && o.arm !== n.arm).map((o) => o.id);
+    let guard = 40;
+    while (guard-- > 0) {
+      const next = treeOpen(walk).find((id) => other.includes(id));
+      if (next === undefined) break;
+      takeNode(walk, next);
+    }
+    ok(
+      `${n.name}: a neighbouring arm does not open it`,
+      depthOf(n) <= 1 || !treeOpen(walk).includes(n.id),
+    );
   }
-  ok("ward raises the top of him", heroUnit(w)!.maxHp === hp + ward.gives.hp!);
-  ok("and hands him what it added", heroUnit(w)!.hp === heroUnit(w)!.maxHp);
+}
+
+{
+  // Every node is reachable by somebody who spends everything, or a run can
+  // level past a node it can never buy
+  const g = newGame(99);
+  g.unspent = TREE.length * 2;
+  let guard = 200;
+  while (treeOpen(g).length && guard-- > 0) takeNode(g, treeOpen(g)[0]);
+  ok("every node can be reached", g.taken.length === TREE.length);
+  ok("and nothing is left open", treeOpen(g).length === 0);
 }
 
 // Every key the tree hands out has to be one the sim reads, or it is a number
 // written on a sheet that does nothing
-for (const id of PATH_IDS) {
-  for (const n of PATHS[id].nodes) {
-    ok(`${id}/${n.name}: it does something`, Object.keys(n.gives).length > 0);
-    for (const k of Object.keys(n.gives)) {
-      ok(`${id}/${n.name}: ${k} is a perk`, PERK_IDS.includes(k as (typeof PERK_IDS)[number]));
+for (const n of TREE) {
+  ok(`${n.name}: it does something`, Object.keys(n.gives).length > 0);
+  for (const k of Object.keys(n.gives)) {
+    ok(`${n.name}: ${k} is a perk`, PERK_IDS.includes(k as (typeof PERK_IDS)[number]));
+  }
+}
+for (const arm of ARM_IDS) {
+  ok(`${arm}: it is worth walking down`, TREE.filter((n) => n.arm === arm).length >= 5);
+}
+// Every perk has to be somewhere on the board, or it is dead code in the sim
+for (const k of PERK_IDS) {
+  ok(`${k}: something on the board gives it`, TREE.some((n) => k in n.gives));
+}
+
+{
+  // A node that makes bodies bigger has to make the bodies already standing
+  // bigger, or buying it late buys nothing
+  const g = newGame(1004);
+  g.reserve.length = 0;
+  raise(g, "rat");
+  raise(g, "knight");
+  const rat = g.reserve[0];
+  const wall = g.reserve[1];
+  const ratWas = rat.maxHp;
+  const wallWas = wall.maxHp;
+  g.unspent = 40;
+  let guard = 60;
+  const wants = (k: "ratHp" | "wallHp") => TREE.find((n) => n.gives[k])!.id;
+  for (const k of ["ratHp", "wallHp"] as const) {
+    while (!g.taken.includes(wants(k)) && guard-- > 0) {
+      takeNode(g, treeOpen(g).find((id) => id === wants(k)) ?? treeOpen(g)[0]);
     }
   }
+  const P = perks(g);
+  ok("thin blood reaches a rat already standing", rat.maxHp === ratWas + P.ratHp);
+  ok("and hands it what it added", rat.hp === rat.maxHp);
+  ok("stone skin reaches a wall already standing", wall.maxHp === wallWas + P.wallHp);
+  // ...and one raised afterwards gets it on the way up
+  raise(g, "rat");
+  ok("and one raised after it is born with it", g.reserve.at(-1)!.maxHp === ratWas + P.ratHp);
 }
 
-// ------------------------------------------------- what each nature actually does
-
-// Walk him into the nearest room and leave him standing over what is left of it
-const budgetFor = TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16;
-function holdARoom(g: GameState) {
-  const h = heroUnit(g)!;
-  // He is not what is being measured here, and a lord stands where blows land
-  h.maxHp = 4000;
-  h.hp = 4000;
-  orderHero(g, openRooms(g)[0].id);
-  advance(g, budgetFor);
-  return g.forces[0].mode === "spoils" && g.forces[0].battle?.done === "win";
-}
-
-{
-  // Rat king: what a body costs him, and the floor under that
-  const g = newRun(5150);
-  const base = manaCost(g, "knight");
-  const cheap = PATHS.rat.nodes.find((n) => n.gives.raiseCost)!;
-  g.taken = [cheap.id];
-  ok("asking gets cheaper", manaCost(g, "knight") === base + cheap.gives.raiseCost!);
-  ok("the Ossuary still never answers", manaCost(g, "ossuary") === 0);
-  g.taken = PATHS.rat.nodes.map((n) => n.id);
-  ok("but nothing is ever free", manaCost(g, "rat") >= 1);
-  ok("and a rat is worth more to a rat king", CREATURES.rat.dmg + perks(g).ratDmg > CREATURES.rat.dmg);
-}
-
-{
-  // Pack: a body is worth more the longer it has been standing
-  const g = newRun(5151, "pack");
-  const hound = reserve(g)[0];
-  const green = unitDmg(g, hound);
-  // Only the nodes that buy years, or the capstone's flat damage muddies it
-  g.taken = PATHS.pack.nodes.filter((n) => n.gives.vetDmg && !n.gives.minionDmg).map((n) => n.id);
-  ok("a body fresh out of the ground has learned nothing", unitDmg(g, hound) === green);
-  hound.rooms = 3;
-  ok("and one that has lived through it hits harder", unitDmg(g, hound) > green);
-  ok("nobody else's does", unitDmg(newRun(5151), reserve(newRun(5151))[0]) === CREATURES.rat.dmg);
-}
-
-{
-  // Pack: the one place a body goes back up instead of only down
-  const g = newRun(5152, "pack");
-  ok("nothing to mend with at the gate", mendable(g) === null);
-  g.taken = PATHS.pack.nodes.filter((n) => n.gives.mend).map((n) => n.id);
-  ok("nor with no room to stand in", mendable(g) === null);
-  while (raise(g, "knight")) {
-    /* something that can hold a room */
-  }
-  ok("the room fell", holdARoom(g));
-  g.mana = manaCap(g);
-  const hurt = reserve(g)[0];
-  hurt.hp = 1;
-  ok("a room he is holding puts the worst hurt on offer", mendable(g) === hurt);
-  const pool = g.mana;
-  ok("mending works", mend(g) === true);
-  ok("it is paid for out of the asking", g.mana < pool);
-  ok("and the body goes back up", hurt.hp > 1);
-  g.mana = 0;
-  ok("and an empty pool mends nothing", mend(g) === false);
-}
-
-{
-  // Pack: a room lived through is a room that shows on the body
-  const g = newRun(5154, "pack");
-  g.taken = PATHS.pack.nodes.filter((n) => n.gives.vetHp).map((n) => n.id);
-  const top = perks(g).vetHp;
-  while (raise(g, "knight")) {
-    /* nothing */
-  }
-  const one = reserve(g)[0];
-  const was = one.maxHp;
-  ok("the room fell", holdARoom(g));
-  ok("a body that lived through it counts the room", one.rooms === 1);
-  ok("and it is a bigger body for it", one.maxHp === was + top);
-}
-
-{
-  // Lord: he pays for standing at the front by eating what he put there
-  const g = newRun(5153, "lord");
-  ok("no appetite at the gate", eatable(g) === null);
-  g.taken = PATHS.lord.nodes.filter((n) => n.gives.eat).map((n) => n.id);
-  while (raise(g, "knight")) {
-    /* nothing */
-  }
-  ok("the room fell", holdARoom(g));
-  g.mana = manaCap(g);
-  const h = heroUnit(g)!;
-  h.hp = 10;
-  ok("there is something on the floor worth eating", eatable(g) !== null);
-  const pool = g.mana;
-  const floor = offered(g, g.forces[0].battle!).length;
-  ok("eating works", eat(g) === true);
-  ok("it is paid for out of the asking", g.mana < pool);
-  ok("it puts him back on his feet", h.hp > 10);
-  ok("and what he ate never gets up", offered(g, g.forces[0].battle!).length === floor - 1);
-  g.mana = 0;
-  ok("an empty pool eats nothing", eat(g) === false);
-}
-
-// ---------------------------------------------------------------- abilities
+// ---------------------------------------------------------------- battle
 
 let slots = 0;
+// A warden is the one thing that is completely inert while it is standing - its
+// only hook fires on death - so it is what the arithmetic below is measured on.
+// Anything else quietly adds a swarm bonus or halves what it takes.
 const unit = (over: Partial<BattleUnit>): BattleUnit => ({
-  id: 0, src: -1, creature: "rat", faction: "player",
-  hp: 10, maxHp: 10, dmg: 2, speed: 3, slot: slots++, tier: 0, withered: 0, ...over,
+  id: 0, src: -1, creature: "warden", faction: "player",
+  hp: 10, maxHp: 10, dmg: 2, slot: slots++, tier: 0, withered: 0, ...over,
 });
-const noPerks = perks(newGame(1));
+const noPerks = perks({ ...newGame(1), taken: [] } as GameState);
 const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
   node: 0, units, hit: [], mend: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
   round: 0, log: [], done: "", healed: 0, taken: [], nextId: units.length, perks: { ...noPerks },
 });
 
 {
-  // Lord: the line behind him is both his armour and his reach, and it is worth
-  // exactly as much as it is still standing
-  const lord = () =>
-    unit({ id: 0, creature: "hero", faction: "player", hp: 100, maxHp: 100, dmg: 4, speed: 9, slot: 0 });
-  const line = () => [unit({ id: 1, slot: 1 }), unit({ id: 2, slot: 2 })];
-  const swinger = (dmg: number) => unit({ id: 3, faction: "enemy", hp: 100, maxHp: 100, dmg, slot: 0 });
-
-  const bare = lord();
-  takeTurn(battle([bare, ...line(), swinger(20)], "enemy"));
-  ok("a lord who has bought nothing takes all of it", bare.hp === 80);
-
-  const held = lord();
-  const b1 = battle([held, ...line(), swinger(20)], "enemy");
-  b1.perks.wall = 10;
-  takeTurn(b1);
-  ok("two bodies behind him take a fifth of it", held.hp === 84);
-
-  const alone = lord();
-  const b2 = battle([alone, swinger(20)], "enemy");
-  b2.perks.wall = 10;
-  takeTurn(b2);
-  ok("and with nobody left behind him he takes all of it again", alone.hp === 80);
-
-  const deep = lord();
-  const b3 = battle([deep, ...line(), unit({ id: 4, slot: 3 }), swinger(20)], "enemy");
-  b3.perks.wall = 40;
-  takeTurn(b3);
-  ok("a long enough line never makes him untouchable", deep.hp === 100 - 20 * (1 - TUNING.wallCap / 100));
-
-  const fed = lord();
-  const mark = swinger(1);
-  const b4 = battle([fed, ...line(), mark], "player");
-  b4.perks.lordDmg = 5;
-  takeTurn(b4);
-  ok("and the line behind him feeds his own blow", mark.hp === 100 - (4 + 5 * 2));
+  // A blow lands on nobody in particular. Over enough turns everybody standing
+  // has taken one, which is the whole of what "random" has to mean here.
+  const foes = [0, 1, 2].map((i) => unit({ id: 10 + i, faction: "enemy", hp: 9999, maxHp: 9999 }));
+  const b = battle([unit({ id: 0, dmg: 1, hp: 9999, maxHp: 9999 }), ...foes], "player");
+  for (let i = 0; i < 400; i++) takeTurn(b);
+  ok("every one of them gets hit sooner or later", foes.every((u) => u.hp < 9999));
+  ok("and not all of it lands on one", new Set(foes.map((u) => u.hp)).size > 1);
 }
 
 {
-  // A wisp goes for whoever is worst off, which is rarely him - a lord has to buy
-  // its attention rather than wait for it
-  const mender = () =>
-    unit({ id: 2, creature: "wisp", faction: "player", hp: 10, maxHp: 10, dmg: 2, speed: 9, slot: 2 });
-  const him = () => unit({ id: 0, creature: "hero", faction: "player", hp: 50, maxHp: 100, speed: 1, slot: 0 });
-  const runt = () => unit({ id: 1, faction: "player", hp: 1, maxHp: 10, speed: 1, slot: 1 });
+  // ...unless a wall is standing, and then it takes all of it
+  const wall = unit({ id: 10, creature: "knight", faction: "enemy", hp: 9999, maxHp: 9999 });
+  const behind = [0, 1].map((i) =>
+    unit({ id: 20 + i, creature: "rat", faction: "enemy", hp: 500, maxHp: 500 }),
+  );
+  const b = battle([unit({ id: 0, dmg: 1, hp: 9999, maxHp: 9999 }), wall, ...behind], "player");
+  for (let i = 0; i < 200; i++) takeTurn(b);
+  ok("a wall eats every blow", wall.hp < 9999);
+  ok("and nothing behind it is touched", behind.every((u) => u.hp === 500));
+  ok("targeting agrees", targetFor(b, "enemy")!.id === wall.id);
 
-  const hero = him();
-  const rat = runt();
-  takeTurn(battle([hero, rat, mender(), unit({ id: 3, faction: "enemy", slot: 0 })], "player"));
-  ok("by default it mends the worst hurt", rat.hp > 1 && hero.hp === 50);
-
-  const his = him();
-  const other = runt();
-  const b = battle([his, other, mender(), unit({ id: 3, faction: "enemy", slot: 0 })], "player");
-  b.perks.wispFirst = 1;
-  takeTurn(b);
-  ok("bought, it goes for him instead", his.hp > 50 && other.hp === 1);
+  wall.hp = 0;
+  for (let i = 0; i < 200; i++) takeTurn(b);
+  ok("the line opens when the wall falls", behind.some((u) => u.hp < 500));
 }
+
+{
+  // A wall is a template flag, not a slot. Both of them are one.
+  ok("a knight is a wall", CREATURES.knight.taunt);
+  ok("so is a warden", CREATURES.warden.taunt);
+  ok(
+    "and nothing else is",
+    (Object.keys(CREATURES) as CreatureId[])
+      .filter((c) => c !== "knight" && c !== "warden")
+      .every((c) => !CREATURES[c].taunt),
+  );
+
+  // The pack node hands it to hounds, and only on your side of the board
+  const mine = unit({ id: 1, creature: "hound", faction: "player" });
+  const theirs = unit({ id: 2, creature: "hound", faction: "enemy" });
+  const bare = battle([mine, theirs]);
+  ok("a hound is nobody's wall by default", !wallish(mine, bare.perks) && !wallish(theirs, bare.perks));
+  const bought = { ...noPerks, packTaunt: 1 };
+  ok("bought, yours is", wallish({ ...mine, faction: "player" }, bought));
+  ok("and theirs is not", !wallish({ ...theirs, faction: "enemy" }, bought));
+}
+
+{
+  // The bigger line opens. Even sides toss for it.
+  const g = newGame(5150);
+  const room = openRooms(g)[0];
+  room.foes = ["rat"];
+  orderArmy(g, room.id);
+  advance(g, TUNING.marchTicks + 1);
+  ok("more of you means you swing first", g.battle!.lead === "player");
+
+  const h = newGame(5151);
+  const big = openRooms(h)[0];
+  big.foes = ["rat", "rat", "rat", "rat", "rat", "rat", "rat"];
+  orderArmy(h, big.id);
+  advance(h, TUNING.marchTicks + 1);
+  ok("more of them means they do", h.battle!.lead === "enemy");
+}
+
+{
+  // The order you put them in is the order they swing in. Nothing hidden.
+  const first = unit({ id: 0, slot: 0, dmg: 3 });
+  const second = unit({ id: 1, slot: 1, dmg: 7 });
+  const mark = unit({ id: 2, faction: "enemy", hp: 500, maxHp: 500 });
+  const b = battle([second, first, mark], "player");
+  takeTurn(b);
+  ok("the front of the line swings first", 500 - mark.hp === 3);
+  takeTurn(b);
+  takeTurn(b);
+  ok("and the one behind it swings next", 500 - mark.hp === 10);
+}
+
+{
+  // The lines alternate: four against one does not mean four blows to one
+  const plain = (id: number, faction: "player" | "enemy") =>
+    unit({ id, faction, dmg: 1, hp: 200, maxHp: 200 });
+  const many = [0, 1, 2, 3].map((i) => plain(i, "player"));
+  const lone = plain(10, "enemy");
+  const b = battle([...many, lone], "player");
+  for (let i = 0; i < 8; i++) takeTurn(b);
+  ok("eight turns is four blows a side", 200 - lone.hp === 4);
+  ok("the outnumbered one swings just as often", many.reduce((s, u) => s + 200 - u.hp, 0) === 4);
+  ok("each of the four swings a quarter as often", b.cursor.player === 0);
+  ok("and an exchange is a blow from each side", b.round === 4);
+}
+
+{
+  // The cap on a fight means the same thing however many are standing in it
+  const stale = (n: number, faction: "player" | "enemy") =>
+    Array.from({ length: n }, (_, i) => unit({ id: i + (faction === "enemy" ? 50 : 0), faction, dmg: 0, hp: 9999, maxHp: 9999 }));
+  const small = battle([...stale(1, "player"), ...stale(1, "enemy")]);
+  const large = battle([...stale(6, "player"), ...stale(6, "enemy")]);
+  let guard = 4000;
+  while (!small.done && guard-- > 0) takeTurn(small);
+  guard = 4000;
+  while (!large.done && guard-- > 0) takeTurn(large);
+  ok("a fight that will not end is lost", small.done === "loss" && large.done === "loss");
+  ok("and it takes the same number of exchanges either way", small.round === large.round);
+}
+
+// ---------------------------------------------------------------- abilities
 
 {
   const me = unit({ id: 0 });
@@ -466,22 +467,64 @@ ok("bulwark never fully blocks", ABILITIES.bulwark.taken!(unit({}), 1, battle([]
   const target = unit({ id: 1 });
   ABILITIES.wither.onAttack!(unit({}), target, battle([]));
   ok("wither sticks for its turns", target.withered === TUNING.witherTurns);
-}
-{
-  // A mend is reported the same way a blow is, so the board can show it
-  const me = unit({ id: 0, creature: "wisp", hp: 26, maxHp: 26 });
-  const hurt = unit({ id: 1, hp: 4, maxHp: 60 });
-  const bt = battle([me, hurt, unit({ id: 2, faction: "enemy", hp: 40, maxHp: 40 })], "player");
-  bt.cursor.player = 0;
-  let guard = 20;
-  while (!bt.mend.length && guard-- > 0) takeTurn(bt);
-  ok("mending is reported like a blow", bt.mend.length === 1);
-  ok("with who did it and how much", bt.mend[0].by === me.id && bt.mend[0].n > 0);
-  ok("and it landed on the one who needed it", bt.mend[0].id === hurt.id);
+  const long = battle([]);
+  long.perks.witherLong = 2;
+  ABILITIES.wither.onAttack!(unit({ faction: "player" }), target, long);
+  ok("bought, it holds longer", target.withered === TUNING.witherTurns + 2);
+  ABILITIES.wither.onAttack!(unit({ faction: "enemy" }), target, long);
+  ok("and what you bought is not theirs", target.withered === TUNING.witherTurns);
 }
 
 {
-  // The mender tops up whoever is worst off, and never past their ceiling
+  // Control: what the dark has touched swings softer and breaks open easier
+  const swinger = (over: Partial<BattleUnit>) => unit({ dmg: 20, hp: 500, maxHp: 500, ...over });
+  const hit = (perkChanges: Partial<Battle["perks"]>, attacker: Partial<BattleUnit>) => {
+    const from = swinger({ id: 0, ...attacker });
+    const onto = swinger({ id: 1, faction: attacker.faction === "enemy" ? "player" : "enemy" });
+    const b = battle([from, onto], from.faction);
+    Object.assign(b.perks, perkChanges);
+    takeTurn(b);
+    return 500 - onto.hp;
+  };
+  const plain = hit({}, { faction: "enemy" });
+  ok("a blow with nothing on it is what it says", plain === 20);
+  ok("withered, theirs lands softer", hit({}, { faction: "enemy", withered: 1 }) < plain);
+  ok(
+    "and bought deeper, softer still",
+    hit({ witherPow: 15 }, { faction: "enemy", withered: 1 }) <
+      hit({}, { faction: "enemy", withered: 1 }),
+  );
+  ok("dread blunts them wherever they swing", hit({ dread: 10 }, { faction: "enemy" }) < plain);
+  ok("but never below the soft cap", hit({ dread: 999 }, { faction: "enemy" }) >= Math.round(20 * (100 - TUNING.softCap) / 100));
+  ok("and it is theirs it blunts, not yours", hit({ dread: 50 }, { faction: "player" }) === plain);
+
+  // A hex only bites what the dark is already holding
+  const fresh = swinger({ id: 1, faction: "enemy" });
+  const bh = battle([swinger({ id: 0 }), fresh], "player");
+  bh.perks.hexDmg = 6;
+  takeTurn(bh);
+  ok("a hex does nothing to what is untouched", 500 - fresh.hp === 20);
+  const marked = swinger({ id: 1, faction: "enemy", withered: 2 });
+  const bm = battle([swinger({ id: 0 }), marked], "player");
+  bm.perks.hexDmg = 6;
+  takeTurn(bm);
+  ok("and bites what it is", 500 - marked.hp === 26);
+}
+
+{
+  // Bond: a wall you have paid for takes less, and only a wall
+  const under = (creature: CreatureId, cut: number) => {
+    const wall = unit({ id: 0, creature, faction: "player", hp: 500, maxHp: 500 });
+    const b = battle([wall, unit({ id: 1, faction: "enemy", dmg: 20 })], "enemy");
+    b.perks.wallCut = cut;
+    takeTurn(b);
+    return 500 - wall.hp;
+  };
+  ok("unbroken holds a wall together", under("knight", 25) < under("knight", 0));
+  ok("and does nothing for what is not one", under("rat", 25) === under("rat", 0));
+}
+
+{
   const me = unit({ id: 0, hp: 10, maxHp: 10 });
   const hurt = unit({ id: 1, hp: 3, maxHp: 60 });
   const bt = battle([me, hurt]);
@@ -491,25 +534,15 @@ ok("bulwark never fully blocks", ABILITIES.bulwark.taken!(unit({}), 1, battle([]
   ABILITIES.siphon.onAttack!(me, unit({ faction: "enemy" }), battle([me, brimming]));
   ok("and nothing goes over the top", brimming.hp === 10);
 }
-
-{
-  // He walks at the back and stays there as the line grows
-  const g = newRun(7373);
-  ok("he is behind what he has raised", bandOf(g, heroForce(g)).at(-1)!.creature === "hero");
-  raise(g, "knight");
-  raise(g, "hound");
-  ok("and behind what he raises next", bandOf(g, heroForce(g)).at(-1)!.creature === "hero");
-  // ...unless you put him somewhere, and then he stays put
-  moveUp(g, bandOf(g, heroForce(g)).length - 1);
-  const at = bandOf(g, heroForce(g)).findIndex((u) => u.creature === "hero");
-  raise(g, "rat");
-  ok("moving him up sticks", bandOf(g, heroForce(g)).findIndex((u) => u.creature === "hero") === at);
-}
 ok("rend only bites the wounded", ABILITIES.rend.bonus!(unit({}), unit({ hp: 10 }), battle([])) === 0);
 ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle([])) === TUNING.rendBonus);
 {
+  // Rats opposite, or the one it finishes tolls back and the sum stops being one thing
   const me = unit({ id: 0, faction: "enemy" });
-  const foes = [unit({ id: 1, hp: 40, maxHp: 40 }), unit({ id: 2, hp: 2 })];
+  const foes = [
+    unit({ id: 1, creature: "rat", hp: 40, maxHp: 40 }),
+    unit({ id: 2, creature: "rat", hp: 2 }),
+  ];
   const bt = battle([me, ...foes]);
   ABILITIES.toll.onDeath!(me, bt);
   ok("toll hits everyone opposite", foes[0].hp === 40 - TUNING.tollDamage);
@@ -519,298 +552,209 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   const boss = unit({ id: 0, creature: "ossuary", maxHp: 130, dmg: 8 });
   const bt = battle([boss]);
   ABILITIES.split.onDeath!(boss, bt);
-  ok("split makes two", bt.units.length === 3);
-  ok("halves carry half the health", bt.units[1].maxHp === 65);
-  ok("halves are one tier deeper", bt.units[1].tier === 1);
+  ok("split makes one, not two", bt.units.length === 2);
+  ok("the half carries half the health", bt.units[1].maxHp === 65);
+  ok("and it is one tier deeper", bt.units[1].tier === 1);
   const deep = unit({ id: 9, creature: "ossuary", tier: TUNING.splitTiers });
   const bt2 = battle([deep]);
   ABILITIES.split.onDeath!(deep, bt2);
   ok("splitting stops somewhere", bt2.units.length === 1);
 }
-{
-  // The lines alternate: four against one does not mean four blows to one.
-  // Plain heroes on both sides, so no ability muddies the arithmetic.
-  const plain = (id: number, faction: "player" | "enemy") =>
-    unit({ id, faction, creature: "hero", dmg: 1, hp: 200, maxHp: 200, speed: 3 });
-  const many = [0, 1, 2, 3].map((i) => plain(i, "player"));
-  const lone = plain(10, "enemy");
-  const bt = battle([...many, lone], "player");
-  for (let i = 0; i < 8; i++) takeTurn(bt);
-  ok("eight turns is four blows a side", 200 - lone.hp === 4);
-  ok("the outnumbered one swings just as often", 200 - many[0].hp === 4);
-  ok("and only the front of the line takes them", many.slice(1).every((u) => u.hp === 200));
-  ok("each of the four swings a quarter as often", bt.cursor.player === 0);
-}
+
+// ---------------------------------------------------------------- the line
 
 {
-  // One unit swings a turn, and the front of the other line is what it hits
-  const me = unit({ id: 0, dmg: 5 });
-  const front = unit({ id: 1, faction: "enemy", hp: 40, maxHp: 40 });
-  const back = unit({ id: 2, faction: "enemy", hp: 40, maxHp: 40 });
-  const bt = battle([me, front, back]);
-  takeTurn(bt);
-  ok("a turn lands exactly one blow", bt.hit.length === 1);
-  ok("and it lands on the front of the line", front.hp < 40 && back.hp === 40);
-  ok("the back rank is untouched until the front falls", bt.hit[0].id === front.id);
-
-  front.hp = 0;
-  takeTurn(bt);
-  takeTurn(bt);
-  ok("then it moves to whoever is next", back.hp < 40);
-}
-{
-  // The toss decides who opens, not who is fastest
-  const slowUs = unit({ id: 0, speed: 3, dmg: 4 });
-  const slowThem = unit({ id: 1, faction: "enemy", speed: 3, hp: 40, maxHp: 40, dmg: 4 });
-  const ours = battle([{ ...slowUs }, { ...slowThem }], "player");
-  takeTurn(ours);
-  ok("winning the toss means you swing first", ours.units[1].hp < 40);
-  const theirs = battle([{ ...slowUs }, { ...slowThem }], "enemy");
-  takeTurn(theirs);
-  ok("losing it means they do", theirs.units[0].hp < 10);
-}
-
-{
-  // He walks off a room he takes. What he raised does not.
-  const g = newRun(3939);
+  // The order is yours to set, both ways
+  const g = newGame(7373);
+  g.reserve.length = 0;
+  raise(g, "rat");
+  raise(g, "hound");
   raise(g, "knight");
-  // He takes the front here, so the wounded one behind him lives to be counted
-  g.front = 0;
-  const target = openRooms(g)[0].id;
-  orderHero(g, target);
-  advance(g, TUNING.marchTicks + 1);
-  const band = g.forces[0].battle!.units.filter((u) => u.faction === "player");
-  const hero = band.find((u) => u.creature === "hero")!;
-  const mate = band.find((u) => u.creature !== "hero")!;
-  hero.hp = 40;
-  mate.hp = 3;
-  g.forces[0].battle!.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 1));
-  advance(g, TUNING.turnTicks * 40);
-  ok("the room fell", g.nodes[target].state === "cleared");
-  const h = heroUnit(g)!;
-  // He was left on 40 going in and may have taken more on the way out, so what
-  // is pinned down is the ceiling: a trickle, never a full heal
-  ok("he gets something back", h.hp > 0);
-  ok("but nowhere near all of it", h.hp < h.maxHp);
-  ok("a tenth at the very most", h.hp <= 40 + Math.ceil(h.maxHp * TUNING.restFrac));
-  ok("a body keeps what it has left", reserve(g).some((u) => u.hp === 3));
-}
-
-{
-  // He sends the dead in first by default, and is not pinned anywhere
-  const g = newRun(4545);
-  raise(g, "knight");
-  const before = bandOf(g, heroForce(g)).map((u) => u.creature);
-  ok("the dead go in ahead of him", before[before.length - 1] === "hero");
-  ok("so something else is what gets hit", before[0] !== "hero");
-
-  const last = before.length - 1;
-  moveUp(g, last);
-  const after = bandOf(g, heroForce(g)).map((u) => u.creature);
-  ok("he can be walked up the line", after[last - 1] === "hero");
-  ok("without losing anybody", after.length === before.length);
-  for (let i = last - 1; i > 0; i--) moveUp(g, i);
-  ok("all the way to the front", bandOf(g, heroForce(g))[0].creature === "hero");
+  const was = reserve(g).map((u) => u.creature).join();
+  moveUp(g, 2);
+  ok("a body walks up the line", reserve(g).map((u) => u.creature).join() === "rat,knight,hound");
+  moveDown(g, 1);
+  ok("and back down it", reserve(g).map((u) => u.creature).join() === was);
   moveUp(g, 0);
-  ok("and no further", bandOf(g, heroForce(g))[0].creature === "hero");
+  ok("the front cannot go further up", reserve(g).map((u) => u.creature).join() === was);
+  moveDown(g, reserve(g).length - 1);
+  ok("nor the back further down", reserve(g).map((u) => u.creature).join() === was);
 }
 
 {
-  // The order you put them in is the order they stand in, and the front of the
-  // line is what the other side hits
-  const g = newRun(6767);
-  raise(g, "knight");
-  raise(g, "warden");
+  // The line you set is the line that walks in
+  const g = newGame(6767);
   const order = reserve(g).map((u) => u.creature);
-  orderHero(g, openRooms(g)[0].id);
+  orderArmy(g, openRooms(g)[0].id);
   advance(g, TUNING.marchTicks + 1);
-  const line = g.forces[0].battle!.units.filter((u) => u.faction === "player");
-  ok("the dead go in ahead of him", line[line.length - 1].creature === "hero");
-  ok("and stand where you put them", line.slice(0, -1).map((u) => u.creature).join() === order.join());
-  ok("ids run front to back", line.every((u, i) => i === 0 || u.id > line[i - 1].id));
-
-  const foes = g.forces[0].battle!.units.filter((u) => u.faction === "enemy");
-  const front = foes[0];
-  let guard = 200;
-  while (front.hp === front.maxHp && guard-- > 0) advance(g, 1);
-  ok("their front rank is what took the first blow", front.hp < front.maxHp);
-  ok("nothing behind it was touched", foes.slice(1).every((u) => u.hp === u.maxHp));
+  const line = g.battle!.units.filter((u) => u.faction === "player");
+  ok("they stand where you put them", line.map((u) => u.creature).join() === order.join());
+  ok("slots run front to back", line.every((u, i) => u.slot === i));
 }
 
-// ---------------------------------------------------------------- the clock
+// ---------------------------------------------------------------- rooms and the pool
 
 {
-  // Time only moves when it is asked to, and every force moves on the same clock
-  const g = newRun(2210);
-  const before = JSON.stringify(g);
-  advance(g, 0);
-  ok("no ticks, no change", JSON.stringify(g) === before);
-  const target = openRooms(g)[0].id;
-  ok("the hero can be ordered", orderHero(g, target) === true);
-  ok("an order does not resolve on the spot", g.forces[0].mode === "march");
-  advance(g, TUNING.marchTicks + 1);
-  ok("marching takes time", g.forces[0].at === target);
-  ok("arriving starts the fight", g.forces[0].mode === "fight");
-  ok("a fight starts at round zero", g.forces[0].battle!.round === 0);
-  advance(g, TUNING.turnTicks * (g.forces[0].battle!.units.length + 1));
-  ok("turns land on the clock", g.forces[0].battle!.round >= 1);
-  ok("you cannot be ordered mid-fight", canOrder(g, g.forces[0].at) === false);
-  // His reserve walks in with him, so it cannot be detached out from under a fight
-  const elsewhere = openRooms(g)[0].id;
-  ok("nothing can be detached mid-fight", canSend(g, elsewhere) === false);
-  ok("and his band went in with him", g.forces[0].battle!.units.filter((u) => u.faction === "player").length > 1);
+  // A body on the floor is a decision: the board waits, and what you can take
+  // off it is decided by what you have left to ask with
+  const g = newGame(8123);
+  ok("you start with a full pool", g.mana === manaCap(g) && g.mana === TUNING.manaBase);
+  // Not a crypt: a crypt hands over its dead for nothing and there is nothing to buy
+  const room = openRooms(g).find((n) => n.kind !== "crypt")!;
+  // Not what is being measured here, so the band cannot lose the room
+  g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
+  orderArmy(g, room.id);
+  advance(g, budgetFor);
+  ok("the room fell", room.state === "cleared");
+  ok("and nothing hurried you out of it", g.mode === "spoils");
+  ok("a cleared room gives some of the pool back", g.mana > 0);
+
+  const b = g.battle!;
+  const body = offered(g, b)[0];
+  ok("there is a body left to ask for", body !== undefined);
+  const cost = manaCost(g, body.creature);
+  const before = g.reserve.length;
+  const pool = g.mana;
+  ok("it answers", reap(g, body.id) === true);
+  ok("and it costs what it says on it", g.mana === pool - cost);
+  ok("it is standing with you now", g.reserve.length === before + 1);
+  ok("and the same body cannot be asked twice", reap(g, body.id) === false);
+  ok("the board knows it is yours", b.taken.includes(body.id));
+
+  g.mana = 0;
+  const next = offered(g, b)[0];
+  if (next) ok("an empty pool raises nothing", reap(g, next.id) === false);
+  ok("and the pool cannot go under", g.mana === 0);
+
+  ok("you cannot be ordered out of a room you are holding", canOrder(g, g.at) === false);
+  advance(g, TUNING.spoilsTicks * 20);
+  ok("and no amount of waiting moves you", g.mode === "spoils");
+  ok("leaving is yours to call", leaveRoom(g) === true);
+  ok("and then the room is behind you", g.mode === "idle");
+  ok("leaving twice does nothing", leaveRoom(g) === false);
 }
 
 {
-  // A squad is still his until it is dead, so it still costs him a slot
-  const g = newRun(2468);
-  while (raise(g, "knight")) {
-    /* fill him up */
+  // Unmaking a body: a slot back, and rather less than it cost
+  const g = newGame(8124);
+  const one = reserve(g)[0];
+  ok("nothing is sold on the road", canSell(g, one.id) === false);
+  ok("and the call refuses it", sell(g, one.id) === false);
+
+  g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
+  const room = openRooms(g)[0];
+  orderArmy(g, room.id);
+  advance(g, budgetFor);
+  ok("the room fell", held(g) !== null);
+
+  const before = g.reserve.length;
+  g.mana = 0;
+  ok("a body can be given back", sell(g, one.id) === true);
+  ok("it pays what it always pays", g.mana === TUNING.sellMana);
+  ok("and it is a slot back", g.reserve.length === before - 1);
+  ok("it is gone for good", reserve(g).every((u) => u.id !== one.id));
+  ok("selling the same one twice does nothing", sell(g, one.id) === false);
+
+  // Never the last of them. An army of nobody is a dead run, not a button.
+  while (g.reserve.length > 1) sell(g, g.reserve[0].id);
+  ok("one is left", g.reserve.length === 1);
+  ok("and it cannot be sold", canSell(g, g.reserve[0].id) === false);
+  ok("nor the pool topped up past its ceiling", g.mana <= manaCap(g));
+}
+
+{
+  // Nothing is ever worth selling for the money: the floor on asking is above
+  // what unmaking pays back
+  for (const c of Object.keys(CREATURES) as CreatureId[]) {
+    if (CREATURES[c].mana === 0) continue;
+    ok(`${c}: it costs more than unmaking pays`, CREATURES[c].mana > TUNING.sellMana);
   }
-  ok("the cap is full", fielded(g) === commandCap(g));
-  const sent = reserve(g).slice(0, 2).map((u) => u.id);
-  sendSquad(g, openRooms(g)[0].id, sent);
-  ok("sending them does not free the slots", fielded(g) === commandCap(g));
-  ok("and he cannot raise into them", raise(g, "rat") === false);
-  ok("but they are not at his side", reserve(g).length === commandCap(g) - 2);
-
-  advance(g, 40000);
-  ok("they are gone in the end", squads(g).length === 0);
-  ok("and the slots come back", fielded(g) < commandCap(g) || reserve(g).length === commandCap(g));
-}
-
-{
-  // Several squads run at once, on the same clock, without the hero
-  const g = newRun(3311);
-  while (raise(g, "knight")) {
-    /* a retinue worth splitting */
+  ok("a rat is the cheapest thing there is", CREATURES.rat.mana === 2);
+  ok("and a warden is not", CREATURES.warden.mana > CREATURES.rat.mana);
+  ok("the Ossuary never answers", CREATURES.ossuary.mana === 0);
+  const g = newGame(1);
+  for (const c of Object.keys(CREATURES) as CreatureId[]) {
+    if (c === "ossuary") continue;
+    ok(`${c}: affordable from a standing start`, CREATURES[c].mana <= TUNING.manaBase);
+    ok(`${c}: and nothing is ever free`, manaCost(g, c) >= 1);
   }
-  const rooms = openRooms(g).map((n) => n.id);
-  const troop = reserve(g).map((u) => u.id);
-  ok("two rooms to aim at", rooms.length >= 2);
-  ok("first squad goes", sendSquad(g, rooms[0], troop.slice(0, 2)) === true);
-  ok("second squad goes", sendSquad(g, rooms[1], troop.slice(2, 4)) === true);
-  ok("an order to nowhere is refused", sendSquad(g, 9999, troop) === false);
-  ok("both are out there", squads(g).length === 2);
-  ok("they left the reserve", reserve(g).length === troop.length - 4);
-  ok("the hero stayed put", g.forces[0].mode === "idle");
-  const where = g.forces[0].at;
-
-  advance(g, 400);
-  ok("the hero still has not moved", g.forces[0].at === where);
-  ok(
-    "both squads fought without being told twice",
-    g.forces.filter((f) => f.kind === "squad").every((f) => f.rooms > 0 || f.mode === "gone"),
-  );
 }
 
 {
-  // Two squads at once, over enough seeds that a bad pair of rooms is not the story
-  let took = 0;
-  let chained = 0;
-  for (let seed = 0; seed < 30; seed++) {
-    const g = newRun(3000 + seed * 17);
-    while (raise(g, "knight")) {
-      /* nothing */
-    }
-    const troop = reserve(g).map((u) => u.id);
-    const rooms = openRooms(g).map((n) => n.id);
-    const sent = [...troop.slice(0, 2), ...troop.slice(2, 4)];
-    sendSquad(g, rooms[0], troop.slice(0, 2));
-    sendSquad(g, rooms[Math.min(1, rooms.length - 1)], troop.slice(2, 4));
-    const where = g.forces[0].at;
-    advance(g, 600);
-    ok(`pair ${seed}: the hero never moved`, g.forces[0].at === where);
-    ok(`pair ${seed}: nobody who went is back in the reserve`, reserve(g).every((u) => !sent.includes(u.id)));
-    if (g.cleared > 0) took += 1;
-    if (g.forces.some((f) => f.kind === "squad" && f.rooms > 1)) chained += 1;
+  // A room you take is the only thing that heals without a node bought for it
+  const g = newGame(3939);
+  const hurt = reserve(g)[0];
+  hurt.hp = 1;
+  const room = openRooms(g)[0];
+  g.reserve.slice(1).forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
+  orderArmy(g, room.id);
+  advance(g, budgetFor);
+  if (room.state === "cleared" && reserve(g).some((u) => u.id === hurt.id)) {
+    const back = reserve(g).find((u) => u.id === hurt.id)!;
+    ok("a body that lived through it gets something back", back.hp > 1);
+    ok("but nowhere near all of it", back.hp < back.maxHp);
+    ok("a room lived through is counted", back.rooms === 1);
   }
-  // Two of them into a room is a gamble, and with the front of the line taking
-  // every blow it is a worse one than it used to be
-  ok("a scouting pair sometimes takes something", took > 0);
-  ok("and sometimes just dies", took < 30);
-  void chained;
 }
 
 {
-  // A squad keeps going until there is nothing left of it, and never returns
-  let chained = 0;
-  for (let seed = 0; seed < 25; seed++) {
-    const g = newRun(9100 + seed * 13);
-    while (raise(g, "knight")) {
-      /* the sturdiest squad the cap allows */
-    }
-    const sent = reserve(g).map((u) => u.id);
-    sendSquad(g, openRooms(g)[0].id, sent);
-    advance(g, 40000);
-    const f = g.forces.find((o) => o.kind === "squad")!;
-    // Either it dies out there or it runs out of rooms; it never comes home
-    ok(
-      `chain ${seed}: it ends up spent or holding`,
-      f.mode === "gone" || nearestOpen(g, f.at) === null,
-    );
-    ok(`chain ${seed}: nobody who went comes home`, reserve(g).every((u) => !sent.includes(u.id)));
-    ok(
-      `chain ${seed}: the boss is not theirs to take`,
-      g.nodes.every((n) => n.kind !== "boss" || n.state !== "cleared"),
-    );
-    if (f.rooms > 1) chained += 1;
+  // Mending is a node, not a given
+  const g = newGame(5152);
+  ok("nothing to mend with at the gate", mendable(g) === null);
+  g.unspent = 40;
+  const grit = TREE.find((n) => n.gives.mend)!.id;
+  let guard = 60;
+  while (!g.taken.includes(grit) && guard-- > 0) {
+    takeNode(g, treeOpen(g).find((id) => id === grit) ?? treeOpen(g)[0]);
   }
-  ok("squads do chain rooms together", chained > 5);
+  g.unspent = 0;
+  ok("nor with no room to stand in", mendable(g) === null);
+  g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
+  orderArmy(g, openRooms(g)[0].id);
+  advance(g, budgetFor);
+  ok("the room fell", held(g) !== null);
+  g.mana = manaCap(g);
+  const worst = reserve(g)[0];
+  worst.hp = 1;
+  ok("a room you are holding puts the worst hurt on offer", mendable(g) === worst);
+  const pool = g.mana;
+  ok("mending works", mend(g) === true);
+  ok("it is paid for out of the asking", g.mana < pool);
+  ok("and the body goes back up", worst.hp > 1);
+  g.mana = 0;
+  ok("an empty pool mends nothing", mend(g) === false);
 }
 
 {
-  // A squad wins the room and leaves the dead where they lie, and reads nothing.
-  // Sampled rather than pinned to one seed: whether a given squad can break a
-  // given room is exactly the thing the balance keeps moving.
-  let checked = 0;
-  for (let seed = 0; seed < 40 && checked < 3; seed++) {
-    const g = newRun(51000 + seed * 31);
-    while (raise(g, "knight")) {
-      /* nothing */
-    }
-    const room = openRooms(g).find((n) => n.lore !== null);
-    if (!room) continue;
-    const held = g.reserve.map((u) => u.id);
-    sendSquad(g, room.id, held);
-    advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
-    if (room.state !== "cleared") continue;
-    checked += 1;
-    ok(`squad ${seed}: nothing got up for them`, g.reserve.length === 0);
-    ok(`squad ${seed}: and nobody told you a story`, g.loreQueue.length === 0);
-    ok(
-      `squad ${seed}: the room keeps its piece`,
-      room.lore !== null && !g.seenLore.includes(room.lore),
-    );
-
-    // ...until he walks through it himself
-    orderHero(g, room.id);
-    advance(g, TUNING.marchTicks * 8);
-    ok(`squad ${seed}: he walked in`, g.forces[0].at === room.id);
-    ok(`squad ${seed}: and read it there`, g.loreQueue.includes(room.lore!));
-  }
-  ok("squads do take rooms", checked === 3);
+  // Nothing stands, the run is over. There is nobody behind the army.
+  const g = newGame(4242);
+  const room = openRooms(g)[0];
+  room.foes = ["warden", "warden", "warden"];
+  g.reserve.forEach((u) => ((u.hp = 1), (u.maxHp = 1)));
+  orderArmy(g, room.id);
+  advance(g, budgetFor);
+  ok("the army is wiped", reserve(g).length === 0);
+  ok("and that is the run", g.over === "dead");
 }
 
 {
-  // Almost nothing gets up on its own now. What this holds down is that the free
+  // Almost nothing gets up on its own. What this holds down is that the free
   // ones stay a trickle: everything else on the floor has to be paid for.
   let fallen = 0;
   let up = 0;
   let crypts = 0;
   let cryptUp = 0;
   for (let seed = 0; seed < 300; seed++) {
-    const g = newRun(6100 + seed * 7);
+    const g = newGame(6100 + seed * 7);
+    g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
     const room = g.nodes[openRooms(g)[0].id];
     const before = g.reserve.length;
-    const buried = g.lost;
     const bodies = room.foes.length;
     const crypt = room.kind === "crypt";
-    orderHero(g, room.id);
-    advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
+    orderArmy(g, room.id);
+    advance(g, budgetFor);
     if (room.state !== "cleared") continue;
-    // The reserve also loses people in there, so count what came in, not the net
-    const got = g.reserve.length - before + (g.lost - buried);
+    const got = g.reserve.length - before;
     if (crypt) {
       crypts += bodies;
       cryptUp += got;
@@ -819,7 +763,7 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     fallen += bodies;
     up += got;
   }
-  ok("a decent sample of corpses", fallen > 300);
+  ok("a decent sample of corpses", fallen > 200);
   const rate = up / fallen;
   ok(
     `the odd one gets up by itself (${(rate * 100).toFixed(0)}%)`,
@@ -829,125 +773,42 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   console.log(`raising: ${up}/${fallen} got up on their own, and ${cryptUp}/${crypts} in crypts`);
 }
 
-{
-  // A body on the floor is a decision now: the board waits, and what he can
-  // take off it is decided by what he has left to ask with
-  const g = newRun(8123);
-  ok("he starts with a full pool", g.mana === manaCap(g) && g.mana === TUNING.manaBase);
-  // Not a crypt: a crypt hands over its dead for nothing and there is nothing left to buy
-  const room = openRooms(g).find((n) => n.kind !== "crypt")!;
-  orderHero(g, room.id);
-  advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
-  ok("the room fell", room.state === "cleared");
-  ok("and nothing hurried him out of it", g.forces[0].mode === "spoils");
-  const before = g.mana;
-  ok("a cleared room gives some of him back", before > TUNING.manaBase - 1 || g.cleared > 0);
-
-  const b = g.forces[0].battle!;
-  const body = offered(g, b)[0];
-  ok("there is a body left to ask for", body !== undefined);
-  const cost = manaCost(g, body.creature);
-  const held = g.reserve.length;
-  const pool = g.mana;
-  ok("it answers", reap(g, body.id) === true);
-  ok("and it costs what it says on it", g.mana === pool - cost);
-  ok("it is standing with him now", g.reserve.length === held + 1);
-  ok("and the same body cannot be asked twice", reap(g, body.id) === false);
-  ok("the board knows it is his", b.taken.includes(body.id));
-
-  // Nothing to ask with is nothing to raise with
-  g.mana = 0;
-  const next = offered(g, b)[0];
-  if (next) ok("an empty pool raises nothing", reap(g, next.id) === false);
-  ok("and the pool cannot go under", g.mana === 0);
-
-  // He is pinned in the room until he says he is done with it
-  ok("he cannot be ordered out of a room he is holding", canOrder(g, g.forces[0].at) === false);
-  advance(g, TUNING.spoilsTicks * 20);
-  ok("and no amount of waiting moves him", g.forces[0].mode === "spoils");
-  ok("leaving is his to call", leaveRoom(g) === true);
-  ok("and then the room is behind him", g.forces[0].mode === "idle");
-  ok("leaving twice does nothing", leaveRoom(g) === false);
-}
+// ---------------------------------------------------------------- the clock
 
 {
-  // What a node of it buys, and what a room pays back into it
-  const g = newRun(4141);
-  const well = PATHS.rat.nodes.find((n) => n.gives.manaPool)!;
-  const cap = manaCap(g);
-  g.unspent = 12;
-  let guard = 20;
-  while (!g.taken.includes(well.id) && guard-- > 0) {
-    takeNode(g, treeOpen(g).find((id) => id === well.id) ?? treeOpen(g)[0]);
-  }
-  g.unspent = 0;
-  ok("a well raises the ceiling", manaCap(g) === cap + well.gives.manaPool!);
-  ok("and hands him what it added", g.mana === TUNING.manaBase + well.gives.manaPool!);
-  g.mana = 0;
-  const room = g.nodes[openRooms(g)[0].id];
-  orderHero(g, room.id);
-  advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
-  if (room.state === "cleared") {
-    ok("a room he takes pays into it", g.mana === Math.ceil(manaCap(g) * TUNING.manaRegen));
-  }
-  g.mana = manaCap(g);
-  const full = g.mana;
-  const other = g.nodes.find((n) => n.state === "open" && n.kind !== "boss");
-  if (other) {
-    leaveRoom(g);
-    orderHero(g, other.id);
-    advance(g, TUNING.marchTicks * 8 + TUNING.turnTicks * TUNING.maxRounds * 16);
-    ok("and never over the top of it", g.mana <= full);
-  }
-}
-
-// What a body costs has to make sense against what a body is
-for (const [id, t] of Object.entries(CREATURES)) {
-  if (id === "hero" || id === "ossuary") continue;
-  ok(`${id}: it has a price`, t.mana >= 1);
-  ok(`${id}: and the price is affordable from a standing start`, t.mana <= TUNING.manaBase);
-}
-ok("a rat is the cheapest thing there is", CREATURES.rat.mana === 1);
-ok("and a warden is not", CREATURES.warden.mana > CREATURES.rat.mana);
-ok("the Ossuary never answers", CREATURES.ossuary.mana === 0);
-
-{
-  // A room taken by proxy pays less of the lesson than one you walked into
-  const budget = TUNING.marchTicks * 4 + TUNING.turnTicks * TUNING.maxRounds * 16 + 20;
-  const squad = newRun(777);
-  const solo = newRun(777);
-  const target = openRooms(solo)[0].id;
-  while (raise(squad, "knight")) {
-    /* nothing */
-  }
-  sendSquad(squad, target, reserve(squad).map((u) => u.id));
-  advance(squad, budget);
-  orderHero(solo, target);
-  advance(solo, budget);
-  ok(
-    "both rooms fell",
-    squad.nodes[target].state === "cleared" && solo.nodes[target].state === "cleared",
-  );
-  ok("the hero rests in a room he took", solo.forces[0].at === target);
-  ok("but a squad leaves you where you were", squad.forces[0].at !== target);
+  const g = newGame(2210);
+  const before = JSON.stringify(g);
+  advance(g, 0);
+  ok("no ticks, no change", JSON.stringify(g) === before);
+  const target = openRooms(g)[0].id;
+  ok("the army can be ordered", orderArmy(g, target) === true);
+  ok("an order does not resolve on the spot", g.mode === "march");
+  advance(g, TUNING.marchTicks + 1);
+  ok("marching takes time", g.at === target);
+  ok("arriving starts the fight", g.mode === "fight");
+  ok("a fight starts at round zero", g.battle!.round === 0);
+  advance(g, TUNING.turnTicks * 4);
+  ok("turns land on the clock", g.battle!.round >= 1);
+  ok("you cannot be ordered mid-fight", canOrder(g, g.at) === false);
+  ok("and the whole army went in", g.battle!.units.filter((u) => u.faction === "player").length === START_BAND);
 }
 
 // ---------------------------------------------------------------- persistence
 
 {
-  const g = newRun(2024);
+  const g = newGame(2024);
   advance(g, 50);
   save(g);
   const back = load()!;
   ok("a save round-trips", back !== null && back.seed === g.seed);
   ok("the clock survives", back.time === g.time);
-  ok("the forces survive", back.forces.length === g.forces.length);
+  ok("the army survives", back.reserve.length === g.reserve.length);
 
   store.set("gravelight.save", JSON.stringify({ v: 999, g }));
   ok("an older save is thrown away", load() === null);
 
   const missing = JSON.parse(JSON.stringify(g)) as Record<string, unknown>;
-  delete missing.forces;
+  delete missing.reserve;
   store.set("gravelight.save", JSON.stringify({ v: 2, g: missing }));
   ok("a save missing a field is thrown away", load() === null);
 
@@ -959,49 +820,59 @@ ok("the Ossuary never answers", CREATURES.ossuary.mana === 0);
 
 // ---------------------------------------------------------------- balance probe
 
-const PROBES = 30;
+const PROBES = 60;
 
-// A bot that walks its whole retinue at the Ossuary. The floor of play, not the
-// ceiling: it never waits, never picks its fights, never times anything. It
-// exists to catch a nature that cannot be finished at all - or one that is
-// simply the correct answer, which is the same bug from the other side.
-function autoplay(seedValue: number, path: PathId) {
-  const g = newRun(seedValue, path);
-  let guard = 8000;
+// A bot that takes the softest room it can see and saves the Ossuary for last.
+// The floor of play, not the ceiling: it never mends at the right moment, never
+// orders its line, never turns down a room. The one thing it does do is read the
+// threat colour, because that is what the threat colour is for. It exists to
+// catch a game that cannot be finished at all - or one that cannot be lost,
+// which is the same bug from the other side.
+function autoplay(seedValue: number, arm: ArmId | null = null) {
+  const g = newGame(seedValue);
+  let guard = 12000;
   const said = new Set<string>();
   while (!g.over && guard-- > 0) {
-    // It spends every point the moment it has one, on whatever is nearest. A bot
-    // that plans its route is a bot measuring a player, not a floor.
-    while (g.unspent > 0 && treeOpen(g).length) takeNode(g, treeOpen(g)[0]);
+    // It spends every point the moment it has one. Given an arm it walks down
+    // that one; given none it takes whatever is nearest to hand.
+    while (g.unspent > 0 && treeOpen(g).length) {
+      const want = arm ? treeOpen(g).find((id) => TREE[id].arm === arm) : undefined;
+      takeNode(g, want ?? treeOpen(g)[0]);
+    }
     g.unspent = 0;
     g.loreQueue.length = 0;
 
-    // A room he has taken waits for him. It takes whatever it can afford off the
-    // floor, cheapest first, and then walks out - which is the floor of playing it.
-    const b = g.forces[0].battle;
-    if (g.forces[0].mode === "spoils" && b) {
-      // What the tree lets him do with a room comes first: a lord who does not
-      // eat is a lord who dies at the front of his own line
-      while (eat(g)) {
-        /* until the pool or the floor runs out */
-      }
+    const b = g.battle;
+    if (g.mode === "spoils" && b) {
       while (mend(g)) {
-        /* likewise */
+        /* until the pool or the wounded run out */
       }
-      for (const u of [...offered(g, b)].sort((x, z) => manaCost(g, x.creature) - manaCost(g, z.creature))) {
-        if (g.mana < manaCost(g, u.creature)) break;
-        if (!reap(g, u.id)) break;
+      // What a body is worth to this run, not in the abstract: price says how
+      // big a thing is, and anything the tree has already paid for is worth
+      // more to whoever paid. Without that the bot measures one build and
+      // calls the other two weak.
+      const P = perks(g);
+      const worth = (c: CreatureId) =>
+        CREATURES[c].mana + (c === "rat" ? P.ratDmg + P.swarmPer * 4 + P.ratHp / 4 : 0);
+      // Best first, and it will unmake the least of them to make room
+      for (const u of [...offered(g, b)].sort((x, z) => worth(z.creature) - worth(x.creature))) {
+        if (g.mana < manaCost(g, u.creature)) continue;
+        if (fielded(g) >= commandCap(g)) {
+          const chaff = [...g.reserve].sort((x, z) => worth(x.creature) - worth(z.creature))[0];
+          if (!chaff || worth(chaff.creature) >= worth(u.creature)) continue;
+          if (!sell(g, chaff.id)) continue;
+        }
+        reap(g, u.id);
       }
       leaveRoom(g);
     }
 
-    // The main line: keep the army together and push at the Ossuary. Squads are
-    // measured separately, above - they are a cost you choose, not the default.
-    if (g.forces[0].mode === "idle") {
-      const b = g.nodes.find((n) => n.kind === "boss")!;
-      const toward = (n: MapNode) => Math.abs(n.col - b.col) + Math.abs(n.row - b.row);
-      const mine = openRooms(g).sort((x, y) => toward(x) - toward(y))[0];
-      if (mine) orderHero(g, mine.id);
+    if (g.mode === "idle") {
+      const soft = openRooms(g)
+        .filter((n) => n.kind !== "boss")
+        .sort((x, y) => powerOf(x) - powerOf(y))[0];
+      const mine = soft ?? openRooms(g).find((n) => n.kind === "boss");
+      if (mine) orderArmy(g, mine.id);
     }
     advance(g, 20);
     for (const line of g.log) said.add(line);
@@ -1010,36 +881,40 @@ function autoplay(seedValue: number, path: PathId) {
 }
 
 const chatter = new Set<string>();
-const scores = PATH_IDS.map((path) => {
+const scores = [null, ...ARM_IDS].map((arm) => {
   let wins = 0;
   let deaths = 0;
-  let clearedTotal = 0;
+  let rooms = 0;
+  let levels = 0;
   for (let s = 0; s < PROBES; s++) {
-    const { g, stuck, said } = autoplay(4000 + s * 101, path);
-    ok(`${path} seed ${s} terminates`, !stuck);
-    ok(`${path} seed ${s} is never stranded`, g.over !== "");
+    const { g, stuck, said } = autoplay(4000 + s * 101, arm);
+    ok(`${arm ?? "any"} seed ${s} terminates`, !stuck);
+    ok(`${arm ?? "any"} seed ${s} is never stranded`, g.over !== "");
     for (const line of said) chatter.add(line);
     if (g.over === "won") wins += 1;
     if (g.over === "dead") deaths += 1;
-    clearedTotal += g.cleared;
+    rooms += g.cleared;
+    levels += g.level;
   }
-  return { path, wins, deaths, rooms: clearedTotal / PROBES };
+  return { arm: arm ?? "any", wins, deaths, rooms: rooms / PROBES, level: levels / PROBES + 1 };
 });
 
 for (const s of scores) {
-  ok(`${s.path}: a run can be lost`, s.deaths > 0);
-  // Deliberately loose: how hard the game is belongs in the printed lines below,
-  // not in an assertion. What this catches is a nature that cannot take a room.
-  ok(`${s.path}: rooms are actually being cleared`, s.rooms >= 2);
+  ok(`${s.arm}: a run can be lost`, s.deaths > 0);
+  ok(`${s.arm}: a run can be finished`, s.wins > 0);
+  ok(`${s.arm}: rooms are actually being cleared (${s.rooms.toFixed(1)})`, s.rooms >= 10);
+  // The floor of play should not be the whole game. If a bot that never thinks
+  // wins nearly every time, nothing above it is a decision.
+  ok(`${s.arm}: and the floor of play is not a walkover (${s.wins}/${PROBES})`, s.wins < PROBES * 0.85);
 }
-ok("a run can be finished", scores.some((s) => s.wins > 0));
 
-// The thing that kills build variety is not a weak nature, it is a correct one.
+// The thing that kills build variety is not a weak arm, it is a correct one.
 // Nothing else in this file is looking for that.
-const best = Math.max(...scores.map((s) => s.rooms));
-const worst = Math.min(...scores.map((s) => s.rooms));
-const spread = scores.map((s) => `${s.path} ${s.rooms.toFixed(1)}`).join(", ");
-ok(`no nature dominates (${spread})`, best / worst < 1.5);
+const armed = scores.filter((s) => s.arm !== "any");
+const best = Math.max(...armed.map((s) => s.wins));
+const worst = Math.min(...armed.map((s) => s.wins));
+const spread = armed.map((s) => `${s.arm} ${s.wins}`).join(", ");
+ok(`no arm is simply the answer (${spread})`, best <= worst * 2);
 
 ok("the probe saw a lot of chatter", chatter.size > 10);
 for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <= MIN_COLS);
@@ -1058,6 +933,7 @@ for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <
 for (const [id, t] of Object.entries(CREATURES)) {
   ok(`${id}: an ability implies a tag`, !t.ability || t.tag.length > 0);
   ok(`${id}: a short name fits the roster`, t.short.length <= 7);
+  ok(`${id}: a wall says so`, !t.taunt || t.tag.startsWith("a wall"));
 }
 
 // ---------------------------------------------------------------- a fight you can watch
@@ -1065,7 +941,7 @@ for (const [id, t] of Object.entries(CREATURES)) {
 {
   // A fight has to last long enough to be worth opening. Rooms by the gate are
   // short on purpose; the ones that matter are not.
-  const room = (list: BattleUnit["creature"][], tier: number) =>
+  const room = (list: CreatureId[], tier: number) =>
     list.map((c, i) => {
       const t = CREATURES[c];
       return unit({
@@ -1075,25 +951,14 @@ for (const [id, t] of Object.entries(CREATURES)) {
         hp: t.hp + tier * TUNING.tierHp,
         maxHp: t.hp + tier * TUNING.tierHp,
         dmg: t.dmg + (tier >= TUNING.tierDmgAt ? 1 : 0),
-        speed: t.speed,
       });
     });
-  const hero = () =>
-    unit({
-      id: 0,
-      creature: "hero",
-      hp: TUNING.heroHp,
-      maxHp: TUNING.heroHp,
-      dmg: TUNING.heroDmg,
-      speed: CREATURES.hero.speed,
+  const band = (list: CreatureId[]) =>
+    list.map((c, i) => {
+      const t = CREATURES[c];
+      return unit({ id: i, creature: c, hp: t.hp, maxHp: t.hp, dmg: t.dmg });
     });
-
-  const band = () =>
-    ["rat", "knight"].map((c, i) => {
-      const t = CREATURES[c as BattleUnit["creature"]];
-      return unit({ id: 1 + i, creature: t === CREATURES.rat ? "rat" : "knight", hp: t.hp, maxHp: t.hp, dmg: t.dmg, speed: t.speed });
-    });
-  // Turns, not rounds: one unit swings a turn now, so the beat is what to count
+  // Turns, not rounds: one unit swings a turn, so the beat is what to count
   const turnsIn = (b: Battle) => {
     let turns = 0;
     let guard = 4000;
@@ -1103,16 +968,18 @@ for (const [id, t] of Object.entries(CREATURES)) {
     }
     return turns;
   };
-  const shallow = battle([hero(), ...band(), ...room(["rat", "hound", "moth"], 0)]);
-  const shallowTurns = turnsIn(shallow);
-  const deep = battle([hero(), ...band(), ...room(["warden", "knight", "hound", "moth"], 4)]);
-  const deepTurns = turnsIn(deep);
   const secs = (turns: number) => ((turns * TUNING.turnTicks + TUNING.marchTicks) * 0.11).toFixed(1);
 
+  const shallow = battle([...band(["rat", "hound", "moth"]), ...room(["rat", "hound"], 0)]);
+  const shallowTurns = turnsIn(shallow);
+  const deep = battle([
+    ...band(["knight", "hound", "hound", "rat", "moth", "wisp"]),
+    ...room(["warden", "knight", "hound", "moth"], 4),
+  ]);
+  const deepTurns = turnsIn(deep);
+
   ok("a room by the gate is not instant", shallowTurns >= 8);
-  ok("and it is one you take at level one", shallow.done === "win");
-  // Deep rooms are long whether or not you are ready for them. Walking into one
-  // at level one and losing is the game telling you to go and get some levels.
+  ok("and it is one the opening band takes", shallow.done === "win");
   ok("a room that matters is a long fight", deepTurns >= 20);
   ok("a fight is worth opening", +secs(deepTurns) >= 5);
   console.log(
@@ -1121,10 +988,11 @@ for (const [id, t] of Object.entries(CREATURES)) {
   );
 }
 
+void unitDmg;
 console.log(`sim: ${checks} checks passed`);
 for (const s of scores) {
   console.log(
-    `balance ${PATHS[s.path].name.toLowerCase().padEnd(8)} ${s.rooms.toFixed(1)} rooms, ` +
+    `balance ${s.arm.padEnd(8)} ${s.rooms.toFixed(1)} rooms, level ${s.level.toFixed(1)}, ` +
       `${s.wins}/${PROBES} reached the end, ${s.deaths}/${PROBES} died`,
   );
 }

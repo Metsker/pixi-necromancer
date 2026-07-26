@@ -3,27 +3,34 @@ import {
   CREATURES,
   KIND_NAME,
   MANA_GLYPH,
+  TAUNT_GLYPH,
   TUNING,
   type BattleUnit,
-  type Force,
   type GameState,
   type Hit,
 } from "../sim/data.ts";
 import {
+  canSell,
   commandCap,
-  eatable,
   fielded,
+  held,
   hpFrac,
   manaCap,
   manaCost,
   mendable,
   offered,
+  perks,
+  wallish,
 } from "../sim/game.ts";
+import type { Perks } from "../sim/tree.ts";
 import { BTN_ROWS, C, COL, Hits, bar, buttons, cells } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit in the roster
 const LUNGE = 2; // how far a fighter steps into the middle to land a blow
 const BOARD = 44; // the widest the board gets, so a desk monitor does not stretch it
+// Cells a figure takes in the arena. Two, so a whole line stands on one row at
+// any width worth playing on - the two lines are the picture.
+const FIGURE_W = 2;
 
 // How long a blow stays lit, in ticks, and how long a mend does. A blow is a
 // flash; a mend is worth looking at.
@@ -46,9 +53,10 @@ type Bid = (u: BattleUnit) => 0 | 1 | 2;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
-export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, speed: number) {
-  const b = f.battle!;
+export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: number) {
+  const b = g.battle!;
   const n = g.nodes[b.node];
+  const P = perks(g);
   const rows = full.rows;
   // Held together in the middle of a wide screen, rather than pulled apart by it
   const cols = Math.min(full.cols, BOARD);
@@ -59,8 +67,8 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
   const rightX = half + 1;
   const rightW = cols - half - 1;
 
-  // The two numbers you spend, in the corner: bodies he can hold, and what he
-  // has left to ask one back with. The headings centre in what is left over,
+  // The two numbers you spend, in the corner: bodies you can hold, and what you
+  // have left to ask one back with. The headings centre in what is left over,
   // so a narrow phone never writes one on top of the other.
   const slots = `${fielded(g)}/${commandCap(g)}`;
   grid.put(cols - slots.length - 1, 0, "†", C.violet);
@@ -70,11 +78,7 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
   grid.text(cols - pool.length, 1, pool, C.mid);
 
   grid.center(0, 0, cols - slots.length - 2, KIND_NAME[n.kind], C.gold);
-  const beat = b.done
-    ? b.done === "win"
-      ? "it is yours"
-      : "it is over"
-    : `round ${b.round + 1}${f.kind === "hero" ? "" : ", squad"}`;
+  const beat = b.done ? (b.done === "win" ? "it is yours" : "it is over") : `round ${b.round + 1}`;
   grid.center(0, 1, cols - pool.length - 2, beat, b.done === "win" ? C.green : b.done ? C.red : C.frame);
 
   const ours = b.units.filter((u) => u.faction === "player");
@@ -84,17 +88,15 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
 
   // Ticks since this blow landed. One unit swings per turn, so the whole beat is
   // the swing: step in, connect, and it is somebody else's turn.
-  const age = clamp(TUNING.turnTicks - (f.next - g.time), 0, TUNING.turnTicks);
-  const spoils = f.mode === "spoils";
+  const age = clamp(TUNING.turnTicks - (g.next - g.time), 0, TUNING.turnTicks);
+  const spoils = g.mode === "spoils";
   const swing = spoils ? 0 : age < 1 ? LUNGE : 1;
   // The white is a flash, not a state: it is gone well before the turn is
   const landing = spoils || age > FLASH_TICKS ? [] : b.hit;
   const mending = spoils || age > MEND_TICKS ? [] : b.mend;
 
-  // What the room gave him back, held on screen for as long as the board is
-  const mended = spoils && b.done === "win" ? b.healed : 0;
-  // Getting up runs on its own clock now: the board waits for him, but a body
-  // that has just been asked has three beats to get through whether he waits or not
+  // Getting up runs on its own clock: the board waits for you, but a body that
+  // has just been asked has three beats to get through whether you wait or not
   const raised = g.risen;
   let rise: Rise | null = null;
   if (raised && raised.node === b.node && g.time - raised.at <= TUNING.riseTicks) {
@@ -102,37 +104,33 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
     rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL, moved: p >= WAKE_UNTIL };
   }
   const rising = (u: BattleUnit) => rise !== null && rise.ids.has(u.id);
-  // Lit and still grey, its colour back, and standing in his line: the three beats
+  // Lit and still grey, its colour back, and standing in the line: the three beats
   const look: Look = {
     beam: (u) => rising(u) && rise!.beam,
     woken: (u) => taken.has(u.id) && !(rising(u) && rise!.beam),
   };
   const crossedOver = (u: BattleUnit) => taken.has(u.id) && (!rising(u) || rise!.moved);
 
-  // Once they have crossed they are on his side of the board, in the roster too.
-  // They land where a raise actually lands: at the end of what he is holding,
-  // which is in front of him whenever he is walking at the back of his own line.
-  const crossed = theirs.filter(crossedOver);
-  const trailing = ours.length > 0 && ours[ours.length - 1].creature === "hero";
-  const ourLine = trailing
-    ? [...ours.slice(0, -1), ...crossed, ours[ours.length - 1]]
-    : [...ours, ...crossed];
+  // Once they have crossed they are on your side of the board, in the roster too.
+  // They land where a raise actually lands: at the end of the line.
+  const ourLine = [...ours, ...theirs.filter(crossedOver)];
   const theirLine = theirs.filter((u) => !crossedOver(u));
   const shown = Math.max(ourLine.length, theirLine.length);
 
-  // A body he is standing over is his to ask for, at a price, until he leaves
-  const held = spoils && f.kind === "hero" && b.done === "win";
-  const open = new Set(held ? offered(g, b).map((u) => u.id) : []);
+  // A body you are standing over is yours to ask for, at a price, until you leave
+  const holding = held(g) !== null;
+  const open = new Set(holding ? offered(g, b).map((u) => u.id) : []);
   const bid: Bid = (u) =>
     !open.has(u.id) ? 0 : g.mana >= manaCost(g, u.creature) && fielded(g) < commandCap(g) ? 2 : 1;
   const tap = (u: BattleUnit, x: number, y: number) => {
     if (bid(u)) hits.add(at + x - 1, y, 3, 2, { t: "reap", id: u.id });
   };
+  // ...and a body of yours is one you can give back to the pool, for a slot you
+  // would rather put something else in
+  const sellable = (u: BattleUnit) => u.faction === "player" && canSell(g, u.src);
 
-  const ranks = Math.max(
-    Math.ceil(ourLine.length / perRank(cols)),
-    Math.ceil(theirLine.length / perRank(cols)),
-  );
+  const wide = perRow(cols);
+  const ranks = Math.max(Math.ceil(ourLine.length / wide), Math.ceil(theirLine.length / wide));
   const head = 3;
   // The arena is what you opened the fight to watch, so it is served first and
   // a long line does not squeeze it off the screen. The roster takes what is
@@ -148,20 +146,25 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
 
   let y = head;
   if (arena) {
-    drawArena(grid, ourLine, theirLine, y, arena, cols, landing, mending, swing, look, bid, tap);
+    drawArena(grid, ourLine, theirLine, y, arena, cols, landing, mending, swing, look, bid, tap, P);
     y += arena;
   }
   for (let x = 0; x < cols; x++) grid.put(x, y, "─", C.frame);
   y += 1;
 
   for (let i = 0; i < roster; i++) {
-    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, mending, false, look, mended, 0, 0);
+    const mine = ourLine[i];
+    if (mine) {
+      const give = sellable(mine) ? TUNING.sellMana : 0;
+      side(grid, 0, half, y, mine, landing, mending, false, look, give ? 1 : 0, give, P);
+      if (give) hits.add(at, y, half, ROW_H, { t: "sell", id: mine.src });
+    }
     if (theirLine[i]) {
       const u = theirLine[i];
-      side(grid, rightX, rightW, y, u, landing, mending, true, look, 0, bid(u), manaCost(g, u.creature));
-      if (bid(theirLine[i])) hits.add(at + rightX, y, rightW, ROW_H, { t: "reap", id: theirLine[i].id });
+      side(grid, rightX, rightW, y, u, landing, mending, true, look, bid(u), manaCost(g, u.creature), P);
+      if (bid(u)) hits.add(at + rightX, y, rightW, ROW_H, { t: "reap", id: u.id });
     }
-    if (ourLine[i] || theirLine[i]) grid.put(half, y, "│", C.frame);
+    if (mine || theirLine[i]) grid.put(half, y, "│", C.frame);
     y += ROW_H;
   }
   if (roster < shown) grid.center(0, y++, cols, `+${shown - roster} more`, C.frame);
@@ -173,29 +176,24 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
   const tail = Math.max(0, last - y);
   for (const line of tail ? b.log.slice(-tail) : []) grid.text(0, y++, line.slice(0, cols), C.dim);
 
-  // What the tree lets him do with a room he is standing in, if anything. Both
-  // spend out of the pool that would otherwise have raised something.
-  const spend = eatable(g)
-    ? { label: "EAT", act: { t: "eat" as const } }
-    : mendable(g)
-      ? { label: "MEND", act: { t: "mend" as const } }
-      : null;
-
   // The strip stays the width of the screen: it is what a thumb reaches for.
-  // Nothing else ends a room he has taken, so the way out is a button.
+  // Nothing else ends a room you have taken, so the way out is a button.
   buttons(full, hits, [
     { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
-    ...(held && spend ? [spend] : []),
-    held ? { label: "LEAVE", act: { t: "leave" } } : { label: "MAP", act: { t: "back" } },
+    ...(holding && mendable(g) ? [{ label: "MEND", act: { t: "mend" as const } }] : []),
+    holding ? { label: "LEAVE", act: { t: "leave" } } : { label: "MAP", act: { t: "back" } },
   ]);
 }
 
-const perRank = (cols: number) => Math.max(1, Math.floor(((cols >> 1) - 2) / 3));
+// How many figures stand on one row of the arena, per side. Two cells each, so
+// a full line and a full room both fit on one row at any playable width; the
+// wrap below it only ever fires on a phone narrower than the game asks for.
+const perRow = (cols: number) => Math.max(1, Math.floor(((cols >> 1) - 1) / FIGURE_W));
 
 // Two lines of figures facing off across the middle of a dark room. A fighter
 // that swung this turn steps in; one that was hit is knocked back a cell, wears
 // the blow that did it, and the number floats off it. When the fighting stops,
-// whatever he raised takes the light and crosses to the end of his line.
+// whatever got up takes the light and crosses to the end of your line.
 function drawArena(
   grid: Surface,
   ours: BattleUnit[],
@@ -209,6 +207,7 @@ function drawArena(
   look: Look,
   bid: Bid,
   tap: (u: BattleUnit, x: number, y: number) => void,
+  P: Perks,
 ) {
   const mid = cols >> 1;
   const ground = top + h - 1;
@@ -220,7 +219,7 @@ function drawArena(
   const threw = new Set(landing.map((hit) => hit.by));
   const took = new Map(landing.map((hit) => [hit.id, hit.n]));
   const mended = new Map(mending.map((m) => [m.id, m.n]));
-  const wide = perRank(cols);
+  const wide = perRow(cols);
 
   const line = (list: BattleUnit[], dir: 1 | -1) => {
     list.forEach((u, i) => {
@@ -231,11 +230,10 @@ function drawArena(
       const hurt = took.get(u.id);
       const step = down ? 0 : threw.has(u.id) ? swing : 0;
       const knocked = !down && hurt !== undefined ? 1 : 0;
-      // Rear ranks stand a little further out, so a front line reads as a front line
-      const home = mid - dir * (2 + (i % wide) * 3 + rank);
+      const home = mid - dir * (2 + (i % wide) * FIGURE_W);
       const x = home + dir * step - dir * knocked;
       const t = CREATURES[u.creature];
-      // His light comes down out of the ceiling and pools on the body. The cell
+      // The light comes down out of the ceiling and pools on the body. The cell
       // fill and the glyph are separate layers, so the beam sits behind it.
       if (look.beam(u)) {
         for (let by = top + 1; by < y; by++) grid.put(x, by, "║", C.violet, C.bg);
@@ -243,7 +241,7 @@ function drawArena(
         return;
       }
       const put = mended.get(u.id);
-      // One he could still ask for is worth pointing at; one he cannot afford
+      // One you could still ask for is worth pointing at; one you cannot afford
       // lies there like any other body
       const offer = bid(u);
       tap(u, x, y);
@@ -254,6 +252,9 @@ function drawArena(
         offer === 2 ? C.cyan : down ? C.frame : hurt ? C.ink : put ? C.green : COL(t.color),
         C.bg,
       );
+      // A wall wears its own mark above it, because which of them is standing is
+      // the only thing that decides where the next blow goes
+      if (!down && wallish(u, P)) grid.put(x, y - 1, TAUNT_GLYPH, C.blue, C.bg);
       if (put) {
         const back = `+${put}`;
         grid.text(x - (back.length >> 1), y - 1, back, C.green, C.bg);
@@ -280,9 +281,9 @@ function side(
   mending: Hit[],
   mirrored: boolean,
   look: Look,
-  mended: number,
   offer: 0 | 1 | 2,
   price: number,
+  P: Perks,
 ) {
   const t = CREATURES[u.creature];
   const struck = landing.find((h) => h.id === u.id);
@@ -303,23 +304,17 @@ function side(
     grid.text(x + 2, y, name, ink);
   }
 
-  if (struck) {
-    const hurt = `-${struck.n}`;
-    grid.text(mirrored ? x : x + w - hurt.length, y, hurt, C.ink);
-  } else if (put) {
-    const back = `+${put.n}`;
-    grid.text(mirrored ? x : x + w - back.length, y, back, C.green);
-  } else if (mended > 0 && u.creature === "hero") {
-    const back = `+${mended}`;
-    grid.text(mirrored ? x : x + w - back.length, y, back, C.green);
-  } else if (offer) {
-    // What it would cost to ask this one back, against the divider where the
-    // fighting used to be
-    const tag = `${MANA_GLYPH}${price}`;
-    grid.text(mirrored ? x : x + w - cells(tag), y, tag, offer === 2 ? C.cyan : C.frame);
-  } else if (u.withered > 0 && !down) {
-    grid.put(mirrored ? x : x + w - 1, y, "∿", C.violet);
-  }
+  const edge = (s: string, fg: number) =>
+    grid.text(mirrored ? x : x + w - cells(s), y, s, fg);
+
+  if (struck) edge(`-${struck.n}`, C.ink);
+  else if (put) edge(`+${put.n}`, C.green);
+  else if (offer) {
+    // What it would cost to ask this one back, or what giving it up pays, against
+    // the divider where the fighting used to be
+    edge(`${MANA_GLYPH}${mirrored ? price : `+${price}`}`, offer === 2 || !mirrored ? C.cyan : C.frame);
+  } else if (u.withered > 0 && !down) edge("∿", C.violet);
+  else if (!down && wallish(u, P)) edge(TAUNT_GLYPH, C.blue);
 
   // One that has got up is one of yours now, whatever side it fought on
   const ours = u.faction === "player" || woken;

@@ -10,18 +10,17 @@ import { LORE } from "./sim/lore.ts";
 import type { Point } from "./sim/data.ts";
 import {
   advance,
-  choosePath,
   clearSave,
-  eat,
   leaveRoom,
   load,
   mend,
+  moveDown,
   moveUp,
   newGame,
-  orderHero,
+  orderArmy,
   reap,
   save,
-  sendSquad,
+  sell,
   takeNode,
 } from "./sim/game.ts";
 import { sfx, toggleSfx, unlock, type SfxName } from "./sfx.ts";
@@ -38,17 +37,14 @@ const ACT_SFX: Partial<Record<Act["t"], SfxName>> = {
   menu: "open",
   army: "open",
   tree: "open",
-  squad: "open",
   inspect: "open",
   watch: "open",
   restart: "open",
   up: "move",
-  toggle: "move",
+  down: "move",
   pick: "move",
-  send: "send",
   take: "buy",
-  path: "rise",
-  eat: "eat",
+  sell: "eat",
   mend: "mend",
 };
 
@@ -93,9 +89,8 @@ async function main() {
   const ui: Ui = {
     panel: "",
     node: 0,
-    pick: [],
     speed: 1,
-    watch: null,
+    watch: false,
     unit: 0,
     typed: 0,
     loreId: null,
@@ -106,19 +101,16 @@ async function main() {
   let dirty = true;
   let owed = 0;
   let sinceSave = 0;
-  let heroFighting = false;
+  let wasFighting = false;
   let drag: { x: number; y: number; cam: Point; moved: boolean } | null = null;
 
   const recenter = () => {
     cam = centerOn(g, grid.cols, grid.rows);
   };
 
-  // The force being watched, but only while it is actually in a fight
-  const watched = () => {
-    if (ui.watch === null) return null;
-    const f = g.forces.find((o) => o.id === ui.watch);
-    return f && (f.mode === "fight" || f.mode === "spoils") && f.battle ? f : null;
-  };
+  // The board, but only while there is actually a fight to look at
+  const watching = () =>
+    ui.watch && (g.mode === "fight" || g.mode === "spoils") && g.battle !== null;
 
   // Sound follows what the screen shows rather than what the sim does: the sim
   // stays headless, and a frame that ran ten ticks still only makes one noise.
@@ -127,7 +119,7 @@ async function main() {
     level: g.level,
     over: g.over,
     risen: g.risen?.at ?? -1,
-    at: g.forces[0].at,
+    at: g.at,
   });
   let seen = snap();
   let lastSwing: unknown = null;
@@ -141,9 +133,9 @@ async function main() {
     if (now.at !== seen.at) sfx("step");
     seen = now;
 
-    // Only the fight being watched is heard. Every turn hands out fresh arrays,
+    // Only a fight being looked at is heard. Every turn hands out fresh arrays,
     // so their identity is what says a blow has been thrown since last frame.
-    const b = watched()?.battle;
+    const b = watching() ? g.battle : null;
     if (!b || b.hit === lastSwing) return;
     lastSwing = b.hit;
     for (const h of b.hit) {
@@ -172,8 +164,7 @@ async function main() {
   function redraw() {
     hits.clear();
     grid.clear(C.bg);
-    const watching = watched();
-    if (watching) drawBattle(grid, g, watching, hits, ui.speed);
+    if (watching()) drawBattle(grid, g, hits, ui.speed);
     else drawMap(grid, g, cam, hits, ui.speed);
     const panel = shownPanel(g, ui);
     if (panel) drawPanel(grid, g, ui, hits, panel);
@@ -184,9 +175,8 @@ async function main() {
     clearSave();
     g = newGame(Math.floor(Math.random() * 1e9));
     ui.panel = "";
-    ui.pick = [];
     ui.node = 0;
-    ui.watch = null;
+    ui.watch = false;
     ui.tnode = rootId;
     recenter();
     seen = snap();
@@ -201,37 +191,30 @@ async function main() {
         ui.panel = "node";
         break;
       case "order":
-        orderHero(g, ui.node);
+        orderArmy(g, ui.node);
         ui.panel = "";
-        break;
-      case "squad":
-        ui.pick = [];
-        ui.panel = "roster";
         break;
       case "up":
         moveUp(g, a.k);
         break;
-      case "toggle":
-        ui.pick = ui.pick.includes(a.id) ? ui.pick.filter((i) => i !== a.id) : [...ui.pick, a.id];
-        break;
-      case "send":
-        if (sendSquad(g, ui.node, ui.pick)) {
-          ui.panel = "";
-          ui.pick = [];
-        }
+      case "down":
+        moveDown(g, a.k);
         break;
       case "watch":
-        ui.watch = a.id;
+        ui.watch = true;
         ui.panel = "";
         break;
       case "reap":
         reap(g, a.id);
         break;
+      case "sell":
+        sell(g, a.id);
+        break;
       case "leave":
         leaveRoom(g);
         break;
       case "back":
-        ui.watch = null;
+        ui.watch = false;
         recenter();
         break;
       case "army":
@@ -253,11 +236,6 @@ async function main() {
       case "close":
         ui.panel = "";
         break;
-      case "path":
-        choosePath(g, a.id);
-        // Whatever he is, the next thing he sees is the board he will spend on
-        ui.tnode = rootId;
-        break;
       case "tree":
         ui.panel = "tree";
         break;
@@ -266,9 +244,6 @@ async function main() {
         break;
       case "take":
         takeNode(g, a.id);
-        break;
-      case "eat":
-        eat(g);
         break;
       case "mend":
         mend(g);
@@ -294,7 +269,7 @@ async function main() {
     dirty = true;
   }
 
-  const panning = () => !watched() && !shownPanel(g, ui);
+  const panning = () => !watching() && !shownPanel(g, ui);
 
   app.stage.eventMode = "static";
   app.stage.hitArea = app.screen;
@@ -377,18 +352,18 @@ async function main() {
     } else {
       ui.loreId = null;
     }
-    // A room he walks into himself is a room you are shown. Only on the edge,
-    // so leaving the fight does not immediately drag you back into it.
-    const fighting = g.forces[0].mode === "fight";
-    if (fighting && !heroFighting) {
-      ui.watch = g.forces[0].id;
+    // A room you walk into is a room you are shown. Only on the edge, so leaving
+    // the fight does not immediately drag you back into it.
+    const fighting = g.mode === "fight";
+    if (fighting && !wasFighting) {
+      ui.watch = true;
       ui.panel = "";
       dirty = true;
     }
-    heroFighting = fighting;
+    wasFighting = fighting;
     // Leaving a fight that has ended should put the map back by itself
-    if (ui.watch !== null && !watched()) {
-      ui.watch = null;
+    if (ui.watch && !watching()) {
+      ui.watch = false;
       recenter();
       dirty = true;
     }

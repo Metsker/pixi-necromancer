@@ -1,5 +1,4 @@
 import type { Surface } from "./gfx/surface.ts";
-import type { PathId } from "./sim/tree.ts";
 import { PALETTE } from "./tilemap.ts";
 
 const p = (i: number) => parseInt(PALETTE[i].slice(1), 16);
@@ -36,25 +35,22 @@ export type Act =
   | { t: "node"; id: number }
   | { t: "close" }
   | { t: "order" }
-  | { t: "squad" }
-  | { t: "toggle"; id: number }
   | { t: "up"; k: number }
+  | { t: "down"; k: number }
   | { t: "inspect"; id: number }
-  | { t: "send" }
   | { t: "menu" }
   | { t: "army" }
   | { t: "restart" }
   | { t: "confirm" }
-  | { t: "path"; id: PathId }
   | { t: "tree" }
   | { t: "pick"; id: number }
   | { t: "take"; id: number }
-  | { t: "eat" }
   | { t: "mend" }
+  | { t: "sell"; id: number }
   | { t: "ok" }
   | { t: "speed" }
   | { t: "sound" }
-  | { t: "watch"; id: number }
+  | { t: "watch" }
   | { t: "reap"; id: number }
   | { t: "leave" }
   | { t: "back" };
@@ -139,12 +135,17 @@ export function box(grid: Surface, x: number, y: number, w: number, h: number) {
   grid.put(x + w - 1, y + h - 1, "┘", C.frame);
 }
 
-// `tail` is a second, narrow target at the right end of a line - the arrow that
-// moves a unit up the order without stealing the tap that selects it
-export type Line = { text: string; act?: Act; fg?: number; tail?: { text: string; act: Act } };
+// `tails` are narrow targets at the right end of a line - the arrows that move a
+// unit through the order without stealing the tap that selects it
+export type Tail = { text: string; act: Act };
+export type Line = { text: string; act?: Act; fg?: number; tails?: Tail[] };
+
+// Cells the arrows at the end of a line take, the gap in front of them included
+export const tailW = (l: Line) =>
+  l.tails?.length ? l.tails.reduce((n, t) => n + cells(t.text), 0) + 1 : 0;
 
 // A line you can tap gets two rows, so a thumb has something to land on
-const rowsFor = (l: Line) => (l.act || l.tail ? 2 : 1);
+const rowsFor = (l: Line) => (l.act || l.tails?.length ? 2 : 1);
 
 export function sheet(
   grid: Surface,
@@ -163,12 +164,7 @@ export function sheet(
     keep.splice(i, 1);
   }
 
-  const want =
-    Math.max(
-      minWidth,
-      cells(title),
-      ...keep.map((l) => cells(l.text) + (l.tail ? cells(l.tail.text) + 1 : 0)),
-    ) + 4;
+  const want = Math.max(minWidth, cells(title), ...keep.map((l) => cells(l.text) + tailW(l))) + 4;
   const w = Math.min(grid.cols, want);
   const h = Math.min(grid.rows, body + 4);
   const x = Math.max(0, (grid.cols - w) >> 1);
@@ -184,13 +180,14 @@ export function sheet(
   for (const l of keep) {
     const tall = rowsFor(l);
     if (ly + tall > y + h - 1) break;
-    const room = w - 3 - (l.tail ? cells(l.tail.text) + 1 : 0);
-    grid.text(x + 2, ly, cut(l.text, room), l.fg ?? (l.act ? C.ink : C.dim));
+    grid.text(x + 2, ly, cut(l.text, w - 3 - tailW(l)), l.fg ?? (l.act ? C.ink : C.dim));
     if (l.act) hits.add(x, ly, w, tall, l.act);
-    if (l.tail) {
-      const at = x + w - 1 - cells(l.tail.text);
-      grid.text(at, ly, l.tail.text, C.gold);
-      hits.add(at - 1, ly, cells(l.tail.text) + 2, tall, l.tail.act);
+    // Laid out right to left, so the last arrow always sits against the frame
+    let at = x + w - 1;
+    for (const t of [...(l.tails ?? [])].reverse()) {
+      at -= cells(t.text);
+      grid.text(at, ly, t.text, C.gold);
+      hits.add(at, ly, cells(t.text) + 1, tall, t.act);
     }
     ly += tall;
   }
