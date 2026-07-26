@@ -1,4 +1,5 @@
 import { Application, type FederatedPointerEvent } from "pixi.js";
+import { bend, crtFilter } from "./gfx/crt.ts";
 import { loadGlyphs } from "./gfx/glyphs.ts";
 import { Grid } from "./gfx/grid.ts";
 import { computeLayout } from "./layout.ts";
@@ -56,6 +57,12 @@ async function main() {
 
   const grid = new Grid(glyphs, C.bg);
   app.stage.addChild(grid.root);
+
+  // The whole picture goes through the glass. app.screen is the same object
+  // across resizes, so the area follows the window without being reassigned.
+  const crt = crtFilter();
+  app.stage.filters = [crt];
+  app.stage.filterArea = app.screen;
 
   let g = load() ?? newGame(Math.floor(Math.random() * 1e9));
   const ui: Ui = {
@@ -243,7 +250,8 @@ async function main() {
   });
   const release = () => {
     if (drag && !drag.moved) {
-      const c = grid.cellAt(drag.x, drag.y);
+      const p = bend(crt, drag.x, drag.y, app.screen.width, app.screen.height);
+      const c = grid.cellAt(p.x, p.y);
       onAct(hits.at(c.x, c.y));
     }
     drag = null;
@@ -255,7 +263,7 @@ async function main() {
   // of squinting at a picture of it
   // Cast because the project does not pull in vite's ambient types for one flag
   if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
-    Object.assign(window, { app, grid, run: () => g, ui });
+    Object.assign(window, { app, grid, run: () => g, ui, crt: crt.resources.crt.uniforms });
   }
 
   window.addEventListener("resize", fit);
