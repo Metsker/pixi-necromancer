@@ -24,8 +24,30 @@ import {
   sendSquad,
   takeNode,
 } from "./sim/game.ts";
+import { sfx, toggleSfx, unlock, type SfxName } from "./sfx.ts";
 import { rootId } from "./sim/tree.ts";
 import { C, Hits, type Act } from "./ui.ts";
+
+// What a tap sounds like. Anything not listed is a plain tap, and a tap on
+// nothing says nothing.
+const ACT_SFX: Partial<Record<Act["t"], SfxName>> = {
+  close: "close",
+  back: "close",
+  leave: "close",
+  node: "open",
+  menu: "open",
+  army: "open",
+  tree: "open",
+  squad: "open",
+  inspect: "open",
+  watch: "open",
+  restart: "open",
+  send: "send",
+  take: "buy",
+  path: "rise",
+  eat: "eat",
+  mend: "mend",
+};
 
 // One tick of game time. The speed control multiplies how many run per second.
 const TICK_MS = 110;
@@ -95,6 +117,44 @@ async function main() {
     return f && (f.mode === "fight" || f.mode === "spoils") && f.battle ? f : null;
   };
 
+  // Sound follows what the screen shows rather than what the sim does: the sim
+  // stays headless, and a frame that ran ten ticks still only makes one noise.
+  // Foes only ever appear on the map, so their total going up is a room filling.
+  const snap = () => ({
+    cleared: g.cleared,
+    level: g.level,
+    over: g.over,
+    risen: g.risen?.at ?? -1,
+    at: g.forces[0].at,
+    foes: g.nodes.reduce((n, x) => n + x.foes.length, 0),
+  });
+  let seen = snap();
+  let lastSwing: unknown = null;
+
+  function hear() {
+    const now = snap();
+    if (now.over && !seen.over) sfx(now.over === "won" ? "win" : "lose");
+    else if (now.level > seen.level) sfx("level");
+    else if (now.cleared > seen.cleared) sfx("clear");
+    if (now.risen !== seen.risen) sfx("rise");
+    if (now.foes > seen.foes) sfx("lurk");
+    if (now.at !== seen.at) sfx("step");
+    seen = now;
+
+    // Only the fight being watched is heard. Every turn hands out fresh arrays,
+    // so their identity is what says a blow has been thrown since last frame.
+    const b = watched()?.battle;
+    if (!b || b.hit === lastSwing) return;
+    lastSwing = b.hit;
+    for (const h of b.hit) {
+      const from = b.units.find((u) => u.id === h.by);
+      const on = b.units.find((u) => u.id === h.id);
+      sfx(from?.faction === "player" ? "hit" : "hurt", -Math.min(6, h.n / 2));
+      if (on && on.hp <= 0) sfx("die");
+    }
+    if (b.mend.length) sfx("mend");
+  }
+
   function fit() {
     const l = computeLayout({
       innerWidth: window.innerWidth,
@@ -129,10 +189,12 @@ async function main() {
     ui.watch = null;
     ui.tnode = rootId;
     recenter();
+    seen = snap();
     save(g);
   }
 
   function onAct(a: Act) {
+    if (a.t !== "none") sfx(ACT_SFX[a.t] ?? "tap");
     switch (a.t) {
       case "node":
         ui.node = a.id;
@@ -219,6 +281,11 @@ async function main() {
       case "speed":
         ui.speed = SPEEDS[(SPEEDS.indexOf(ui.speed) + 1) % SPEEDS.length];
         break;
+      case "sound":
+        toggleSfx();
+        // Said after the switch, so turning it back on is something you hear
+        sfx("open");
+        break;
       default:
         break;
     }
@@ -232,6 +299,7 @@ async function main() {
   app.stage.eventMode = "static";
   app.stage.hitArea = app.screen;
   app.stage.on("pointerdown", (e: FederatedPointerEvent) => {
+    unlock();
     drag = { x: e.global.x, y: e.global.y, cam: { ...cam }, moved: false };
   });
   app.stage.on("globalpointermove", (e: FederatedPointerEvent) => {
@@ -263,7 +331,7 @@ async function main() {
   // of squinting at a picture of it
   // Cast because the project does not pull in vite's ambient types for one flag
   if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
-    Object.assign(window, { app, grid, run: () => g, ui, crt: crt.resources.crt.uniforms });
+    Object.assign(window, { app, grid, run: () => g, ui, hits, tap: onAct, crt: crt.resources.crt.uniforms });
   }
 
   window.addEventListener("resize", fit);
@@ -300,7 +368,10 @@ async function main() {
         ui.typed = 0;
       }
       if (ui.typed < LORE[id].body.length) {
+        const was = ui.typed;
         ui.typed += (t.deltaMS * TYPE_CPS) / 1000;
+        // Every other letter. One a letter is a machine gun.
+        if (Math.floor(ui.typed / 2) !== Math.floor(was / 2)) sfx("type");
         dirty = true;
       }
     } else {
@@ -321,6 +392,7 @@ async function main() {
       recenter();
       dirty = true;
     }
+    hear();
     if (!dirty) return;
     dirty = false;
     redraw();

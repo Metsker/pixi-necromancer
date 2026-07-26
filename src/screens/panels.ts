@@ -12,6 +12,7 @@ import {
   type GameState,
 } from "../sim/data.ts";
 import { bandOf, canOrder, canSend, heroForce, perks, reserve, squads, unitDmg } from "../sim/game.ts";
+import { sfxMuted } from "../sfx.ts";
 import { PATHS, PATH_IDS } from "../sim/tree.ts";
 import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
 import { drawTree } from "./tree.ts";
@@ -115,6 +116,7 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
           ...say(`dead ${g.lost}`, C.dim),
           { text: `lore ${g.seenLore.length}/${LORE.length}`, fg: C.dim },
           { text: "" },
+          { text: sfxMuted() ? "sound off" : "sound on", act: { t: "sound" } },
           { text: "restart run", act: { t: "restart" } },
           { text: "close", act: { t: "close" } },
         ],

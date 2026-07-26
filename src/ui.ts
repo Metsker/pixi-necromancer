@@ -53,6 +53,7 @@ export type Act =
   | { t: "mend" }
   | { t: "ok" }
   | { t: "speed" }
+  | { t: "sound" }
   | { t: "watch"; id: number }
   | { t: "reap"; id: number }
   | { t: "leave" }
