@@ -3,14 +3,16 @@ import { LORE } from "./lore.ts";
 import {
   BOSS_FOES,
   CREATURES,
-  EARLY_POOL,
   KIND_ROLL,
-  LATE_POOL,
   RESOURCES,
   RES_IDS,
   START_BAND,
   START_POOL,
   TUNING,
+  poolFor,
+  tierDmgFor,
+  tierGrow,
+  tierHpFor,
   type AbilityId,
   type Battle,
   type BattleUnit,
@@ -139,15 +141,14 @@ function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
   if (kind === "boss") return [...BOSS_FOES];
   // Rooms near the gate are small enough that an opening band has a real chance;
   // the deep ones are not
-  const grow = tier >= 4 ? 1 : 0;
+  const grow = tierGrow(tier);
   const base = TUNING.roomBase;
   // Never nothing: a room with no one in it is a room that wins itself
   const n = Math.max(
     1,
     kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow,
   );
-  const pool = tier < 3 ? EARLY_POOL : LATE_POOL;
-  return Array.from({ length: n }, () => pick(pool));
+  return Array.from({ length: n }, () => pick(poolFor(tier)));
 }
 
 // Cave-in: a cell can be missing, as long as nothing is cut off by its going.
@@ -301,7 +302,10 @@ export function routeTo(g: GameState, from: number, target: number): number[] | 
 export const powerOf = (n: MapNode) =>
   n.foes.reduce((sum, c) => {
     const t = CREATURES[c];
-    return sum + t.hp + n.tier * TUNING.tierHp + t.dmg * 6;
+    // A wall is worth what it actually costs to get through, not what its sheet
+    // says: nothing behind it can be touched until it is down
+    const soak = (t.hp + tierHpFor(n.tier)) * (t.ability === "bulwark" ? 2 : 1);
+    return sum + soak + (t.dmg + tierDmgFor(n.tier)) * 6;
   }, 0);
 
 export const threatOf = (n: MapNode): 0 | 1 | 2 => {
@@ -359,14 +363,22 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
     },
   },
   siphon: {
+    // Not a heal - a wisp has nothing to give but itself. It moves its own life
+    // into whoever is closest to falling and stops before it goes out, so a
+    // fight lasts exactly as long as the wisps in it can pay for. Standing
+    // behind a wall is what makes that worth doing: it turns life nothing is
+    // spending into life the wall is about to lose.
     onAttack: (s, _t, b) => {
       const hurt = living(b, s.faction)
-        .filter((u) => u.hp < u.maxHp)
+        .filter((u) => u.id !== s.id && u.hp < u.maxHp)
         .sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
       if (!hurt) return;
-      const back = Math.min(hurt.maxHp - hurt.hp, TUNING.siphonHeal);
+      const spare = Math.min(TUNING.siphonHeal, s.hp - TUNING.siphonFloor);
+      const back = Math.min(hurt.maxHp - hurt.hp, spare);
+      if (back <= 0) return;
+      s.hp -= back;
       hurt.hp += back;
-      if (back > 0) b.mend.push({ id: hurt.id, by: s.id, n: back });
+      b.mend.push({ id: hurt.id, by: s.id, n: back });
     },
   },
   rend: { bonus: (_s, t) => (t.hp * 2 <= t.maxHp ? TUNING.rendBonus : 0) },
@@ -539,9 +551,9 @@ function makeBattle(g: GameState): Battle {
       src: -1,
       creature: c,
       faction: "enemy",
-      hp: t.hp + n.tier * TUNING.tierHp,
-      maxHp: t.hp + n.tier * TUNING.tierHp,
-      dmg: t.dmg + (n.tier >= TUNING.tierDmgAt ? 1 : 0),
+      hp: t.hp + tierHpFor(n.tier),
+      maxHp: t.hp + tierHpFor(n.tier),
+      dmg: t.dmg + tierDmgFor(n.tier),
       slot,
       tier: 0,
       withered: 0,

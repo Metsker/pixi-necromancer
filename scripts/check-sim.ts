@@ -47,6 +47,8 @@ import {
   type Battle,
   type BattleUnit,
   type CreatureId,
+  tierDmgFor,
+  tierHpFor,
   type GameState,
 } from "../src/sim/data.ts";
 import { ARM_IDS, PERK_IDS, TREE, depthOf, linksOf, rootId, type ArmId } from "../src/sim/tree.ts";
@@ -525,14 +527,38 @@ ok("bulwark never fully blocks", ABILITIES.bulwark.taken!(unit({}), 1, battle([]
 }
 
 {
-  const me = unit({ id: 0, hp: 10, maxHp: 10 });
-  const hurt = unit({ id: 1, hp: 3, maxHp: 60 });
+  // A wisp does not make life, it moves its own. Nothing in a fight adds to what
+  // the army is holding - all a wisp changes is which body is holding it, which
+  // matters only because a wall is what the blows are landing on.
+  const me = unit({ id: 0, creature: "wisp", hp: 30, maxHp: 30 });
+  const hurt = unit({ id: 1, creature: "rat", hp: 3, maxHp: 60 });
   const bt = battle([me, hurt]);
+  const before = me.hp + hurt.hp;
   ABILITIES.siphon.onAttack!(me, unit({ faction: "enemy" }), bt);
-  ok("siphon heals the worst off", hurt.hp === 3 + TUNING.siphonHeal);
-  const brimming = unit({ id: 2, hp: 10, maxHp: 10 });
-  ABILITIES.siphon.onAttack!(me, unit({ faction: "enemy" }), battle([me, brimming]));
-  ok("and nothing goes over the top", brimming.hp === 10);
+  ok("a wisp gives to the worst off", hurt.hp === 3 + TUNING.siphonHeal);
+  ok("and it is its own life it gives", me.hp === 30 - TUNING.siphonHeal);
+  ok("so a fight never adds to the army", me.hp + hurt.hp === before);
+  ok("and it is reported like a blow", bt.mend.length === 1 && bt.mend[0].by === me.id);
+
+  // It gives until it is nearly out and then stops
+  const spent = unit({ id: 0, creature: "wisp", hp: TUNING.siphonFloor, maxHp: 30 });
+  const other = unit({ id: 1, creature: "rat", hp: 1, maxHp: 60 });
+  const dry = battle([spent, other]);
+  ABILITIES.siphon.onAttack!(spent, unit({ faction: "enemy" }), dry);
+  ok("a spent wisp gives nothing", other.hp === 1 && spent.hp === TUNING.siphonFloor);
+  ok("and a wisp never goes out mending", spent.hp > 0);
+
+  // ...and never into itself, or it is a heal again by another name
+  const alone = unit({ id: 0, creature: "wisp", hp: 20, maxHp: 30 });
+  const solo = battle([alone]);
+  ABILITIES.siphon.onAttack!(alone, unit({ faction: "enemy" }), solo);
+  ok("and never into itself", alone.hp === 20 && solo.mend.length === 0);
+
+  const giver = unit({ id: 0, creature: "wisp", hp: 30, maxHp: 30 });
+  const brimming = unit({ id: 2, creature: "rat", hp: 10, maxHp: 10 });
+  const full = battle([giver, brimming]);
+  ABILITIES.siphon.onAttack!(giver, unit({ faction: "enemy" }), full);
+  ok("and nothing goes over the top", brimming.hp === 10 && giver.hp === 30);
 }
 ok("rend only bites the wounded", ABILITIES.rend.bonus!(unit({}), unit({ hp: 10 }), battle([])) === 0);
 ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle([])) === TUNING.rendBonus);
@@ -847,13 +873,17 @@ function autoplay(seedValue: number, arm: ArmId | null = null) {
       while (mend(g)) {
         /* until the pool or the wounded run out */
       }
-      // What a body is worth to this run, not in the abstract: price says how
-      // big a thing is, and anything the tree has already paid for is worth
-      // more to whoever paid. Without that the bot measures one build and
-      // calls the other two weak.
       const P = perks(g);
-      const worth = (c: CreatureId) =>
-        CREATURES[c].mana + (c === "rat" ? P.ratDmg + P.swarmPer * 4 + P.ratHp / 4 : 0);
+      const worth = (c: CreatureId) => {
+        const t = CREATURES[c];
+        // The same arithmetic the map paints a room with: what it can take plus
+        // what it can give. Price says how big a thing is, not how much use it
+        // is - by price a Wisp is a Hound, and a bot that believes that fields
+        // six menders and calls the build weak.
+        const bulk = t.hp * (t.ability === "bulwark" ? 2 : 1);
+        const mine = c === "rat" ? P.ratHp + (P.ratDmg + P.swarmPer * 4) * 6 : 0;
+        return bulk + t.dmg * 6 + mine;
+      };
       // Best first, and it will unmake the least of them to make room
       for (const u of [...offered(g, b)].sort((x, z) => worth(z.creature) - worth(x.creature))) {
         if (g.mana < manaCost(g, u.creature)) continue;
@@ -948,9 +978,9 @@ for (const [id, t] of Object.entries(CREATURES)) {
         id: 100 + i,
         creature: c,
         faction: "enemy" as const,
-        hp: t.hp + tier * TUNING.tierHp,
-        maxHp: t.hp + tier * TUNING.tierHp,
-        dmg: t.dmg + (tier >= TUNING.tierDmgAt ? 1 : 0),
+        hp: t.hp + tierHpFor(tier),
+        maxHp: t.hp + tierHpFor(tier),
+        dmg: t.dmg + tierDmgFor(tier),
       });
     });
   const band = (list: CreatureId[]) =>

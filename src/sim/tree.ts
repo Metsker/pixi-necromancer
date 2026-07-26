@@ -76,20 +76,20 @@ const LAID: [number, number, ArmId | "", string, string, Partial<Perks>][] = [
   [3, 0, "swarm", "KING OF RATS", "+2 bodies, teeth", { slots: 2, swarmPer: 2, swarmCap: 10, riseLuck: 15 }],
 
   // Left and down: fewer of them, each one worth mending and worth hiding behind
-  [1, 2, "bond", "THE FEW", "all +3 dmg", { minionDmg: 3 }],
+  [1, 2, "bond", "THE FEW", "all +4 dmg", { minionDmg: 4 }],
   [0, 2, "bond", "GRIT", "mend the worst", { mend: 8 }],
-  [1, 3, "bond", "STONE SKIN", "walls +20 hp", { wallHp: 20 }],
-  [0, 3, "bond", "HARD YEARS", "+2 hp a room", { vetHp: 2 }],
+  [1, 3, "bond", "HARD YEARS", "+3 hp a room", { vetHp: 3 }],
+  [0, 3, "bond", "STONE SKIN", "walls +25 hp", { wallHp: 25 }],
   [1, 4, "bond", "UNBROKEN", "walls take -20%", { wallCut: 20 }],
   [0, 4, "bond", "THE PACK", "old bones bite", { vetDmg: 2, minionDmg: 3, packTaunt: 1 }],
 
   // Right and down: nothing of yours gets better, everything of theirs gets worse
-  [3, 2, "control", "DREAD", "they hit -10%", { dread: 10 }],
-  [4, 2, "control", "HEX", "+3 vs withered", { hexDmg: 3 }],
+  [3, 2, "control", "DREAD", "they hit -12%", { dread: 12 }],
+  [4, 2, "control", "MANA", "+6 asking", { manaPool: 6 }],
   [3, 3, "control", "DEEP WITHER", "wither cuts more", { witherPow: 15 }],
-  [4, 3, "control", "LONG WITHER", "wither holds +2", { witherLong: 2 }],
-  [3, 4, "control", "MANA", "+6 asking", { manaPool: 6 }],
-  [4, 4, "control", "THE HUSK", "it all withers", { witherAll: 1, dread: 6, hexDmg: 2 }],
+  [4, 3, "control", "THE HUSK", "it all withers", { witherAll: 1, witherLong: 2 }],
+  [3, 4, "control", "HEX", "+4 vs withered", { hexDmg: 4 }],
+  [4, 4, "control", "THE DARK", "the dark answers", { dread: 10, hexDmg: 4 }],
 ];
 
 export const TREE: TreeNode[] = LAID.map(([col, row, arm, name, note, gives], id) => ({

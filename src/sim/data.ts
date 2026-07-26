@@ -111,8 +111,8 @@ export const TUNING = {
   holeChance: 0.16,
   tiers: 6,
   // What a room is worth being afraid of, in the two places the bands change
-  threatMild: 150,
-  threatBad: 250,
+  threatMild: 200,
+  threatBad: 340,
 
   // Ticks. The clock runs at TICK_MS a tick, multiplied by the speed control.
   marchTicks: 5,
@@ -150,6 +150,9 @@ export const TUNING = {
   // ever makes a thing untouchable
   softCap: 45,
   siphonHeal: 5,
+  // What a wisp will not spend of itself. It gives until it is nearly out and
+  // then stops, so it burns down rather than going out mid-fight.
+  siphonFloor: 8,
   rendBonus: 6,
   tollDamage: 14,
   splitTiers: 1,
@@ -159,8 +162,7 @@ export const TUNING = {
   vetCap: 10,
 
   roomBase: 2,
-  tierHp: 3,
-  tierDmgAt: 4,
+  tierHp: 5,
   logLines: 40,
 };
 
@@ -186,15 +188,30 @@ export const CREATURES: Record<CreatureId, Template> = {
   rat:     { name: "Plague Rat",  short: "Rat",    role: "swarm",  glyph: "⚇", color: 15, hp: 22,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: "swarm",   tag: "+2 dmg per ally" },
   hound:   { name: "Grave Hound", short: "Hound",  role: "heavy",  glyph: "⋒", color: 14, hp: 30,  dmg: 13, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
   moth:    { name: "Grave Moth",  short: "Moth",   role: "hex",    glyph: "⫙", color: 16, hp: 26,  dmg: 6,  xp: 10, mana: 3, taunt: false, ability: "wither",  tag: "blunts their blows" },
-  wisp:    { name: "Corpse Wisp", short: "Wisp",   role: "mender", glyph: "◉", color: 21, hp: 28,  dmg: 4,  xp: 12, mana: 3, taunt: false, ability: "siphon",  tag: "mends the worst hurt" },
+  wisp:    { name: "Corpse Wisp", short: "Wisp",   role: "mender", glyph: "◉", color: 21, hp: 28,  dmg: 4,  xp: 12, mana: 3, taunt: false, ability: "siphon",  tag: "gives itself to the worst hurt" },
   knight:  { name: "Bone Knight", short: "Knight", role: "wall",   glyph: "⌤", color: 22, hp: 55,  dmg: 6,  xp: 16, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
   warden:  { name: "Tomb Warden", short: "Warden", role: "guard",  glyph: "⛨", color: 19, hp: 80,  dmg: 8,  xp: 20, mana: 5, taunt: true,  ability: "toll",    tag: "a wall, and hurts all when it falls" },
   ossuary: { name: "The Ossuary", short: "Ossuary",role: "the end",glyph: "⚱", color: 17, hp: 130, dmg: 15, xp: 60, mana: 0, taunt: false, ability: "split",   tag: "splits when broken" },
 };
 
 export const RAISABLE: CreatureId[] = ["rat", "hound", "knight", "moth", "wisp", "warden"];
+
+// Three bands, not two, so a wall arrives before both walls do. Every step out
+// from the gate changes exactly one of these: what is in the room, how many of
+// them, or how big they are - which is what makes distance readable.
 export const EARLY_POOL: CreatureId[] = ["rat", "rat", "hound", "moth", "wisp"];
+export const MID_POOL: CreatureId[] = ["rat", "hound", "moth", "moth", "wisp", "knight"];
 export const LATE_POOL: CreatureId[] = ["rat", "hound", "knight", "moth", "wisp", "warden"];
+export const poolFor = (tier: number) =>
+  tier < 2 ? EARLY_POOL : tier < 4 ? MID_POOL : LATE_POOL;
+
+// What depth is worth to a body standing in the room, and to its blow. Read by
+// the board that builds the fight and by the colour the map paints on it, or
+// the colour lies about the fight inside.
+export const tierHpFor = (tier: number) => tier * TUNING.tierHp;
+export const tierDmgFor = (tier: number) => Math.floor(tier / 2);
+// A room fills up as it gets further out, a step behind the pool it draws from
+export const tierGrow = (tier: number) => (tier >= 5 ? 2 : tier >= 3 ? 1 : 0);
 // What a run opens with is three different things out of this, so no roll ever
 // hands out a band with nothing in it that can kill
 export const START_POOL: CreatureId[] = ["rat", "hound", "moth", "wisp"];

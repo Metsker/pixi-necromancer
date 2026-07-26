@@ -244,7 +244,10 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 {
   const r = recorder(24, 52);
   const g = newGame(31313);
-  orderArmy(g, g.nodes.find((n) => n.state === "open")!.id);
+  // Two of them at least: this scans a board with a body still on the floor
+  // after one has been spoken for, and a crypt by the gate holds only one
+  const room = g.nodes.find((n) => n.state === "open" && n.foes.length >= 2)!;
+  orderArmy(g, room.id);
   advance(g, TUNING.marchTicks + 1);
   const b = g.battle!;
   // Hand it a finished fight with one of theirs already spoken for
