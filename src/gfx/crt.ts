@@ -13,6 +13,7 @@ uniform highp vec4 uInputClamp;
 
 uniform float uCurve;
 uniform float uScan;
+uniform float uLift;
 uniform float uPitch;
 uniform float uSplit;
 uniform float uVignette;
@@ -43,10 +44,19 @@ void main(void) {
   col.r = tap(uv + off).r;
   col.b = tap(uv - off).b;
 
-  // The beam skips rows, and the corners never get quite as bright.
-  // Premultiplied color, so dimming the whole vec4 keeps it consistent.
+  // The beam skips rows, and the corners never get quite as bright. Cubed, so a
+  // line is a thin dark one with lit glass either side of it rather than an even
+  // stripe. Premultiplied color, so dimming the whole vec4 keeps it consistent.
   float line = 0.5 + 0.5 * cos(uv.y * uOutputFrame.w / uPitch * 6.2831853);
-  finalColor = col * (1.0 - uScan * line) * (1.0 - uVignette * r2);
+  line = line * line * line;
+  col *= 1.0 - uScan * line;
+
+  // Dimming alone leaves no line at all over a dark room, since most of what
+  // this game draws is nearly black. The rows between the lines carry a little
+  // light of their own, which is what makes the lines show up on the dark.
+  col.rgb += uLift * (1.0 - line) * col.a;
+
+  finalColor = col * (1.0 - uVignette * r2);
 }
 `;
 
@@ -61,9 +71,10 @@ export const crtFilter = () =>
     resolution: "inherit",
     resources: {
       crt: new UniformGroup({
-        uCurve: { value: 0.06, type: "f32" },
-        uScan: { value: 0.22, type: "f32" },
-        uPitch: { value: 3, type: "f32" },
+        uCurve: { value: 0.012, type: "f32" },
+        uScan: { value: 0.6, type: "f32" },
+        uLift: { value: 0.06, type: "f32" },
+        uPitch: { value: 4, type: "f32" },
         uSplit: { value: 1, type: "f32" },
         uVignette: { value: 0.18, type: "f32" },
       }),
