@@ -81,7 +81,7 @@ export const tierForDist = (dist: number, far: number) =>
   clamp(Math.round(((dist - 1) * (TUNING.tiers - 1)) / Math.max(1, far - 1)), 0, TUNING.tiers - 1);
 
 function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
-  if (kind === "boss") return ["ossuary", "warden"];
+  if (kind === "boss") return ["ossuary", "warden", "knight"];
   // Rooms near the gate are small enough that a scouting pair has a real chance;
   // the deep ones are not
   const grow = tier >= 2 ? 1 : 0;

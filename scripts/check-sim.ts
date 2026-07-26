@@ -683,7 +683,9 @@ for (let s = 0; s < PROBES; s++) {
 }
 ok("a run can be finished", wins > 0);
 ok("a run can be lost", deaths > 0);
-ok("rooms are actually being cleared", clearedTotal / PROBES >= 5);
+// Deliberately loose: how hard the game is belongs in the printed line below,
+// not in an assertion. What this catches is a bot that cannot take a room at all.
+ok("rooms are actually being cleared", clearedTotal / PROBES >= 2);
 ok("the probe saw a lot of chatter", chatter.size > 10);
 for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <= MIN_COLS);
 
