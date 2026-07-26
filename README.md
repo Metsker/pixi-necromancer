@@ -16,7 +16,9 @@ is **locked** until something beside it is cleared, then it is **open**, then it
 is **cleared**. It is wider and taller than any phone, so you drag it around.
 
 You come in at the middle of it and it gets worse the further out you go. The
-Ossuary waits at whatever room stands furthest from the way in.
+Ossuary waits at whatever room stands furthest from the way in. A room you can
+still walk into is coloured by what is standing in it - pale, amber, red - while
+the brackets around it stay cool and only say whether you can reach it.
 
 Nothing waits for you. The clock runs at x1, x2 or x4, or you hold it, and any
 sheet you have to answer stops it by itself.

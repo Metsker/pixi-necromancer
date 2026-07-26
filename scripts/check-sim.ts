@@ -17,10 +17,12 @@ import {
   nearestOpen,
   newGame,
   orderHero,
+  powerOf,
   raise,
   reserve,
   routeTo,
   takeTurn,
+  threatOf,
   save,
   sendSquad,
   squads,
@@ -130,6 +132,30 @@ ok("different seeds differ", JSON.stringify(newGame(1000)) !== JSON.stringify(a)
     "but never past the cap",
     g.nodes.every((n) => n.foes.length <= Math.max(TUNING.foeCap, n.kind === "boss" ? 3 : 0)),
   );
+}
+
+{
+  // The colour on a room is what is standing in it, and all three show up
+  const seen = new Set<number>();
+  for (let seed = 0; seed < 20; seed++) {
+    const g = newGame(2200 + seed * 13);
+    for (const n of g.nodes) {
+      if (!n.foes.length) continue;
+      seen.add(threatOf(n));
+      ok(`seed ${seed}: threat is a band`, [0, 1, 2].includes(threatOf(n)));
+    }
+    const rooms = g.nodes.filter((n) => n.foes.length);
+    const worst = rooms.reduce((a, z) => (powerOf(z) > powerOf(a) ? z : a));
+    const softest = rooms.reduce((a, z) => (powerOf(z) < powerOf(a) ? z : a));
+    ok(`seed ${seed}: the worst room is not the softest`, threatOf(worst) >= threatOf(softest));
+  }
+  ok("all three colours turn up on the map", seen.size === 3);
+  // and it has to move when the room does
+  const g = newGame(4242);
+  const n = g.nodes.find((x) => x.foes.length)!;
+  const before = powerOf(n);
+  n.foes.push("warden");
+  ok("something moving in makes it worse", powerOf(n) > before);
 }
 
 // ---------------------------------------------------------------- routing

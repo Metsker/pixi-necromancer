@@ -11,7 +11,7 @@ import {
   type MapNode,
   type Point,
 } from "../sim/data.ts";
-import { canOrder, commandCap, forcesAt, heroUnit, reserve, xpNeeded } from "../sim/game.ts";
+import { canOrder, commandCap, forcesAt, heroUnit, reserve, threatOf, xpNeeded } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, buttons } from "../ui.ts";
 
 // log, status, resources; the button strip sits below it
@@ -22,6 +22,9 @@ export const ROOM_W = 6;
 export const ROOM_H = 4;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
+
+// Mild, bad, and do not walk in there
+const THREAT = [C.pale, C.gold, C.hot];
 
 export const viewRows = (rows: number) => Math.max(1, rows - HUD_ROWS - BTN_ROWS);
 
@@ -82,25 +85,29 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     const busy = here.some((f) => f.mode === "fight");
     const locked = n.state === "locked";
     const cleared = n.state === "cleared";
+    // The brackets say whether you can act on it and the glyph says how bad it
+    // is, so the brackets stay cool and the threat colours stay warm
     const frame = busy
       ? C.hot
       : locked
         ? C.frame
         : canOrder(g, n.id)
-          ? C.gold
+          ? C.cyan
           : cleared
             ? C.dim
             : C.mid;
     if (on(x - 1, y)) grid.put(x - 1, y, "(", frame, C.bg);
     if (on(x + 1, y)) grid.put(x + 1, y, ")", frame, C.bg);
     if (on(x, y)) {
-      grid.put(
-        x,
-        y,
-        locked ? "?" : KIND_GLYPH[n.kind],
-        locked ? C.frame : busy ? C.hot : cleared ? C.dim : C.ink,
-        C.bg,
-      );
+      // A room you can still walk into is coloured by what is waiting in it
+      const ink = locked
+        ? C.frame
+        : busy
+          ? C.hot
+          : cleared
+            ? C.dim
+            : THREAT[threatOf(n)];
+      grid.put(x, y, locked ? "?" : KIND_GLYPH[n.kind], ink, C.bg);
     }
     drawForces(grid, here, x, y + 1, on);
 

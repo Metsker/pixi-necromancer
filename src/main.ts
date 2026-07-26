@@ -52,7 +52,16 @@ async function main() {
   app.stage.addChild(grid.root);
 
   let g = load() ?? newGame(Math.floor(Math.random() * 1e9));
-  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null, typed: 0, loreId: null };
+  const ui: Ui = {
+    panel: "",
+    node: 0,
+    pick: [],
+    speed: 1,
+    watch: null,
+    unit: 0,
+    typed: 0,
+    loreId: null,
+  };
   const hits = new Hits();
   let cam: Point = { x: 0, y: 0 };
   let dirty = true;
@@ -144,6 +153,10 @@ async function main() {
         break;
       case "army":
         ui.panel = "army";
+        break;
+      case "inspect":
+        ui.unit = a.id;
+        ui.panel = "unit";
         break;
       case "menu":
         ui.panel = "menu";

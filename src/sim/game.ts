@@ -249,6 +249,20 @@ export function nearestOpen(g: GameState, from: number): number | null {
   return null;
 }
 
+// What is standing in a room, as one number: what it can take plus what it can
+// give. Three bands, because a map you have to read at a glance is a map with
+// three colours on it.
+export const powerOf = (n: MapNode) =>
+  n.foes.reduce((sum, c) => {
+    const t = CREATURES[c];
+    return sum + t.hp + n.tier * TUNING.tierHp + t.dmg * 6;
+  }, 0);
+
+export const threatOf = (n: MapNode): 0 | 1 | 2 => {
+  const p = powerOf(n);
+  return p < TUNING.threatMild ? 0 : p < TUNING.threatBad ? 1 : 2;
+};
+
 // ---------------------------------------------------------------- army
 
 // Raised bodies wait with the necromancer. They are not part of his fight -

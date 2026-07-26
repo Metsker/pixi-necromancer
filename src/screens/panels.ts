@@ -11,12 +11,12 @@ import {
   type GameState,
   type Stat,
 } from "../sim/data.ts";
-import { bandOf, canOrder, canSend, heroForce, reserve, squads } from "../sim/game.ts";
+import { bandOf, canOrder, canSend, heroDmg, heroForce, reserve, squads } from "../sim/game.ts";
 import { C, Hits, type Line, sheet, wrap } from "../ui.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
-export type PanelId = "" | "node" | "roster" | "army" | "menu" | "confirm";
+export type PanelId = "" | "node" | "roster" | "army" | "unit" | "menu" | "confirm";
 
 export type Ui = {
   panel: PanelId;
@@ -24,6 +24,7 @@ export type Ui = {
   pick: number[];
   speed: number;
   watch: number | null;
+  unit: number;
   // How much of the piece being read has arrived, and which piece that is
   typed: number;
   loreId: number | null;
@@ -35,6 +36,7 @@ export const PANELS: Shown[] = [
   "node",
   "roster",
   "army",
+  "unit",
   "menu",
   "confirm",
   "level",
@@ -81,6 +83,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
       return rosterSpec(g, ui, wide);
     case "army":
       return armySpec(g, wide);
+    case "unit":
+      return unitSpec(g, ui, wide);
     case "menu":
       return {
         title: "MENU",
@@ -220,6 +224,26 @@ function rosterSpec(g: GameState, ui: Ui, wide: number): Spec {
   return { title: "SEND SQUAD", minWidth: Math.min(wide, 16), lines };
 }
 
+// What a body is, on its own sheet, so the line in the list stays a line
+function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
+  const u = bandOf(g, heroForce(g)).find((o) => o.id === ui.unit);
+  if (!u) return { title: "GONE", minWidth: 0, lines: [{ text: "back", act: { t: "army" } }] };
+  const t = CREATURES[u.creature];
+  const pace = t.speed >= 5 ? "quick" : t.speed >= 3 ? "steady" : "slow";
+  return {
+    title: t.name.slice(0, wide),
+    minWidth: Math.min(wide, 16),
+    lines: [
+      { text: `${t.glyph} ${u.hp}/${u.maxHp}`, fg: C.ink },
+      { text: `hits for ${u.creature === "hero" ? heroDmg(g) : t.dmg}`, fg: C.mid },
+      { text: pace, fg: C.mid },
+      ...(t.tag ? [{ text: "" }, ...wrap(t.tag, wide).map((text) => ({ text, fg: C.dim }))] : []),
+      { text: "" },
+      { text: "back", act: { t: "army" } },
+    ],
+  };
+}
+
 function armySpec(g: GameState, wide: number): Spec {
   const lines: Line[] = [];
 
@@ -231,9 +255,9 @@ function armySpec(g: GameState, wide: number): Spec {
     lines.push({
       text: ` ${k + 1}.${t.glyph}${(you ? "You" : t.short).padEnd(6)}${u.hp}`,
       fg: you ? C.gold : C.mid,
+      act: { t: "inspect", id: u.id },
       tail: k > 0 ? { text: "▲", act: { t: "up", k } } : undefined,
     });
-    if (!you) for (const text of wrap(t.tag, wide - 4)) lines.push({ text: `    ${text}`, fg: C.dim });
   });
 
 

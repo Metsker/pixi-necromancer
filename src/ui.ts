@@ -39,6 +39,7 @@ export type Act =
   | { t: "squad" }
   | { t: "toggle"; id: number }
   | { t: "up"; k: number }
+  | { t: "inspect"; id: number }
   | { t: "send" }
   | { t: "menu" }
   | { t: "army" }

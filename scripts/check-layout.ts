@@ -4,9 +4,9 @@ import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
 import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
-import { advance, newGame, orderHero, raise, sendSquad } from "../src/sim/game.ts";
+import { advance, commandCap, newGame, orderHero, raise, sendSquad } from "../src/sim/game.ts";
 import { BTN_ROWS, C, Hits, cells } from "../src/ui.ts";
-import { TUNING } from "../src/sim/data.ts";
+import { RAISABLE, TUNING } from "../src/sim/data.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -78,6 +78,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     pick: g.reserve.map((u) => u.id),
     speed: 1,
     watch: null,
+    unit: g.reserve[0]?.id ?? 0,
     typed: 1e9,
     loreId: null,
   };
@@ -99,6 +100,36 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
       }
     }
   }
+}
+
+// Every creature gets its own sheet, and the longest name in the pack is what
+// decides whether that sheet fits
+{
+  const g = newGame(606);
+  for (const c of RAISABLE) {
+    g.reserve.length = 0;
+    raise(g, c);
+    const ui: Ui = {
+      panel: "unit",
+      node: 0,
+      pick: [],
+      speed: 1,
+      watch: null,
+      unit: g.reserve[0].id,
+      typed: 1e9,
+      loreId: null,
+    };
+    for (const cols of [MIN_COLS, 24, MAX_COLS]) {
+      const spec = panelSpec(g, ui, "unit", cols)!;
+      ok(`${c}/${cols}: its name fits`, cells(spec.title) <= cols - 4);
+      for (const l of spec.lines) ok(`${c}/${cols}: "${l.text}" fits`, cells(l.text) <= cols - 4);
+      ok(`${c}/${cols}: it says what it does`, spec.lines.some((l) => l.text.includes("hits for")));
+    }
+  }
+  // and the necromancer, who is not in the reserve
+  const ui: Ui = { panel: "unit", node: 0, pick: [], speed: 1, watch: null, unit: 0, typed: 1e9, loreId: null };
+  const his = panelSpec(g, ui, "unit", MIN_COLS)!;
+  ok("he has one too", his.title.length > 0 && his.lines.some((l) => l.text.includes("hits for")));
 }
 
 // The battle view draws through the same Grid surface the renderer does, so a
@@ -147,6 +178,11 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   const lit = drawn.filter((c) => c.bg === C.ink && c.ch !== " " && c.ch !== "║");
   ok("and it is behind the body, not over it", lit.length === 1);
   ok("the body is still legible in it", lit[0].fg === C.shade);
+
+  // What he has to hand is on the board too, because it is the number you spend
+  const row0 = Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},0`)?.ch ?? " ").join("");
+  ok("the board says how many he has", row0.includes(`${g.reserve.length}/${commandCap(g)}`));
+  ok("and marks it as bodies", row0.includes("†"));
 }
 
 // Anything the code draws has to exist in the sheet, or it renders as nothing at

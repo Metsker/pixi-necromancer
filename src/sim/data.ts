@@ -115,6 +115,9 @@ export const TUNING = {
   mapRows: 12,
   holeChance: 0.22,
   tiers: 6,
+  // What a room is worth being afraid of, in the two places the bands change
+  threatMild: 130,
+  threatBad: 205,
 
   // Ticks. The clock runs at TICK_MS a tick, multiplied by the speed control.
   marchTicks: 5,

@@ -8,7 +8,7 @@ import {
   type GameState,
   type Hit,
 } from "../sim/data.ts";
-import { hpFrac } from "../sim/game.ts";
+import { commandCap, hpFrac, reserve } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit in the roster
@@ -42,6 +42,10 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
       : "it is over"
     : `round ${b.round + 1}${f.kind === "hero" ? "" : ", squad"}`;
   grid.center(0, 1, cols, beat, b.done === "win" ? C.green : b.done ? C.red : C.frame);
+  // What he has to hand, in the corner, because it is the number you spend
+  const slots = `${reserve(g).length}/${commandCap(g)}`;
+  grid.put(cols - slots.length - 1, 0, "†", C.violet);
+  grid.text(cols - slots.length, 0, slots, C.mid);
 
   const ours = b.units.filter((u) => u.faction === "player");
   const theirs = b.units.filter((u) => u.faction === "enemy");
