@@ -4,7 +4,7 @@ import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
 import { PANELS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { LORE } from "../src/sim/lore.ts";
 import { advance, newGame, raise, sendSquad } from "../src/sim/game.ts";
-import { BTN_ROWS } from "../src/ui.ts";
+import { BTN_ROWS, cells } from "../src/ui.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -76,6 +76,8 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     pick: g.reserve.map((u) => u.id),
     speed: 1,
     watch: null,
+    typed: 1e9,
+    loreId: null,
   };
 
   for (const cols of [MIN_COLS, 20, 24, MAX_COLS]) {
@@ -86,9 +88,10 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
           g.nodes[1].state = state;
           const spec = panelSpec(g, ui, panel, cols);
           if (!spec) continue;
-          ok(`${panel}/${cols}: the title fits`, spec.title.length <= cols - 4);
+          ok(`${panel}/${cols}: the title fits`, cells(spec.title) <= cols - 4);
           for (const l of spec.lines) {
-            ok(`${panel}/${cols}: "${l.text}" fits`, l.text.length <= cols - 4);
+            const w = cells(l.text) + (l.tail ? cells(l.tail.text) + 1 : 0);
+            ok(`${panel}/${cols}: "${l.text}" fits`, w <= cols - 4);
           }
         }
       }

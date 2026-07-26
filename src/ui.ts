@@ -26,6 +26,11 @@ export const C = {
 
 export const BTN_ROWS = 2;
 
+// Cells a string takes on the grid. Not s.length: the necromancer's own glyph
+// is astral, and counting it as two would push every line it appears on over.
+export const cells = (s: string) => [...s].length;
+export const cut = (s: string, n: number) => [...s].slice(0, Math.max(0, n)).join("");
+
 export type Act =
   | { t: "none" }
   | { t: "node"; id: number }
@@ -33,6 +38,7 @@ export type Act =
   | { t: "order" }
   | { t: "squad" }
   | { t: "toggle"; id: number }
+  | { t: "up"; k: number }
   | { t: "send" }
   | { t: "menu" }
   | { t: "army" }
@@ -124,10 +130,12 @@ export function box(grid: Grid, x: number, y: number, w: number, h: number) {
   grid.put(x + w - 1, y + h - 1, "┘", C.frame);
 }
 
-export type Line = { text: string; act?: Act; fg?: number };
+// `tail` is a second, narrow target at the right end of a line - the arrow that
+// moves a unit up the order without stealing the tap that selects it
+export type Line = { text: string; act?: Act; fg?: number; tail?: { text: string; act: Act } };
 
 // A line you can tap gets two rows, so a thumb has something to land on
-const rowsFor = (l: Line) => (l.act ? 2 : 1);
+const rowsFor = (l: Line) => (l.act || l.tail ? 2 : 1);
 
 export function sheet(
   grid: Grid,
@@ -146,7 +154,12 @@ export function sheet(
     keep.splice(i, 1);
   }
 
-  const want = Math.max(minWidth, title.length, ...keep.map((l) => l.text.length)) + 4;
+  const want =
+    Math.max(
+      minWidth,
+      cells(title),
+      ...keep.map((l) => cells(l.text) + (l.tail ? cells(l.tail.text) + 1 : 0)),
+    ) + 4;
   const w = Math.min(grid.cols, want);
   const h = Math.min(grid.rows, body + 4);
   const x = Math.max(0, (grid.cols - w) >> 1);
@@ -162,8 +175,14 @@ export function sheet(
   for (const l of keep) {
     const tall = rowsFor(l);
     if (ly + tall > y + h - 1) break;
-    grid.text(x + 2, ly, l.text.slice(0, w - 3), l.fg ?? (l.act ? C.ink : C.dim));
+    const room = w - 3 - (l.tail ? cells(l.tail.text) + 1 : 0);
+    grid.text(x + 2, ly, cut(l.text, room), l.fg ?? (l.act ? C.ink : C.dim));
     if (l.act) hits.add(x, ly, w, tall, l.act);
+    if (l.tail) {
+      const at = x + w - 1 - cells(l.tail.text);
+      grid.text(at, ly, l.tail.text, C.gold);
+      hits.add(at - 1, ly, cells(l.tail.text) + 2, tall, l.tail.act);
+    }
     ly += tall;
   }
   return { x, y, w, h };

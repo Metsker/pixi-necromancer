@@ -16,7 +16,7 @@ export type CreatureId =
 export type NodeKind = "gate" | "fight" | "elite" | "crypt" | "cache" | "boss";
 export type NodeState = "locked" | "open" | "cleared";
 export type ForceKind = "hero" | "squad";
-export type ForceMode = "idle" | "march" | "fight" | "gone";
+export type ForceMode = "idle" | "march" | "fight" | "spoils" | "gone";
 
 export type Unit = { id: number; creature: CreatureId; hp: number; maxHp: number };
 
@@ -32,6 +32,7 @@ export type BattleUnit = {
   maxHp: number;
   dmg: number;
   speed: number;
+  slot: number; // place in its own line, front first
   tier: number;
   withered: number;
 };
@@ -43,6 +44,10 @@ export type Battle = {
   node: number;
   units: BattleUnit[];
   hit: Hit[];
+  // Whose line swings first this fight, decided on the way in
+  lead: Faction;
+  order: number[];
+  turn: number;
   round: number;
   log: string[];
   done: "" | "win" | "loss";
@@ -82,6 +87,7 @@ export type GameState = {
   nodes: MapNode[];
   forces: Force[];
   reserve: Unit[];
+  front: number; // how many of the reserve stand ahead of the necromancer
   nextForce: number;
   nextUnit: number;
   xp: number;
@@ -106,9 +112,10 @@ export const TUNING = {
 
   // Ticks. The clock runs at TICK_MS a tick, multiplied by the speed control.
   marchTicks: 9,
-  roundTicks: 7,
+  turnTicks: 2,
+  spoilsTicks: 34,
   idlePoll: 10,
-  maxRounds: 140,
+  maxRounds: 60,
 
   heroHp: 90,
   heroDmg: 8,
@@ -127,6 +134,7 @@ export const TUNING = {
   raiseChance: 0.9,
   squadXpCut: 1,
   reinforceEvery: 260,
+  reinforceAfter: 700,
   riseTicks: 60,
   foeCap: 7,
 

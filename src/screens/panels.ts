@@ -11,8 +11,10 @@ import {
   type GameState,
   type Stat,
 } from "../sim/data.ts";
-import { canOrder, canSend, commandCap, heroForce, heroUnit, reserve, squads } from "../sim/game.ts";
+import { bandOf, canOrder, canSend, heroForce, reserve, squads } from "../sim/game.ts";
 import { C, Hits, type Line, sheet, wrap } from "../ui.ts";
+
+const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
 export type PanelId = "" | "node" | "roster" | "army" | "menu" | "confirm";
 
@@ -22,6 +24,9 @@ export type Ui = {
   pick: number[];
   speed: number;
   watch: number | null;
+  // How much of the piece being read has arrived, and which piece that is
+  typed: number;
+  loreId: number | null;
 };
 
 export type Shown = PanelId | "level" | "lore" | "over";
@@ -115,10 +120,17 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
       };
     case "lore": {
       const piece = LORE[g.loreQueue[0] ?? 0];
+      // Wrapped whole and then revealed, so the lines do not reflow as it types
+      let left = ui.typed;
+      const body = wrap(piece.body, wide).map((line) => {
+        const take = clamp(left, 0, line.length);
+        left -= line.length;
+        return { text: line.slice(0, take), fg: C.mid };
+      });
       return {
         title: piece.title.slice(0, wide),
         minWidth: wide,
-        lines: [...say(piece.body, C.mid), { text: "" }, { text: "continue", act: { t: "ok" } }],
+        lines: [...body, { text: "" }, { text: "continue", act: { t: "ok" } }],
       };
     }
     case "over":
@@ -185,6 +197,8 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   };
 }
 
+// You pick them in the order they will stand in, so the number beside a name is
+// its place in the line and the first one you tap is the one that gets hit.
 function rosterSpec(g: GameState, ui: Ui, wide: number): Spec {
   const lines: Line[] = [];
   const troop = reserve(g);
@@ -192,11 +206,11 @@ function rosterSpec(g: GameState, ui: Ui, wide: number): Spec {
 
   for (const u of troop) {
     const t = CREATURES[u.creature];
-    const on = ui.pick.includes(u.id);
+    const at = ui.pick.indexOf(u.id);
     lines.push({
-      text: `${on ? "►" : " "}${t.glyph}${t.short.padEnd(7)}${u.hp}/${u.maxHp}`.slice(0, wide),
+      text: `${at < 0 ? "  " : `${at + 1}.`}${t.glyph}${t.short.padEnd(6)}${u.hp}`,
       act: { t: "toggle", id: u.id },
-      fg: on ? C.gold : C.mid,
+      fg: at < 0 ? C.mid : C.gold,
     });
   }
 
@@ -208,19 +222,20 @@ function rosterSpec(g: GameState, ui: Ui, wide: number): Spec {
 
 function armySpec(g: GameState, wide: number): Spec {
   const lines: Line[] = [];
-  const h = heroUnit(g);
-  if (h) {
-    lines.push({
-      text: `${CREATURES.hero.glyph}${"You".padEnd(7)}${h.hp}/${h.maxHp}`,
-      fg: C.gold,
-    });
-  }
-  for (const u of reserve(g)) {
+
+  // The line as it will stand, the necromancer included. He can be moved back
+  // behind something sturdier, which is most of what the ordering is for.
+  bandOf(g, heroForce(g)).forEach((u, k) => {
     const t = CREATURES[u.creature];
-    lines.push({ text: `${t.glyph}${t.short.padEnd(7)}${u.hp}/${u.maxHp}`, fg: C.mid });
-    for (const text of wrap(t.tag, wide - 2)) lines.push({ text: `  ${text}`, fg: C.dim });
-  }
-  lines.push({ text: `slots ${reserve(g).length}/${commandCap(g)}`, fg: C.dim });
+    const you = u.creature === "hero";
+    lines.push({
+      text: ` ${k + 1}.${t.glyph}${(you ? "You" : t.short).padEnd(6)}${u.hp}`,
+      fg: you ? C.gold : C.mid,
+      tail: k > 0 ? { text: "▲", act: { t: "up", k } } : undefined,
+    });
+    if (!you) for (const text of wrap(t.tag, wide - 4)) lines.push({ text: `    ${text}`, fg: C.dim });
+  });
+
 
   const out = squads(g);
   if (out.length) {

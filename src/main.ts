@@ -5,12 +5,14 @@ import { computeLayout } from "./layout.ts";
 import { drawBattle } from "./screens/battle.ts";
 import { centerOn, clampCam, drawMap } from "./screens/map.ts";
 import { drawPanel, shownPanel, type Ui } from "./screens/panels.ts";
+import { LORE } from "./sim/lore.ts";
 import type { Point } from "./sim/data.ts";
 import {
   advance,
   chooseStat,
   clearSave,
   load,
+  moveUp,
   newGame,
   orderHero,
   save,
@@ -24,6 +26,8 @@ const SPEEDS = [1, 2, 4, 0];
 // A finger never holds perfectly still, so a tap is allowed to wander this far
 const DRAG_SLOP = 10;
 const SAVE_EVERY = 4000;
+// Characters a second for a piece of the story arriving on screen
+const TYPE_CPS = 42;
 
 const host = document.getElementById("stage")!;
 const safe = document.getElementById("safe")!;
@@ -48,7 +52,7 @@ async function main() {
   app.stage.addChild(grid.root);
 
   let g = load() ?? newGame(Math.floor(Math.random() * 1e9));
-  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null };
+  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null, typed: 0, loreId: null };
   const hits = new Hits();
   let cam: Point = { x: 0, y: 0 };
   let dirty = true;
@@ -65,7 +69,7 @@ async function main() {
   const watched = () => {
     if (ui.watch === null) return null;
     const f = g.forces.find((o) => o.id === ui.watch);
-    return f && f.mode === "fight" && f.battle ? f : null;
+    return f && (f.mode === "fight" || f.mode === "spoils") && f.battle ? f : null;
   };
 
   function fit() {
@@ -118,6 +122,9 @@ async function main() {
         ui.pick = [];
         ui.panel = "roster";
         break;
+      case "up":
+        moveUp(g, a.k);
+        break;
       case "toggle":
         ui.pick = ui.pick.includes(a.id) ? ui.pick.filter((i) => i !== a.id) : [...ui.pick, a.id];
         break;
@@ -154,7 +161,9 @@ async function main() {
         chooseStat(g, a.s);
         break;
       case "ok":
-        g.loreQueue.shift();
+        // A tap while it is still arriving brings the rest of it at once
+        if (ui.loreId !== null && ui.typed < LORE[ui.loreId].body.length) ui.typed = 1e9;
+        else g.loreQueue.shift();
         break;
       case "speed":
         ui.speed = SPEEDS[(SPEEDS.indexOf(ui.speed) + 1) % SPEEDS.length];
@@ -221,6 +230,22 @@ async function main() {
       }
     } else {
       owed = 0;
+    }
+    // The story arrives a letter at a time, on its own clock, because the game
+    // clock is stopped while you are reading it
+    const showing = shownPanel(g, ui);
+    if (showing === "lore") {
+      const id = g.loreQueue[0];
+      if (ui.loreId !== id) {
+        ui.loreId = id;
+        ui.typed = 0;
+      }
+      if (ui.typed < LORE[id].body.length) {
+        ui.typed += (t.deltaMS * TYPE_CPS) / 1000;
+        dirty = true;
+      }
+    } else {
+      ui.loreId = null;
     }
     // A room he walks into himself is a room you are shown. Only on the edge,
     // so leaving the fight does not immediately drag you back into it.

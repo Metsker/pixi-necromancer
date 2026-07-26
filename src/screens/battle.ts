@@ -26,23 +26,28 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   const rightW = cols - half - 1;
 
   grid.center(0, 0, cols, KIND_NAME[n.kind], C.gold);
-  grid.center(
-    0,
-    1,
-    cols,
-    f.kind === "hero" ? `round ${b.round}` : `squad, round ${b.round}`,
-    C.frame,
-  );
+  const beat = b.done
+    ? b.done === "win"
+      ? "the room is yours"
+      : "it is over"
+    : `round ${b.round + 1}${f.kind === "hero" ? "" : ", squad"}`;
+  grid.center(0, 1, cols, beat, b.done === "win" ? C.green : b.done ? C.red : C.frame);
 
   const ours = b.units.filter((u) => u.faction === "player");
   const theirs = b.units.filter((u) => u.faction === "enemy");
   const pairs = Math.max(ours.length, theirs.length);
 
-  // Ticks since this round's blows landed. Seven of them to a round, which is
-  // enough to swing, connect and step back.
-  const age = clamp(TUNING.roundTicks - (f.next - g.time), 0, TUNING.roundTicks);
-  const swing = age <= 1 ? LUNGE : age <= 2 ? 1 : 0;
-  const landing = age <= 2 ? b.hit : [];
+  // Ticks since this blow landed. One unit swings per turn, so the whole beat is
+  // the swing: step in, connect, and it is somebody else's turn.
+  const age = clamp(TUNING.turnTicks - (f.next - g.time), 0, TUNING.turnTicks);
+  const spoils = f.mode === "spoils";
+  const swing = spoils ? 0 : age < 1 ? LUNGE : 1;
+  const landing = spoils ? [] : b.hit;
+  // How far through the beat after the fight, which is when the dead get up
+  const rising =
+    spoils && g.risen && g.risen.node === b.node
+      ? clamp(1 - (f.next - g.time) / TUNING.spoilsTicks, 0, 1)
+      : 0;
 
   // The arena is sized to what stands in it. A taller box would only be a void,
   // so the slack goes to the log, which fills as the fight goes on.
@@ -58,6 +63,7 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   let y = head;
   if (arena) {
     drawArena(grid, ours, theirs, y, arena, cols, landing, swing);
+    if (rising) drawRising(grid, g, y, arena, cols, rising);
     y += arena;
   }
   for (let x = 0; x < cols; x++) grid.put(x, y, "─", C.frame);
@@ -129,6 +135,33 @@ function drawArena(
   };
   line(ours, 1);
   line(theirs, -1);
+}
+
+// The one thing worth stopping the board for. What he killed climbs back up on
+// his side of the room, and the room says whose they are now.
+function drawRising(
+  grid: Grid,
+  g: GameState,
+  top: number,
+  h: number,
+  cols: number,
+  progress: number,
+) {
+  const risen = g.risen!;
+  const mid = cols >> 1;
+  const ground = top + h - 1;
+  const lift = Math.min(h - 2, 1 + Math.floor(progress * 3));
+  const tone = progress < 0.7 ? C.green : C.dim;
+
+  risen.creatures.slice(0, 5).forEach((c, i) => {
+    const x = mid - 2 - i * 2;
+    const y = ground - lift;
+    if (y > top && x > 0) grid.put(x, y, CREATURES[c].glyph, tone, C.bg);
+  });
+
+  const names = [...new Set(risen.creatures.map((c) => CREATURES[c].short.toUpperCase()))];
+  const word = `${names.join(" ")} ${risen.creatures.length > 1 ? "RISE" : "RISES"}`;
+  grid.center(0, top + 1, cols, word.slice(0, cols), tone, C.shade);
 }
 
 // Names hug the outside edge and blows land against the divider, so damage

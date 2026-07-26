@@ -28,7 +28,16 @@ its piece of the story until he goes through it himself.
 
 A fight of your own opens on screen by itself: two ranks facing off across a
 dark room, stepping in to swing and knocked back when a blow lands, with the
-health of both sides under them.
+health of both sides under them. It is taken **one blow at a time**, down both
+lines in speed order, and a toss on the way in decides which side opens.
+
+**Order is the tactic.** Whoever stands at the front of a line is what the other
+side hits, and the army sheet numbers your line so you can see it: tap the arrow
+to move somebody up, including the necromancer, who is happy to stand behind a
+bone knight. A squad stands in the order you tapped it - first tapped, first hit.
+
+When the room falls the board stays up for a beat, and that beat is where the
+dead get up.
 
 Point a squad at any open room and it goes. It fights, and if it wins it walks
 to the nearest room still worth taking and fights again, until there is nothing

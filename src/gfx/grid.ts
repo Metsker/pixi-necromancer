@@ -83,13 +83,14 @@ export class Grid {
     for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.put(x + i, y + j, " ", bg, bg);
   }
 
+  // Walked as code points, not code units: half a surrogate pair is not a glyph
   text(x: number, y: number, s: string, fg: number, bg?: number) {
-    for (let i = 0; i < s.length; i++) this.put(x + i, y, s[i], fg, bg);
+    [...s].forEach((ch, i) => this.put(x + i, y, ch, fg, bg));
   }
 
   center(x: number, y: number, w: number, s: string, fg: number, bg?: number) {
-    const t = s.slice(0, w);
-    this.text(x + Math.max(0, (w - t.length) >> 1), y, t, fg, bg);
+    const t = [...s].slice(0, w);
+    this.text(x + Math.max(0, (w - t.length) >> 1), y, t.join(""), fg, bg);
   }
 
   flush() {

@@ -38,8 +38,29 @@ export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp
 // Everyone who walks in with him: whatever he has not sent away. The reserve is
 // his retinue when he fights and the pool a squad is drawn from when he does
 // not - it cannot be both at once, which is why nothing detaches mid-room.
-export const bandOf = (g: GameState, f: Force): Unit[] =>
-  f.kind === "hero" ? [...f.units, ...g.reserve] : f.units;
+// The line he walks in with, in the order they stand. He is not pinned to the
+// front of it: put a knight there instead and the knight is what gets hit.
+export const bandOf = (g: GameState, f: Force): Unit[] => {
+  if (f.kind !== "hero") return f.units;
+  const at = clamp(g.front, 0, g.reserve.length);
+  return [...g.reserve.slice(0, at), ...f.units, ...g.reserve.slice(at)];
+};
+
+// Move whoever stands at `k` one place up the line
+export function moveUp(g: GameState, k: number) {
+  const at = clamp(g.front, 0, g.reserve.length);
+  if (k <= 0 || k > g.reserve.length) return;
+  if (k === at) {
+    g.front = at - 1;
+    return;
+  }
+  if (k === at + 1) {
+    g.front = at + 1;
+    return;
+  }
+  const i = k < at ? k : k - 1;
+  [g.reserve[i - 1], g.reserve[i]] = [g.reserve[i], g.reserve[i - 1]];
+}
 
 export function log(g: GameState, line: string) {
   g.log.push(line);
@@ -311,6 +332,7 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
           maxHp: Math.ceil(s.maxHp / 2),
           dmg: Math.max(1, Math.floor(s.dmg * 0.6)),
           speed: CREATURES[s.creature].speed,
+          slot: s.slot,
           tier: s.tier + 1,
           withered: 0,
         });
@@ -350,27 +372,50 @@ function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   hooks(a).onAttack?.(a, d, b);
 }
 
-// Your side is commanded and focuses the nearest thing to dead; theirs is not
-// commanded by anybody and swings at whatever is in front of it
-function targetFor(b: Battle, u: BattleUnit): BattleUnit | undefined {
-  const foes = living(b, u.faction === "player" ? "enemy" : "player");
-  if (!foes.length) return undefined;
-  if (u.faction === "enemy") return foes[Math.floor(rnd() * foes.length)];
-  return foes.sort((a, z) => a.hp - z.hp || a.id - z.id)[0];
+// Whoever is standing at the head of the other line. Order is the tactic here:
+// what you put first is what gets hit, and ids run front to back.
+function frontOf(b: Battle, side: BattleUnit["faction"]): BattleUnit | undefined {
+  return living(b, side).sort((a, z) => a.slot - z.slot || a.id - z.id)[0];
 }
 
-export function round(b: Battle) {
+// One round is one pass down both lines, fastest first. Ties go to whichever
+// side won the toss on the way in, so the first blow is not always yours.
+export function orderFor(b: Battle): number[] {
+  const lead = b.lead;
+  return living(b, "player")
+    .concat(living(b, "enemy"))
+    .sort(
+      (a, z) =>
+        z.speed - a.speed ||
+        (a.faction === lead ? 0 : 1) - (z.faction === lead ? 0 : 1) ||
+        a.slot - z.slot ||
+        a.id - z.id,
+    )
+    .map((u) => u.id);
+}
+
+// One unit swings, and that is the whole tick. Watching a fight is watching the
+// line take its turns rather than a whole round landing at once.
+export function takeTurn(b: Battle) {
   if (b.done) return;
   b.hit = [];
-  const order = [...b.units].sort((a, z) => z.speed - a.speed || a.id - z.id);
-  for (const u of order) {
-    if (u.hp <= 0) continue;
-    const foe = targetFor(b, u);
+  let guard = b.units.length * 2 + 4;
+  while (guard-- > 0) {
+    if (b.turn >= b.order.length) {
+      b.round += 1;
+      b.order = orderFor(b);
+      b.turn = 0;
+      if (!b.order.length) break;
+    }
+    const u = b.units.find((o) => o.id === b.order[b.turn]);
+    b.turn += 1;
+    if (!u || u.hp <= 0) continue;
+    const foe = frontOf(b, u.faction === "player" ? "enemy" : "player");
     if (!foe) break;
     strike(b, u, foe);
     if (u.withered > 0) u.withered -= 1;
+    break;
   }
-  b.round += 1;
   if (!living(b, "enemy").length) b.done = "win";
   else if (!living(b, "player").length) b.done = "loss";
   // A fight that will not end is a fight you lost slowly
@@ -378,19 +423,31 @@ export function round(b: Battle) {
 }
 
 export function fight(b: Battle) {
-  let guard = TUNING.maxRounds + 2;
-  while (!b.done && guard-- > 0) round(b);
+  let guard = TUNING.maxRounds * (b.units.length + 4) + 16;
+  while (!b.done && guard-- > 0) takeTurn(b);
 }
 
 function makeBattle(g: GameState, f: Force): Battle {
   const n = g.nodes[f.at];
-  const b: Battle = { node: f.at, units: [], hit: [], round: 0, log: [], done: "", nextId: 0 };
+  const b: Battle = {
+    node: f.at,
+    units: [],
+    hit: [],
+    lead: rnd() < 0.5 ? "player" : "enemy",
+    order: [],
+    turn: 0,
+    round: 0,
+    log: [],
+    done: "",
+    nextId: 0,
+  };
 
-  for (const u of bandOf(g, f)) {
+  bandOf(g, f).forEach((u, slot) => {
     const t = CREATURES[u.creature];
     b.units.push({
       id: b.nextId++,
       src: u.id,
+      slot,
       creature: u.creature,
       faction: "player",
       hp: u.hp,
@@ -400,8 +457,8 @@ function makeBattle(g: GameState, f: Force): Battle {
       tier: 0,
       withered: 0,
     });
-  }
-  for (const c of n.foes) {
+  });
+  n.foes.forEach((c, slot) => {
     const t = CREATURES[c];
     b.units.push({
       id: b.nextId++,
@@ -412,11 +469,14 @@ function makeBattle(g: GameState, f: Force): Battle {
       maxHp: t.hp + n.tier * TUNING.tierHp,
       dmg: t.dmg + (n.tier >= TUNING.tierDmgAt ? 1 : 0),
       speed: t.speed,
+      slot,
       tier: 0,
       withered: 0,
     });
-  }
+  });
+  b.order = orderFor(b);
   blog(b, f.kind === "hero" ? "You step in." : "They go in.");
+  blog(b, b.lead === "player" ? "You swing first." : "They swing first.");
   return b;
 }
 
@@ -448,7 +508,10 @@ export function orderHero(g: GameState, id: number): boolean {
 export function sendSquad(g: GameState, id: number, unitIds: number[]): boolean {
   const hero = heroForce(g);
   if (!canSend(g, id)) return false;
-  const picked = g.reserve.filter((u) => unitIds.includes(u.id));
+  // The order you picked them in is the order they stand in
+  const picked = unitIds
+    .map((id) => g.reserve.find((u) => u.id === id))
+    .filter((u): u is Unit => u !== undefined);
   if (!picked.length) return false;
   const path = routeTo(g, hero.at, id);
   if (!path || !path.length) return false;
@@ -477,20 +540,22 @@ export function advance(g: GameState, ticks: number) {
 
 function step(g: GameState) {
   g.time += 1;
-  if (g.time % TUNING.reinforceEvery === 0) reinforce(g);
+  if (g.time > TUNING.reinforceAfter && g.time % TUNING.reinforceEvery === 0) reinforce(g);
   // A copy, because a squad can be cut loose or wiped while the list is walked
   for (const f of [...g.forces]) {
     if (g.over) return;
     if (f.mode === "gone" || g.time < f.next) continue;
     if (f.mode === "march") march(g, f);
-    else if (f.mode === "fight") fightRound(g, f);
+    else if (f.mode === "fight") fightTurn(g, f);
+    else if (f.mode === "spoils") finish(g, f);
     else if (f.mode === "idle" && f.kind === "squad") retarget(g, f);
   }
   g.rng = rngState();
 }
 
 // A room you leave standing does not stay the size you found it. This is the
-// only clock pressure there is, and it is what makes a squad worth spending.
+// only clock pressure there is - after a grace period, because losing the first
+// room you walk into to something that moved in behind you is not pressure.
 function reinforce(g: GameState) {
   const idle = g.nodes.filter(
     (n) => n.state === "open" && n.kind !== "boss" && n.foes.length < TUNING.foeCap,
@@ -513,7 +578,7 @@ function arrive(g: GameState, f: Force) {
   if (g.nodes[f.at].state === "open") {
     f.battle = makeBattle(g, f);
     f.mode = "fight";
-    f.next = g.time + TUNING.roundTicks;
+    f.next = g.time + TUNING.turnTicks;
     return;
   }
   f.mode = "idle";
@@ -534,14 +599,11 @@ function retarget(g: GameState, f: Force) {
   f.next = g.time + TUNING.marchTicks;
 }
 
-function fightRound(g: GameState, f: Force) {
+function fightTurn(g: GameState, f: Force) {
   const b = f.battle!;
-  round(b);
-  if (!b.done) {
-    f.next = g.time + TUNING.roundTicks;
-    return;
-  }
-  settle(g, f, b);
+  takeTurn(b);
+  f.next = g.time + TUNING.turnTicks;
+  if (b.done) settle(g, f, b);
 }
 
 function settle(g: GameState, f: Force, b: Battle) {
@@ -553,14 +615,17 @@ function settle(g: GameState, f: Force, b: Battle) {
   f.units = f.units.filter((u) => alive.has(u.id));
   if (f.kind === "hero") g.reserve = g.reserve.filter((u) => alive.has(u.id));
   for (const u of bandOf(g, f)) u.hp = alive.get(u.id)!;
-  f.battle = null;
+
+  // The board stays up for a beat afterwards. That beat is where the dead get
+  // up, which is the one thing in this game worth stopping to watch.
+  f.mode = "spoils";
+  f.next = g.time + TUNING.spoilsTicks;
 
   if (b.done === "loss") {
     if (f.kind === "hero") {
       g.over = "dead";
       log(g, "The dark has you.");
     } else {
-      f.mode = "gone";
       f.units = [];
       log(g, "A squad is lost.");
     }
@@ -570,22 +635,12 @@ function settle(g: GameState, f: Force, b: Battle) {
   const n = g.nodes[b.node];
   clearRoom(g, f, b, n);
   f.rooms += 1;
-  // Whoever took it, the Ossuary falling is the end of the run
   if (n.kind === "boss") {
     g.over = "won";
     log(g, "It is finished.");
     return;
   }
-
-  if (f.kind !== "hero") {
-    if (!f.units.length) {
-      f.mode = "gone";
-      log(g, "A squad is spent.");
-      return;
-    }
-    retarget(g, f);
-    return;
-  }
+  if (f.kind !== "hero") return;
 
   const h = heroUnit(g);
   if (!h) {
@@ -595,9 +650,26 @@ function settle(g: GameState, f: Force, b: Battle) {
   }
   h.hp = Math.min(h.maxHp, h.hp + TUNING.restHeal);
   for (const m of g.reserve) m.hp = Math.min(m.maxHp, m.hp + TUNING.restHeal);
+}
+
+// The beat is over: put the board away and get on with it
+function finish(g: GameState, f: Force) {
+  const b = f.battle;
+  f.battle = null;
+  if (!b || b.done === "loss" || (f.kind === "squad" && !f.units.length)) {
+    if (f.kind === "squad") {
+      f.mode = "gone";
+      if (b && b.done !== "loss") log(g, "A squad is spent.");
+    }
+    return;
+  }
+  if (f.kind === "squad") {
+    retarget(g, f);
+    return;
+  }
   f.mode = "idle";
   f.next = g.time + TUNING.idlePoll;
-  readLore(g, n);
+  readLore(g, g.nodes[b.node]);
 }
 
 function loot(n: MapNode): Record<Resource, number> {
@@ -660,6 +732,7 @@ export function newGame(seedValue: number): GameState {
     nodes: [],
     forces: [],
     reserve: [],
+    front: 0,
     nextForce: 1,
     nextUnit: 1,
     xp: 0,
@@ -698,11 +771,11 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
-  "seed", "rng", "time", "nodes", "forces", "reserve", "nextForce", "nextUnit", "xp",
+  "seed", "rng", "time", "nodes", "forces", "reserve", "front", "nextForce", "nextUnit", "xp",
   "level", "unspent", "build", "res", "risen", "seenLore", "loreQueue", "cleared",
   "lost", "log", "over",
 ];

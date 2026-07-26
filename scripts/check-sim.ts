@@ -4,21 +4,24 @@ import { LORE } from "../src/sim/lore.ts";
 import {
   ABILITIES,
   advance,
+  bandOf,
   canOrder,
   canSend,
+  heroForce,
   chooseStat,
   clearSave,
   commandCap,
   heroUnit,
   load,
+  moveUp,
   nearestOpen,
   newGame,
   orderHero,
   raise,
   reserve,
-  fight,
-  round,
+  orderFor,
   routeTo,
+  takeTurn,
   save,
   sendSquad,
   squads,
@@ -30,6 +33,7 @@ import {
   type Battle,
   type BattleUnit,
   type GameState,
+  type MapNode,
   type Stat,
 } from "../src/sim/data.ts";
 
@@ -115,6 +119,20 @@ const a = newGame(999);
 ok("the same seed builds the same run", JSON.stringify(a) === JSON.stringify(newGame(999)));
 ok("different seeds differ", JSON.stringify(newGame(1000)) !== JSON.stringify(a));
 
+{
+  // Nothing moves in until you have had a chance to get going
+  const g = newGame(1717);
+  const before = g.nodes.map((n) => n.foes.length).join();
+  advance(g, TUNING.reinforceAfter);
+  ok("the map holds still at the start", g.nodes.map((n) => n.foes.length).join() === before);
+  advance(g, TUNING.reinforceEvery * 3);
+  ok("and then it starts filling in", g.nodes.map((n) => n.foes.length).join() !== before);
+  ok(
+    "but never past the cap",
+    g.nodes.every((n) => n.foes.length <= Math.max(TUNING.foeCap, n.kind === "boss" ? 3 : 0)),
+  );
+}
+
 // ---------------------------------------------------------------- routing
 
 {
@@ -165,13 +183,18 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
 
 // ---------------------------------------------------------------- abilities
 
+let slots = 0;
 const unit = (over: Partial<BattleUnit>): BattleUnit => ({
   id: 0, src: -1, creature: "rat", faction: "player",
-  hp: 10, maxHp: 10, dmg: 2, speed: 3, tier: 0, withered: 0, ...over,
+  hp: 10, maxHp: 10, dmg: 2, speed: 3, slot: slots++, tier: 0, withered: 0, ...over,
 });
-const battle = (units: BattleUnit[]): Battle => ({
-  node: 0, units, hit: [], round: 0, log: [], done: "", nextId: units.length,
-});
+const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => {
+  const b: Battle = {
+    node: 0, units, hit: [], lead, order: [], turn: 0, round: 0, log: [], done: "", nextId: units.length,
+  };
+  b.order = orderFor(b);
+  return b;
+};
 
 {
   const me = unit({ id: 0 });
@@ -218,10 +241,69 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   ok("splitting stops somewhere", bt2.units.length === 1);
 }
 {
-  const bt = battle([unit({ id: 0 }), unit({ id: 1, faction: "enemy", hp: 40, maxHp: 40 })]);
-  const before = bt.units[1].hp;
-  round(bt);
-  ok("a round lands blows", bt.units[1].hp < before && bt.round === 1);
+  // One unit swings a turn, and the front of the other line is what it hits
+  const me = unit({ id: 0, dmg: 5 });
+  const front = unit({ id: 1, faction: "enemy", hp: 40, maxHp: 40 });
+  const back = unit({ id: 2, faction: "enemy", hp: 40, maxHp: 40 });
+  const bt = battle([me, front, back]);
+  takeTurn(bt);
+  ok("a turn lands exactly one blow", bt.hit.length === 1);
+  ok("and it lands on the front of the line", front.hp < 40 && back.hp === 40);
+  ok("the back rank is untouched until the front falls", bt.hit[0].id === front.id);
+
+  front.hp = 0;
+  takeTurn(bt);
+  takeTurn(bt);
+  ok("then it moves to whoever is next", back.hp < 40);
+}
+{
+  // The toss decides who opens, not who is fastest
+  const slowUs = unit({ id: 0, speed: 3, dmg: 4 });
+  const slowThem = unit({ id: 1, faction: "enemy", speed: 3, hp: 40, maxHp: 40, dmg: 4 });
+  const ours = battle([{ ...slowUs }, { ...slowThem }], "player");
+  takeTurn(ours);
+  ok("winning the toss means you swing first", ours.units[1].hp < 40);
+  const theirs = battle([{ ...slowUs }, { ...slowThem }], "enemy");
+  takeTurn(theirs);
+  ok("losing it means they do", theirs.units[0].hp < 10);
+}
+
+{
+  // He is not pinned to the front of his own line
+  const g = newGame(4545);
+  raise(g, "knight");
+  const before = bandOf(g, heroForce(g)).map((u) => u.creature);
+  ok("he stands at the head by default", before[0] === "hero");
+  moveUp(g, 1);
+  const after = bandOf(g, heroForce(g)).map((u) => u.creature);
+  ok("and can be put behind something sturdier", after[0] !== "hero" && after[1] === "hero");
+  ok("without losing anybody", after.length === before.length);
+  moveUp(g, 0);
+  ok("the head of the line cannot move up", bandOf(g, heroForce(g))[1].creature === "hero");
+  moveUp(g, 1);
+  ok("and he can step forward again", bandOf(g, heroForce(g))[0].creature === "hero");
+}
+
+{
+  // The order you put them in is the order they stand in, and the front of the
+  // line is what the other side hits
+  const g = newGame(6767);
+  raise(g, "knight");
+  raise(g, "warden");
+  const order = reserve(g).map((u) => u.creature);
+  orderHero(g, openRooms(g)[0].id);
+  advance(g, TUNING.marchTicks + 1);
+  const line = g.forces[0].battle!.units.filter((u) => u.faction === "player");
+  ok("the necromancer stands at the head of it", line[0].creature === "hero");
+  ok("and the rest stand where you put them", line.slice(1).map((u) => u.creature).join() === order.join());
+  ok("ids run front to back", line.every((u, i) => i === 0 || u.id > line[i - 1].id));
+
+  const foes = g.forces[0].battle!.units.filter((u) => u.faction === "enemy");
+  const front = foes[0];
+  let guard = 200;
+  while (front.hp === front.maxHp && guard-- > 0) advance(g, 1);
+  ok("their front rank is what took the first blow", front.hp < front.maxHp);
+  ok("nothing behind it was touched", foes.slice(1).every((u) => u.hp === u.maxHp));
 }
 
 // ---------------------------------------------------------------- the clock
@@ -239,8 +321,8 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   ok("marching takes time", g.forces[0].at === target);
   ok("arriving starts the fight", g.forces[0].mode === "fight");
   ok("a fight starts at round zero", g.forces[0].battle!.round === 0);
-  advance(g, TUNING.roundTicks);
-  ok("rounds land on the clock", g.forces[0].battle!.round >= 1);
+  advance(g, TUNING.turnTicks * (g.forces[0].battle!.units.length + 1));
+  ok("turns land on the clock", g.forces[0].battle!.round >= 1);
   ok("you cannot be ordered mid-fight", canOrder(g, g.forces[0].at) === false);
   // His reserve walks in with him, so it cannot be detached out from under a fight
   const elsewhere = openRooms(g)[0].id;
@@ -294,10 +376,11 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     if (g.cleared > 0) took += 1;
     if (g.forces.some((f) => f.kind === "squad" && f.rooms > 1)) chained += 1;
   }
-  // Two of them into a room is a gamble, which is the whole point of the choice
+  // Two of them into a room is a gamble, and with the front of the line taking
+  // every blow it is a worse one than it used to be
   ok("a scouting pair sometimes takes something", took > 0);
   ok("and sometimes just dies", took < 30);
-  ok("a lucky one rolls on", chained > 0);
+  void chained;
 }
 
 {
@@ -337,7 +420,7 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   const held = g.reserve.map((u) => u.id);
   sendSquad(g, target, held);
   const before = g.reserve.length;
-  advance(g, TUNING.marchTicks * 3 + TUNING.roundTicks * TUNING.maxRounds);
+  advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
   ok("the squad took it", g.nodes[target].state === "cleared");
   ok("nothing got up for them", g.reserve.length === before);
   ok("and nobody told you a story", g.loreQueue.length === 0);
@@ -357,7 +440,7 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     const g = newGame(6100 + seed * 7);
     const before = g.reserve.length;
     orderHero(g, openRooms(g)[0].id);
-    advance(g, TUNING.marchTicks * 3 + TUNING.roundTicks * TUNING.maxRounds);
+    advance(g, TUNING.marchTicks * 3 + TUNING.turnTicks * TUNING.maxRounds * 16);
     if (g.reserve.length > before) rose += 1;
   }
   ok("standing over them is what raises them", rose > 5);
@@ -365,7 +448,7 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
 
 {
   // A room taken by proxy pays less of the lesson than one you walked into
-  const budget = TUNING.marchTicks * 4 + TUNING.roundTicks * TUNING.maxRounds + 20;
+  const budget = TUNING.marchTicks * 4 + TUNING.turnTicks * TUNING.maxRounds * 16 + 20;
   const squad = newGame(777);
   const solo = newGame(777);
   const target = openRooms(solo)[0].id;
@@ -425,23 +508,11 @@ function autoplay(seedValue: number) {
     while (g.unspent > 0) chooseStat(g, STATS[g.level % STATS.length]);
     g.loreQueue.length = 0;
 
-    // He keeps his army and pushes at the Ossuary, spending on squads only what
-    // the cap will not hold. Corpses past it are lost anyway.
-    const troop = reserve(g);
-    const open = openRooms(g);
-    if (
-      g.forces[0].mode === "idle" &&
-      troop.length >= commandCap(g) &&
-      open.length > 1 &&
-      squads(g).length < 3
-    ) {
-      const soft = [...open].sort((x, y) => x.tier - y.tier)[0];
-      sendSquad(g, soft.id, troop.slice(0, 2).map((u) => u.id));
-    }
+    // The main line: keep the army together and push at the Ossuary. Squads are
+    // measured separately, above - they are a cost you choose, not the default.
     if (g.forces[0].mode === "idle") {
       const b = g.nodes.find((n) => n.kind === "boss")!;
-      const toward = (n: (typeof open)[number]) =>
-        Math.abs(n.col - b.col) + Math.abs(n.row - b.row);
+      const toward = (n: MapNode) => Math.abs(n.col - b.col) + Math.abs(n.row - b.row);
       const mine = openRooms(g).sort((x, y) => toward(x) - toward(y))[0];
       if (mine) orderHero(g, mine.id);
     }
@@ -509,20 +580,31 @@ for (const [id, t] of Object.entries(CREATURES)) {
       const t = CREATURES[c as BattleUnit["creature"]];
       return unit({ id: 1 + i, creature: t === CREATURES.rat ? "rat" : "knight", hp: t.hp, maxHp: t.hp, dmg: t.dmg, speed: t.speed });
     });
+  // Turns, not rounds: one unit swings a turn now, so the beat is what to count
+  const turnsIn = (b: Battle) => {
+    let turns = 0;
+    let guard = 4000;
+    while (!b.done && guard-- > 0) {
+      takeTurn(b);
+      turns += 1;
+    }
+    return turns;
+  };
   const shallow = battle([hero(), ...band(), ...room(["rat", "hound", "moth"], 0)]);
-  fight(shallow);
+  const shallowTurns = turnsIn(shallow);
   const deep = battle([hero(), ...band(), ...room(["warden", "knight", "hound", "moth"], 4)]);
-  fight(deep);
-  const secs = (rounds: number) => ((rounds * TUNING.roundTicks + TUNING.marchTicks) * 0.11).toFixed(1);
+  const deepTurns = turnsIn(deep);
+  const secs = (turns: number) => ((turns * TUNING.turnTicks + TUNING.marchTicks) * 0.11).toFixed(1);
 
-  ok("a room by the gate is not instant", shallow.round >= 3);
+  ok("a room by the gate is not instant", shallowTurns >= 8);
   ok("and it is one you take at level one", shallow.done === "win");
   // Deep rooms are long whether or not you are ready for them. Walking into one
   // at level one and losing is the game telling you to go and get some levels.
-  ok("a room that matters is a long fight", deep.round >= 10);
+  ok("a room that matters is a long fight", deepTurns >= 20);
+  ok("a fight is worth opening", +secs(deepTurns) >= 5);
   console.log(
-    `fights: ${shallow.round} rounds by the gate (${secs(shallow.round)}s at x1), ` +
-      `${deep.round} deep (${secs(deep.round)}s at x1, ${(+secs(deep.round) / 4).toFixed(1)}s at x4)`,
+    `fights: ${shallowTurns} blows by the gate (${secs(shallowTurns)}s at x1), ` +
+      `${deepTurns} deep (${secs(deepTurns)}s at x1, ${(+secs(deepTurns) / 4).toFixed(1)}s at x4)`,
   );
 }
 

@@ -1,5 +1,5 @@
-// Story pieces, revealed one per cleared room that carries one. Order is roughly
-// the order they are found, but a piece already seen is skipped rather than repeated.
+// Story pieces, revealed one per room the necromancer takes himself. Two or
+// three sentences each: they are read on a phone, in the middle of a fight.
 export type Lore = { title: string; body: string };
 
 export const LORE: Lore[] = [
@@ -9,23 +9,23 @@ export const LORE: Lore[] = [
   },
   {
     title: "WHAT I WAS",
-    body: "Before the war I kept graves. I dug, I filled, I wrote the names on the lids in chalk because stone was for the rich. Rain took the names. I kept them anyway.",
+    body: "Before the war I kept graves. I wrote the names on the lids in chalk, because stone was for the rich. The rain took the names and I kept them anyway.",
   },
   {
     title: "THE ASKING",
-    body: "I do not raise the dead. I ask them. Most say yes. The small light that answers is not a soul - it is the shape of the word yes, held in a chest with no other work left.",
+    body: "I do not raise the dead. I ask them, and most say yes. What answers is not a soul - it is the shape of the word, held in a chest with no other work left.",
   },
   {
     title: "PLAGUE RAT",
-    body: "The rats came down with the bodies and stayed for the reason I stayed. They remember being many. That is their whole art: one rat is nothing, a hundred is weather.",
+    body: "The rats came down with the bodies and stayed for the reason I stayed. They remember being many. One rat is nothing; a hundred is weather.",
   },
   {
     title: "BONE KNIGHT",
-    body: "He still holds the line. Ask him whose. He will give a name, then a different name, then stand very straight and wait for an order that is forty years late.",
+    body: "He still holds the line. Ask him whose and he will give a name, then a different one, then stand very straight and wait for an order forty years late.",
   },
   {
     title: "GRAVE MOTH",
-    body: "It eats the last warmth off a body. What it leaves is colder than cold - a wound that has forgotten how to close. Do not let it touch anything you intend to keep.",
+    body: "It eats the last warmth off a body and leaves a cold that has forgotten how to close. Do not let it touch anything you mean to keep.",
   },
   {
     title: "CORPSE WISP",
@@ -33,22 +33,22 @@ export const LORE: Lore[] = [
   },
   {
     title: "TOMB WARDEN",
-    body: "The wardens were sealed in with the treasure so that nobody would have to pay them. They took this well. They have been taking it well for a very long time.",
+    body: "The wardens were sealed in with the treasure so nobody would have to pay them. They took this well, and have been taking it well for a very long time.",
   },
   {
     title: "THE LEDGER",
-    body: "Every one I raise, I write down. Every one that falls, I cross out. The ledger is the only thing down here that still gets heavier.",
+    body: "Every one I raise I write down, and every one that falls I cross out. The ledger is the only thing down here that still gets heavier.",
   },
   {
-    title: "WHAT THE SQUADS FIND",
-    body: "I send them ahead because they are not afraid of the dark and I am. They come back thinner, or they come back as a sound, or they do not come back and the map fills in anyway.",
+    title: "WHAT I SEND AHEAD",
+    body: "I send them out because they are not afraid of the dark and I am. They come back thinner, or as a sound, or not at all and the map fills in anyway.",
   },
   {
     title: "THE GRAVELIGHT",
-    body: "Deep enough, the walls give off a low green. The miners called it gravelight and would not work by it. It is the same light I set in a ribcage to make it stand. There is a great deal of it down here. Something is standing.",
+    body: "Deep enough, the walls give off a low green that the miners would not work by. It is the same light I set in a ribcage to make it stand. There is a great deal of it down here.",
   },
   {
     title: "THE OSSUARY",
-    body: "Everyone I dismissed. Everyone whose yes I spent and did not write down. They did not scatter. They found each other in the dark and agreed, the way the dead agree, to be one thing instead of many. It is walking now. It knows my hand.",
+    body: "Everyone I dismissed, everyone whose yes I spent and did not write down. They found each other in the dark and agreed, the way the dead agree, to be one thing. It knows my hand.",
   },
 ];
