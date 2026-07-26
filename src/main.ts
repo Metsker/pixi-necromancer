@@ -9,17 +9,21 @@ import { LORE } from "./sim/lore.ts";
 import type { Point } from "./sim/data.ts";
 import {
   advance,
-  chooseStat,
+  choosePath,
   clearSave,
+  eat,
   leaveRoom,
   load,
+  mend,
   moveUp,
   newGame,
   orderHero,
   reap,
   save,
   sendSquad,
+  takeNode,
 } from "./sim/game.ts";
+import { rootId } from "./sim/tree.ts";
 import { C, Hits, type Act } from "./ui.ts";
 
 // One tick of game time. The speed control multiplies how many run per second.
@@ -63,6 +67,7 @@ async function main() {
     unit: 0,
     typed: 0,
     loreId: null,
+    tnode: rootId,
   };
   const hits = new Hits();
   let cam: Point = { x: 0, y: 0 };
@@ -115,6 +120,7 @@ async function main() {
     ui.pick = [];
     ui.node = 0;
     ui.watch = null;
+    ui.tnode = rootId;
     recenter();
     save(g);
   }
@@ -178,8 +184,25 @@ async function main() {
       case "close":
         ui.panel = "";
         break;
-      case "stat":
-        chooseStat(g, a.s);
+      case "path":
+        choosePath(g, a.id);
+        // Whatever he is, the next thing he sees is the board he will spend on
+        ui.tnode = rootId;
+        break;
+      case "tree":
+        ui.panel = "tree";
+        break;
+      case "pick":
+        ui.tnode = a.id;
+        break;
+      case "take":
+        takeNode(g, a.id);
+        break;
+      case "eat":
+        eat(g);
+        break;
+      case "mend":
+        mend(g);
         break;
       case "ok":
         // A tap while it is still arriving brings the rest of it at once
@@ -227,6 +250,13 @@ async function main() {
   };
   app.stage.on("pointerup", release);
   app.stage.on("pointerupoutside", release);
+
+  // Reachable from the page in dev, so a browser check can read the run instead
+  // of squinting at a picture of it
+  // Cast because the project does not pull in vite's ambient types for one flag
+  if ((import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
+    Object.assign(window, { app, grid, run: () => g, ui });
+  }
 
   window.addEventListener("resize", fit);
   window.addEventListener("orientationchange", fit);

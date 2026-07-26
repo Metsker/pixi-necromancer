@@ -1,5 +1,5 @@
 import type { Surface } from "./gfx/surface.ts";
-import type { Stat } from "./sim/data.ts";
+import type { PathId } from "./sim/tree.ts";
 import { PALETTE } from "./tilemap.ts";
 
 const p = (i: number) => parseInt(PALETTE[i].slice(1), 16);
@@ -45,7 +45,12 @@ export type Act =
   | { t: "army" }
   | { t: "restart" }
   | { t: "confirm" }
-  | { t: "stat"; s: Stat }
+  | { t: "path"; id: PathId }
+  | { t: "tree" }
+  | { t: "pick"; id: number }
+  | { t: "take"; id: number }
+  | { t: "eat" }
+  | { t: "mend" }
   | { t: "ok" }
   | { t: "speed" }
   | { t: "watch"; id: number }

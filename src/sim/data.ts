@@ -1,7 +1,10 @@
 // Numbers and templates only - behaviour lives in game.ts
+import type { PathId, Perks } from "./tree.ts";
+
 export type Point = { x: number; y: number };
-export type Stat = "might" | "ward" | "will" | "mana";
-export type Resource = "bone" | "ash" | "salt";
+// Nothing spends these yet. They are here so a room can pay something a shop
+// and a locked door will want later.
+export type Resource = "gold" | "keys";
 export type Faction = "player" | "enemy";
 export type AbilityId = "swarm" | "bulwark" | "wither" | "siphon" | "rend" | "toll" | "split";
 export type CreatureId =
@@ -18,7 +21,9 @@ export type NodeState = "locked" | "open" | "cleared";
 export type ForceKind = "hero" | "squad";
 export type ForceMode = "idle" | "march" | "fight" | "spoils" | "gone";
 
-export type Unit = { id: number; creature: CreatureId; hp: number; maxHp: number };
+// `rooms` is how many it has lived through. It ticks for everybody; only the
+// pack reads it, and only the pack pays it back.
+export type Unit = { id: number; creature: CreatureId; hp: number; maxHp: number; rooms: number };
 
 // The last time the dead got up, so the map can make a moment of it
 export type Risen = {
@@ -61,6 +66,9 @@ export type Battle = {
   healed: number; // what the room gave him back, for the board to show
   taken: number[]; // bodies out of this room that are his now, however they got up
   nextId: number;
+  // What he had bought when this fight started. Carried on the battle because a
+  // blow is resolved without the game state to hand.
+  perks: Perks;
 };
 
 // Everything on the map that moves and fights. The necromancer's retinue is
@@ -103,7 +111,9 @@ export type GameState = {
   level: number;
   unspent: number;
   mana: number; // what asking costs him; the ceiling is what he has built up to
-  build: Record<Stat, number>;
+  // Chosen at the gate and sealed for the run, and the nodes of it he has bought
+  path: PathId | "";
+  taken: number[];
   res: Record<Resource, number>;
   risen: Risen | null;
   seenLore: number[];
@@ -132,18 +142,15 @@ export const TUNING = {
 
   heroHp: 100,
   heroDmg: 14,
-  startingMinions: 2,
   // What a room he takes gives him back, as a share of what he can hold. Not
   // all of it: the run is meant to wear him down.
   restFrac: 0.1,
 
   baseCap: 6,
   squadCap: 6,
-  willPerPoint: 1,
-  mightPerPoint: 3,
-  wardPerPoint: 30,
-  manaPerPoint: 5,
   xpPerLevel: 26,
+  // The most a line of bodies can soak for him, however long the line is
+  wallCap: 60,
 
   // What he can spend on the dead, and what a room he takes gives back of it
   manaBase: 10,
@@ -231,25 +238,17 @@ export const KIND_NOTE: Record<NodeKind, string> = {
   boss: "everything you dismissed",
 };
 
-export const RES_IDS: Resource[] = ["bone", "ash", "salt"];
+export const RES_IDS: Resource[] = ["gold", "keys"];
 
 export const RESOURCES: Record<Resource, { short: string; glyph: string; color: number }> = {
-  bone: { short: "bone", glyph: "†", color: 23 },
-  ash: { short: "ash", glyph: "∿", color: 20 },
-  salt: { short: "salt", glyph: "⊙", color: 22 },
-};
-
-// Every one of these is offered at a level, in this order
-export const STAT_IDS: Stat[] = ["might", "ward", "will", "mana"];
-
-export const STAT_LABEL: Record<Stat, string> = {
-  might: "MIGHT  +3 dmg",
-  ward: "WARD  +30 hp",
-  will: "WILL  +1 slot",
-  mana: "MANA  +5 asking",
+  gold: { short: "gold", glyph: "⊙", color: 16 },
+  keys: { short: "keys", glyph: "⚷", color: 22 },
 };
 
 export const SQUAD_GLYPH = "⸬";
+
+// A node of the tree, as it stands right now: bought, buyable, or still sealed
+export const TREE_GLYPH = { taken: "•", open: "∘", sealed: "⬚" };
 
 // What it costs him to ask, wherever that number is shown
 export const MANA_GLYPH = "◇";

@@ -9,7 +9,16 @@ import {
   type GameState,
   type Hit,
 } from "../sim/data.ts";
-import { commandCap, fielded, hpFrac, manaCap, manaCost, offered } from "../sim/game.ts";
+import {
+  commandCap,
+  eatable,
+  fielded,
+  hpFrac,
+  manaCap,
+  manaCost,
+  mendable,
+  offered,
+} from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, bar, buttons, cells } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit in the roster
@@ -115,7 +124,7 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
   const held = spoils && f.kind === "hero" && b.done === "win";
   const open = new Set(held ? offered(g, b).map((u) => u.id) : []);
   const bid: Bid = (u) =>
-    !open.has(u.id) ? 0 : g.mana >= manaCost(u.creature) && fielded(g) < commandCap(g) ? 2 : 1;
+    !open.has(u.id) ? 0 : g.mana >= manaCost(g, u.creature) && fielded(g) < commandCap(g) ? 2 : 1;
   const tap = (u: BattleUnit, x: number, y: number) => {
     if (bid(u)) hits.add(at + x - 1, y, 3, 2, { t: "reap", id: u.id });
   };
@@ -138,9 +147,10 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
   y += 1;
 
   for (let i = 0; i < roster; i++) {
-    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, mending, false, look, mended, 0);
+    if (ourLine[i]) side(grid, 0, half, y, ourLine[i], landing, mending, false, look, mended, 0, 0);
     if (theirLine[i]) {
-      side(grid, rightX, rightW, y, theirLine[i], landing, mending, true, look, 0, bid(theirLine[i]));
+      const u = theirLine[i];
+      side(grid, rightX, rightW, y, u, landing, mending, true, look, 0, bid(u), manaCost(g, u.creature));
       if (bid(theirLine[i])) hits.add(at + rightX, y, rightW, ROW_H, { t: "reap", id: theirLine[i].id });
     }
     if (ourLine[i] || theirLine[i]) grid.put(half, y, "│", C.frame);
@@ -152,10 +162,19 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
 
   for (const line of b.log.slice(-(last - y))) grid.text(0, y++, line.slice(0, cols), C.dim);
 
+  // What the tree lets him do with a room he is standing in, if anything. Both
+  // spend out of the pool that would otherwise have raised something.
+  const spend = eatable(g)
+    ? { label: "EAT", act: { t: "eat" as const } }
+    : mendable(g)
+      ? { label: "MEND", act: { t: "mend" as const } }
+      : null;
+
   // The strip stays the width of the screen: it is what a thumb reaches for.
   // Nothing else ends a room he has taken, so the way out is a button.
   buttons(full, hits, [
     { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
+    ...(held && spend ? [spend] : []),
     held ? { label: "LEAVE", act: { t: "leave" } } : { label: "MAP", act: { t: "back" } },
   ]);
 }
@@ -252,6 +271,7 @@ function side(
   look: Look,
   mended: number,
   offer: 0 | 1 | 2,
+  price: number,
 ) {
   const t = CREATURES[u.creature];
   const struck = landing.find((h) => h.id === u.id);
@@ -284,8 +304,8 @@ function side(
   } else if (offer) {
     // What it would cost to ask this one back, against the divider where the
     // fighting used to be
-    const price = `${MANA_GLYPH}${manaCost(u.creature)}`;
-    grid.text(mirrored ? x : x + w - cells(price), y, price, offer === 2 ? C.cyan : C.frame);
+    const tag = `${MANA_GLYPH}${price}`;
+    grid.text(mirrored ? x : x + w - cells(tag), y, tag, offer === 2 ? C.cyan : C.frame);
   } else if (u.withered > 0 && !down) {
     grid.put(mirrored ? x : x + w - 1, y, "∿", C.violet);
   }

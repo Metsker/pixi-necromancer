@@ -17,9 +17,9 @@ import {
   type MapNode,
   type NodeKind,
   type Resource,
-  type Stat,
   type Unit,
 } from "./data.ts";
+import { PATHS, PERK_IDS, linksOf, rootId, type PathId, type Perks } from "./tree.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
@@ -30,9 +30,64 @@ export const squads = (g: GameState) =>
   g.forces.filter((f) => f.kind === "squad" && f.mode !== "gone");
 export const forcesAt = (g: GameState, id: number) =>
   g.forces.filter((f) => f.mode !== "gone" && f.at === id);
-export const commandCap = (g: GameState) => TUNING.baseCap + g.build.will * TUNING.willPerPoint;
-export const manaCap = (g: GameState) => TUNING.manaBase + g.build.mana * TUNING.manaPerPoint;
-export const manaCost = (c: CreatureId) => CREATURES[c].mana;
+// ---------------------------------------------------------------- the tree
+
+// Everything he has bought, as one bag of numbers. Twelve nodes is small enough
+// that summing it on demand is cheaper than keeping a copy honest.
+export function perks(g: GameState): Perks {
+  const out = Object.fromEntries(PERK_IDS.map((k) => [k, 0])) as Perks;
+  if (!g.path) return out;
+  for (const n of PATHS[g.path].nodes) {
+    if (!g.taken.includes(n.id)) continue;
+    for (const [k, v] of Object.entries(n.gives)) out[k as keyof Perks] += v;
+  }
+  return out;
+}
+
+// A node is buyable if it is beside one he already has - the same rule that
+// opens a room next to a room he has cleared.
+export const treeOpen = (g: GameState): number[] => {
+  if (!g.path) return [];
+  const p = PATHS[g.path];
+  if (!g.taken.length) return [rootId];
+  return p.nodes
+    .filter((n) => !g.taken.includes(n.id) && linksOf(p, n).some((id) => g.taken.includes(id)))
+    .map((n) => n.id);
+};
+
+export function takeNode(g: GameState, id: number): boolean {
+  if (g.unspent <= 0 || !treeOpen(g).includes(id)) return false;
+  g.unspent -= 1;
+  g.taken.push(id);
+  const h = heroUnit(g);
+  const gives = PATHS[g.path as PathId].nodes[id].gives;
+  // What a node adds to the top of him he has to hand, and what it adds to the
+  // ceiling of the pool likewise: a number you cannot use yet is not a level-up
+  if (gives.hp && h) {
+    h.maxHp += gives.hp;
+    h.hp += gives.hp;
+  }
+  if (gives.manaPool) g.mana += gives.manaPool;
+  // Stepping to the front of his own line is a thing he buys, and he is free to
+  // walk himself back down it afterwards if he decides he was wrong
+  if (gives.front) g.front = 0;
+  return true;
+}
+
+// Chosen once, at the gate, and it is chosen. What he walks in with comes with it.
+export function choosePath(g: GameState, id: PathId): boolean {
+  if (g.path) return false;
+  g.path = id;
+  for (const c of PATHS[id].start) raise(g, c);
+  log(g, `${PATHS[id].name.toLowerCase()}.`);
+  return true;
+}
+
+export const commandCap = (g: GameState) =>
+  Math.max(1, TUNING.baseCap + (g.path ? PATHS[g.path].slots : 0) + perks(g).slots);
+export const manaCap = (g: GameState) => TUNING.manaBase + perks(g).manaPool;
+export const manaCost = (g: GameState, c: CreatureId) =>
+  CREATURES[c].mana === 0 ? 0 : Math.max(1, CREATURES[c].mana + perks(g).raiseCost);
 
 // A force standing in a room it has not finished with. Neither can be given a
 // new order: the board is still up and the dead on it are still his to ask.
@@ -42,7 +97,17 @@ export const busy = (f: Force) => f.mode === "fight" || f.mode === "spoils";
 // until it is dead, so it still costs him a slot.
 export const fielded = (g: GameState) =>
   g.reserve.length + squads(g).reduce((n, f) => n + f.units.length, 0);
-export const heroDmg = (g: GameState) => TUNING.heroDmg + g.build.might * TUNING.mightPerPoint;
+export const heroDmg = (g: GameState) => TUNING.heroDmg + perks(g).dmg;
+
+// What a body actually hits for: what it is, plus what the tree makes of it,
+// plus whatever it has earned by not dying yet. The sheet and the board read
+// this same function, or the sheet lies about the thing you are about to spend.
+export const unitDmg = (g: GameState, u: Unit): number => {
+  if (u.creature === "hero") return heroDmg(g);
+  const P = perks(g);
+  const t = CREATURES[u.creature];
+  return t.dmg + P.minionDmg + P.vetDmg * u.rooms + (u.creature === "rat" ? P.ratDmg : 0);
+};
 export const xpNeeded = (g: GameState) => TUNING.xpPerLevel * (g.level + 1);
 export const hpFrac = (u: { hp: number; maxHp: number }) => clamp(u.hp / u.maxHp, 0, 1);
 
@@ -285,7 +350,8 @@ export function raise(g: GameState, creature: CreatureId): boolean {
   // He walks at the back unless you have deliberately moved him up, and stays
   // there as the line grows
   const trailing = g.front >= g.reserve.length;
-  g.reserve.push({ id: g.nextUnit++, creature, hp: t.hp, maxHp: t.hp });
+  const hp = t.hp + (creature === "rat" ? perks(g).ratHp : 0);
+  g.reserve.push({ id: g.nextUnit++, creature, hp, maxHp: hp, rooms: 0 });
   if (trailing) g.front = g.reserve.length;
   return true;
 }
@@ -297,20 +363,6 @@ export function gainXp(g: GameState, n: number) {
     g.level += 1;
     g.unspent += 1;
   }
-}
-
-export function chooseStat(g: GameState, s: Stat) {
-  if (g.unspent <= 0) return;
-  g.unspent -= 1;
-  g.build[s] += 1;
-  const h = heroUnit(g);
-  if (s === "ward" && h) {
-    h.maxHp += TUNING.wardPerPoint;
-    h.hp += TUNING.wardPerPoint;
-  }
-  // What the ceiling goes up by, he has to hand: a pool you cannot use yet is
-  // not a level-up, it is a promise
-  if (s === "mana") g.mana += TUNING.manaPerPoint;
 }
 
 // ---------------------------------------------------------------- abilities
@@ -327,8 +379,13 @@ const living = (b: Battle, f: BattleUnit["faction"]) =>
 
 export const ABILITIES: Record<AbilityId, Hooks> = {
   swarm: {
-    bonus: (s, _t, b) =>
-      Math.min(TUNING.swarmCap, (living(b, s.faction).length - 1) * TUNING.swarmPerAlly),
+    // What he has bought is his, not theirs: their rats swarm at the base rate
+    bonus: (s, _t, b) => {
+      const his = s.faction === "player";
+      const per = TUNING.swarmPerAlly + (his ? b.perks.swarmPer : 0);
+      const cap = TUNING.swarmCap + (his ? b.perks.swarmCap : 0);
+      return Math.min(cap, (living(b, s.faction).length - 1) * per);
+    },
   },
   bulwark: { taken: (_s, n) => Math.max(1, Math.ceil(n * TUNING.bulwarkCut)) },
   wither: {
@@ -338,9 +395,14 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
   },
   siphon: {
     onAttack: (s, _t, b) => {
-      const hurt = living(b, s.faction)
-        .filter((u) => u.hp < u.maxHp)
-        .sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
+      const wounded = living(b, s.faction).filter((u) => u.hp < u.maxHp);
+      // He is rarely the worst hurt - he has the deepest pool - so a lord has to
+      // buy the wisps' attention rather than wait for it
+      const first =
+        s.faction === "player" && b.perks.wispFirst
+          ? wounded.find((u) => u.creature === "hero")
+          : undefined;
+      const hurt = first ?? wounded.sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
       if (!hurt) return;
       const back = Math.min(hurt.maxHp - hurt.hp, TUNING.siphonHeal);
       hurt.hp += back;
@@ -399,10 +461,22 @@ function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
   hooks(u).onDeath?.(u, b);
 }
 
+// Everybody of his still standing further back than he is. A lord is fed by the
+// line behind him and gets weaker every time a piece of it falls over.
+const behind = (b: Battle, u: BattleUnit) =>
+  living(b, u.faction).filter((o) => o.slot > u.slot).length;
+
+const isLord = (u: BattleUnit) => u.creature === "hero" && u.faction === "player";
+
 function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   let raw = a.dmg + (hooks(a).bonus?.(a, d, b) ?? 0);
+  if (isLord(a)) raw += b.perks.lordDmg * behind(b, a);
   if (a.withered > 0) raw *= TUNING.witherCut;
-  const soaked = hooks(d).taken?.(d, raw, b) ?? raw;
+  let soaked = hooks(d).taken?.(d, raw, b) ?? raw;
+  // Capped, or a long enough line behind him would make him untouchable
+  if (isLord(d) && b.perks.wall) {
+    soaked *= 1 - Math.min(TUNING.wallCap, b.perks.wall * behind(b, d)) / 100;
+  }
   damage(b, d, Math.max(1, Math.round(soaked)), a.id);
   // Fires even on a killing blow, or a wisp would be punished for aiming well
   hooks(a).onAttack?.(a, d, b);
@@ -456,7 +530,9 @@ export function fight(b: Battle) {
 
 function makeBattle(g: GameState, f: Force): Battle {
   const n = g.nodes[f.at];
+  const P = perks(g);
   const b: Battle = {
+    perks: P,
     node: f.at,
     units: [],
     hit: [],
@@ -482,7 +558,7 @@ function makeBattle(g: GameState, f: Force): Battle {
       faction: "player",
       hp: u.hp,
       maxHp: u.maxHp,
-      dmg: u.creature === "hero" ? heroDmg(g) : t.dmg,
+      dmg: unitDmg(g, u),
       speed: t.speed,
       tier: 0,
       withered: 0,
@@ -565,7 +641,10 @@ export function sendSquad(g: GameState, id: number, unitIds: number[]): boolean 
 
 // ---------------------------------------------------------------- the clock
 
+// Nothing moves until he has chosen what he is. That is the one gate: no other
+// code path can find itself running a run with no nature.
 export function advance(g: GameState, ticks: number) {
+  if (!g.path) return;
   for (let i = 0; i < ticks && !g.over; i++) step(g);
 }
 
@@ -699,8 +778,72 @@ export const HELD = Number.MAX_SAFE_INTEGER;
 // Bodies in this room he could still ask, cost aside
 export const offered = (g: GameState, b: Battle) =>
   b.units.filter(
-    (u) => u.faction === "enemy" && u.hp <= 0 && !b.taken.includes(u.id) && manaCost(u.creature) > 0,
+    (u) =>
+      u.faction === "enemy" && u.hp <= 0 && !b.taken.includes(u.id) && manaCost(g, u.creature) > 0,
   );
+
+// The room he is standing in, if the board is still up and still his to work
+const held = (g: GameState): Battle | null => {
+  const f = heroForce(g);
+  const b = f.battle;
+  return b && f.kind === "hero" && f.mode === "spoils" && b.done === "win" ? b : null;
+};
+
+// The cheapest body still on the floor. Nothing distinguishes one corpse from
+// another to a man eating them, so he takes whichever costs least.
+export const eatable = (g: GameState) => {
+  const b = held(g);
+  if (!b || !perks(g).eat) return null;
+  const u = [...offered(g, b)].sort((x, z) => manaCost(g, x.creature) - manaCost(g, z.creature))[0];
+  return u && g.mana >= manaCost(g, u.creature) ? u : null;
+};
+
+// A corpse is a meal instead of a servant. The pool pays either way, which is
+// what makes it a decision: every one he eats is one that never gets up.
+export function eat(g: GameState): boolean {
+  const b = held(g);
+  const u = eatable(g);
+  if (!b || !u) return false;
+  const P = perks(g);
+  const h = heroUnit(g);
+  if (!h) return false;
+  g.mana -= manaCost(g, u.creature);
+  b.taken.push(u.id);
+  h.maxHp += P.eatMaxHp;
+  const back = Math.min(h.maxHp - h.hp, P.eat + P.eatMaxHp);
+  h.hp += back;
+  b.healed += back;
+  const shown = b.units.find((o) => o.src === h.id);
+  if (shown) {
+    shown.maxHp = h.maxHp;
+    shown.hp = h.hp;
+  }
+  log(g, `you eat it. +${back}`.slice(0, 20));
+  return true;
+}
+
+// Whoever of his is worst off, which is the same one a wisp would go for
+export const mendable = (g: GameState) => {
+  if (!held(g) || !perks(g).mend) return null;
+  const u = g.reserve.filter((o) => o.hp < o.maxHp).sort((a, z) => hpFrac(a) - hpFrac(z))[0];
+  return u && g.mana >= manaCost(g, u.creature) ? u : null;
+};
+
+// The one place a body goes back up instead of only down, and it is paid for out
+// of the same pool that would have raised a new one
+export function mend(g: GameState): boolean {
+  const b = held(g);
+  const u = mendable(g);
+  if (!b || !u) return false;
+  g.mana -= manaCost(g, u.creature);
+  const back = Math.min(u.maxHp - u.hp, perks(g).mend);
+  u.hp += back;
+  const shown = b.units.find((o) => o.src === u.id);
+  if (shown) shown.hp = u.hp;
+  b.mend.push({ id: shown?.id ?? -1, by: -1, n: back });
+  log(g, `${CREATURES[u.creature].short} mended. +${back}`.slice(0, 20));
+  return true;
+}
 
 // One body, bought. The free ones a room gives up are luck; this is the choice.
 export function reap(g: GameState, unitId: number): boolean {
@@ -709,7 +852,7 @@ export function reap(g: GameState, unitId: number): boolean {
   if (!b || f.mode !== "spoils" || b.done !== "win" || f.kind !== "hero") return false;
   const u = b.units.find((o) => o.id === unitId);
   if (!u || !offered(g, b).includes(u)) return false;
-  const cost = manaCost(u.creature);
+  const cost = manaCost(g, u.creature);
   if (g.mana < cost) {
     log(g, "Not enough of you.");
     return false;
@@ -753,11 +896,11 @@ function finish(g: GameState, f: Force) {
   readLore(g, g.nodes[b.node]);
 }
 
+// Gold falls out of anything. Keys are only ever hidden, or held by the last
+// thing standing. Neither buys anything yet.
 function loot(n: MapNode): Record<Resource, number> {
-  const out: Record<Resource, number> = { bone: 0, ash: 0, salt: 0 };
   const rolls = n.kind === "boss" ? 6 : n.kind === "cache" ? 4 : n.kind === "elite" ? 3 : 2;
-  for (let i = 0; i < rolls; i++) out[pick(RES_IDS)] += 1;
-  return out;
+  return { gold: rolls, keys: n.kind === "cache" || n.kind === "boss" ? 1 : 0 };
 }
 
 // Everything a won room pays, whoever won it. There is no sheet to stop and
@@ -768,6 +911,16 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   unlock(g);
   // A room that stops fighting back is a room he gets some of himself back in
   g.mana = Math.min(manaCap(g), g.mana + Math.ceil(manaCap(g) * TUNING.manaRegen));
+
+  // Anything that lived through it has one more room behind it. It ticks for
+  // everybody; only a pack has bought anything that reads it.
+  const P = perks(g);
+  for (const u of f.kind === "hero" ? g.reserve : f.units) {
+    u.rooms += 1;
+    if (!P.vetHp) continue;
+    u.maxHp += P.vetHp;
+    u.hp += P.vetHp;
+  }
 
   // Split spawns are not corpses anybody left behind, so they pay nothing
   const fallen = b.units.filter((u) => u.faction === "enemy" && u.hp <= 0 && u.tier === 0);
@@ -787,7 +940,7 @@ function clearRoom(g: GameState, f: Force, b: Battle, n: MapNode) {
   const bodies: number[] = [];
   for (const u of fallen) {
     if (u.creature === "ossuary") continue;
-    if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance) continue;
+    if (n.kind !== "crypt" && rnd() >= TUNING.raiseChance + P.riseLuck / 100) continue;
     if (!raise(g, u.creature)) break;
     b.taken.push(u.id);
     rose.push(u.creature);
@@ -826,8 +979,9 @@ export function newGame(seedValue: number): GameState {
     level: 0,
     unspent: 0,
     mana: TUNING.manaBase,
-    build: { might: 0, ward: 0, will: 0, mana: 0 },
-    res: { bone: 0, ash: 0, salt: 0 },
+    path: "",
+    taken: [],
+    res: { gold: 0, keys: 0 },
     risen: null,
     seenLore: [],
     loreQueue: [],
@@ -842,7 +996,7 @@ export function newGame(seedValue: number): GameState {
   g.forces.push({
     id: 0,
     kind: "hero",
-    units: [{ id: 0, creature: "hero", hp: TUNING.heroHp, maxHp: TUNING.heroHp }],
+    units: [{ id: 0, creature: "hero", hp: TUNING.heroHp, maxHp: TUNING.heroHp, rooms: 0 }],
     at: gate.id,
     path: [],
     mode: "idle",
@@ -850,7 +1004,8 @@ export function newGame(seedValue: number): GameState {
     battle: null,
     rooms: 0,
   });
-  for (let i = 0; i < TUNING.startingMinions; i++) raise(g, "rat");
+  // What he walks in with comes with the nature he picks, and nothing happens
+  // until he has picked one
   log(g, "Into the dark.");
   g.rng = rngState();
   return g;
@@ -859,12 +1014,12 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 7;
+const SAVE_VERSION = 8;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [
   "seed", "rng", "time", "nodes", "forces", "reserve", "front", "nextForce", "nextUnit", "xp",
-  "level", "unspent", "mana", "build", "res", "risen", "seenLore", "loreQueue", "cleared",
+  "level", "unspent", "mana", "path", "taken", "res", "risen", "seenLore", "loreQueue", "cleared",
   "lost", "log", "over",
 ];
 

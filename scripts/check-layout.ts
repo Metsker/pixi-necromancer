@@ -6,7 +6,10 @@ import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
 import { advance, commandCap, manaCap, newGame, offered, orderHero, raise, sendSquad } from "../src/sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, cells } from "../src/ui.ts";
-import { CREATURES, MANA_GLYPH, RAISABLE, STAT_IDS, TUNING } from "../src/sim/data.ts";
+import { CREATURES, MANA_GLYPH, RAISABLE, TUNING } from "../src/sim/data.ts";
+import { PATHS, PATH_IDS, rootId } from "../src/sim/tree.ts";
+import { choosePath, takeNode, treeOpen } from "../src/sim/game.ts";
+import { TREE_TEXT, stateOf, treeLines, treeWidth } from "../src/screens/tree.ts";
 import { TILE, TILE_MAP } from "../src/tilemap.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -75,6 +78,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 // line is silently clipped and a button reads as half a word
 {
   const g = newGame(2468);
+  choosePath(g, "rat");
   g.unspent = 1;
   g.over = "won";
   g.cleared = 12;
@@ -94,6 +98,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     unit: g.reserve[0]?.id ?? 0,
     typed: 1e9,
     loreId: null,
+    tnode: 0,
   };
 
   for (const cols of [MIN_COLS, 20, 24, MAX_COLS]) {
@@ -117,17 +122,35 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   }
 }
 
-// A stat you can put a point in has to be on the sheet that spends the point
+// A nature you can be has to be on the sheet that chooses one, and the tree it
+// leads to has to say what it is doing at every width the board will ever get
 {
   const g = newGame(1234);
-  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null, unit: 0, typed: 0, loreId: null };
-  const level = panelSpec(g, ui, "level", MIN_COLS)!;
-  for (const s of STAT_IDS) {
-    ok(`${s}: it is offered at a level`, level.lines.some((l) => l.act?.t === "stat" && l.act.s === s));
+  const ui: Ui = { panel: "", node: 0, pick: [], speed: 1, watch: null, unit: 0, typed: 0, loreId: null, tnode: 0 };
+  const gate = panelSpec(g, ui, "path", MIN_COLS)!;
+  for (const id of PATH_IDS) {
+    ok(`${id}: it is offered at the gate`, gate.lines.some((l) => l.act?.t === "path" && l.act.id === id));
+    ok(`${id}: and it says what it costs`, gate.lines.some((l) => l.text === PATHS[id].hint));
   }
-  const menu = panelSpec(g, ui, "menu", MIN_COLS)!;
-  for (const s of STAT_IDS) {
-    ok(`${s}: and the menu says what he has spent on it`, menu.lines.some((l) => l.text.startsWith(s)));
+
+  // Every line the board writes has to fit the box the board asks for
+  for (const s of treeLines()) ok(`"${s}" fits the tree`, cells(s) <= TREE_TEXT);
+  ok("and the box it asks for fits the narrowest grid", treeWidth() <= MIN_COLS);
+
+  // Twelve nodes, all of them reachable from the one you start on, or a run can
+  // level past a node it can never buy
+  for (const id of PATH_IDS) {
+    const p = PATHS[id];
+    ok(`${id}: it is twelve nodes`, p.nodes.length === 12);
+    const walk = newGame(99);
+    choosePath(walk, id);
+    walk.unspent = p.nodes.length;
+    ok(`${id}: it opens at the root`, treeOpen(walk).join() === `${rootId}`);
+    let guard = 40;
+    while (treeOpen(walk).length && guard-- > 0) takeNode(walk, treeOpen(walk)[0]);
+    ok(`${id}: every node can be reached`, walk.taken.length === p.nodes.length);
+    ok(`${id}: and nothing is left open`, treeOpen(walk).length === 0);
+    for (const n of p.nodes) ok(`${id}/${n.name}: it reads as bought`, stateOf(walk, n.id) === "taken");
   }
 }
 
@@ -156,6 +179,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   };
 
   const g = newGame(8642);
+  choosePath(g, "rat");
   const f = g.forces[0];
   orderHero(g, g.nodes.find((n) => n.state === "open")!.id);
   advance(g, TUNING.marchTicks + 1);
@@ -192,6 +216,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
       unit: g.reserve[0].id,
       typed: 1e9,
       loreId: null,
+      tnode: 0,
     };
     for (const cols of [MIN_COLS, 24, MAX_COLS]) {
       const spec = panelSpec(g, ui, "unit", cols)!;
@@ -201,7 +226,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     }
   }
   // and the necromancer, who is not in the reserve
-  const ui: Ui = { panel: "unit", node: 0, pick: [], speed: 1, watch: null, unit: 0, typed: 1e9, loreId: null };
+  const ui: Ui = { panel: "unit", node: 0, pick: [], speed: 1, watch: null, unit: 0, typed: 1e9, loreId: null, tnode: 0 };
   const his = panelSpec(g, ui, "unit", MIN_COLS)!;
   ok("he has one too", his.title.length > 0 && his.lines.some((l) => l.text.includes("hits for")));
 }
@@ -232,6 +257,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   };
 
   const g = newGame(31313);
+  choosePath(g, "rat");
   const f = g.forces[0];
   orderHero(g, g.nodes.find((n) => n.state === "open")!.id);
   advance(g, TUNING.marchTicks + 1);

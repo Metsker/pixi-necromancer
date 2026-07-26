@@ -23,6 +23,25 @@ the brackets around it stay cool and only say whether you can reach it.
 Nothing waits for you. The clock runs at x1, x2 or x4, or you hold it, and any
 sheet you have to answer stops it by itself.
 
+## What he is
+
+Before he walks in you choose what kind of necromancer he is, and it is chosen -
+the other two are sealed for the run. The **rat king** brings three rats and an
+extra slot, asks for the dead cheaply, and wants a lot of them. The **pack**
+brings one hound and one fewer slot, and is the only one of the three that can
+put a body back together: its minions grow with every room they live through, and
+mending one costs mana that would have raised a new one. The **lord** brings a
+knight and a wisp, and the root of his tree is the thing that walks him to the
+head of his own line - after which every blow aimed at his army is aimed at him
+instead, and every node after it is an answer to that.
+
+Each nature is a board of twelve nodes joined north, south, east and west, with
+the same locked-open-taken states the map has: buying one opens whatever stands
+beside it. A level is one node. A run that reaches the Ossuary buys about seven
+of the twelve, so two rat kings are not the same rat king. That board is what a
+level-up is now - there is no menu of stats behind it, they are nodes like
+anything else.
+
 You walk in with whatever you have not sent away. A room you take gives him a
 tenth of what he can hold back, and gives nothing to anything he raised: what a
 body has when it gets up is what it has for the rest of the run. The run is a
@@ -70,13 +89,18 @@ spare the bodies for.
 A room you leave standing does not stay the size you found it. That is the only
 clock pressure there is, and it is what makes spending a squad worth it.
 
-Every room won pays experience and crafting materials that nothing spends yet.
-Every corpse he stands over is a coin flip to get up - a crypt is the exception,
-and gives up all of its dead. Some rooms give up a piece of the story too.
+Every room won pays experience, and gold and keys that nothing spends yet. Every
+corpse he stands over is a coin flip to get up - a crypt is the exception, and
+gives up all of its dead. Some rooms give up a piece of the story too.
 
-Fights resolve on their own, your side on the left and theirs on the right. Your
-side is commanded and focuses whatever is nearest to dead; theirs is not
-commanded by anybody and swings at whatever is in front of it.
+A room he has taken is where the tree gets spent as well as bought. A lord eats
+a corpse off the floor instead of raising it; a pack mends whoever is worst off.
+Both come out of the pool that asks the dead back, so both cost him bodies he
+will not have.
+
+Fights resolve on their own, your side on the left and theirs on the right.
+Neither side picks a target: both swing at whoever is standing at the head of the
+other line. That is what makes the order of a line the whole tactic.
 
 ## Running it
 
@@ -94,6 +118,9 @@ by `scripts/gen-tilemap.mjs` and are not committed.
 
 - `src/sim/` - state and rules, no renderer. One `advance(g, ticks)` drives
   every force on the same clock. Runs headless under `node`.
+- `src/sim/tree.ts` - the three natures as data. Every node is a bag of numbers;
+  `perks(g)` sums whatever has been bought into one record, and each key in it is
+  read at exactly one place in `game.ts`. A new node is data, not code.
 - `src/gfx/` - the glyph atlas and a character grid built out of Pixi sprites.
 - `src/screens/` - map, the battle you drill into, and the sheets that overlay them.
 - `src/ui.ts` - palette, tap zones, sheet and button drawing.
@@ -104,3 +131,9 @@ measured apart from whether the game is any fun. `scripts/check-sim.ts` ends wit
 a bot that throws squads at the shallowest rooms and walks itself into the
 deepest - the floor of play, not the ceiling. It is also what caught the version
 of this game where sending a squad was always the wrong move.
+
+It now runs that bot down all three natures and fails if the best of them clears
+half again as many rooms as the worst. A weak nature is a tuning problem; a
+correct one is the end of build variety, and nothing else in the file is looking
+for it. It caught a lord who walked in at the front of his own line with nothing
+bought, and died in the third room of every run.

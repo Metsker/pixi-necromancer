@@ -4,22 +4,24 @@ import {
   CREATURES,
   KIND_NAME,
   KIND_NOTE,
+  RESOURCES,
+  RES_IDS,
   SQUAD_GLYPH,
-  STAT_IDS,
-  STAT_LABEL,
   type CreatureId,
   type Force,
   type GameState,
 } from "../sim/data.ts";
-import { bandOf, canOrder, canSend, heroDmg, heroForce, reserve, squads } from "../sim/game.ts";
+import { bandOf, canOrder, canSend, heroForce, perks, reserve, squads, unitDmg } from "../sim/game.ts";
+import { PATHS, PATH_IDS } from "../sim/tree.ts";
 import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
+import { drawTree } from "./tree.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
 // The widest a line of a sheet is allowed to get, however wide the grid is
 export const SHEET_COLS = 40;
 
-export type PanelId = "" | "node" | "roster" | "army" | "unit" | "menu" | "confirm";
+export type PanelId = "" | "node" | "roster" | "army" | "unit" | "menu" | "confirm" | "tree";
 
 export type Ui = {
   panel: PanelId;
@@ -31,10 +33,14 @@ export type Ui = {
   // How much of the piece being read has arrived, and which piece that is
   typed: number;
   loreId: number | null;
+  // The node of the tree being read, which is not the same as one being bought
+  tnode: number;
 };
 
-export type Shown = PanelId | "level" | "lore" | "over";
+export type Shown = PanelId | "path" | "lore" | "over";
 
+// The tree draws itself rather than going through sheet(), so it is not listed
+// here: what this drives is the width check, and a board is not a list of lines.
 export const PANELS: Shown[] = [
   "node",
   "roster",
@@ -42,7 +48,7 @@ export const PANELS: Shown[] = [
   "unit",
   "menu",
   "confirm",
-  "level",
+  "path",
   "lore",
   "over",
 ];
@@ -52,8 +58,9 @@ export type Spec = { title: string; lines: Line[]; minWidth: number };
 // Anything the run owes the player is shown before anything the player asked
 // for. While any of these is up the clock is stopped, so nothing is missed.
 export function shownPanel(g: GameState, ui: Ui): Shown {
+  if (!g.path) return "path";
   if (g.loreQueue.length) return "lore";
-  if (g.unspent > 0) return "level";
+  if (g.unspent > 0) return "tree";
   if (g.over) return "over";
   return ui.panel;
 }
@@ -94,7 +101,15 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         title: "MENU",
         minWidth: Math.min(wide, 16),
         lines: [
-          ...STAT_IDS.map((s) => ({ text: `${s.padEnd(6)}${g.build[s]}`, fg: C.mid })),
+          {
+            text: g.path ? `${PATHS[g.path].name} ${g.taken.length}/12` : "",
+            act: { t: "tree" },
+            fg: C.gold,
+          },
+          ...RES_IDS.map((r) => ({
+            text: `${RESOURCES[r].glyph} ${RESOURCES[r].short.padEnd(5)}${g.res[r]}`,
+            fg: C.mid,
+          })),
           { text: "" },
           ...say(`rooms taken ${g.cleared}`, C.dim),
           ...say(`dead ${g.lost}`, C.dim),
@@ -114,12 +129,15 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
           { text: "no, keep going", act: { t: "close" } },
         ],
       };
-    case "level":
+    case "path":
       return {
-        title: `LEVEL ${g.level + 1}`,
-        minWidth: 0,
-        // Built from the list, so a new one cannot be added and go unoffered
-        lines: STAT_IDS.map((s) => ({ text: STAT_LABEL[s], act: { t: "stat", s } })),
+        title: "INTO THE DARK",
+        minWidth: Math.min(wide, 16),
+        // Built from the list, so a nature cannot be added and go unoffered
+        lines: PATH_IDS.flatMap((id) => [
+          { text: `${PATHS[id].glyph} ${PATHS[id].name}`, act: { t: "path" as const, id }, fg: COL(PATHS[id].color) },
+          { text: PATHS[id].hint, fg: C.dim },
+        ]),
       };
     case "lore": {
       const piece = LORE[g.loreQueue[0] ?? 0];
@@ -153,6 +171,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
 }
 
 export function drawPanel(grid: Grid, g: GameState, ui: Ui, hits: Hits, panel: Shown) {
+  // A board is not a list of lines, so it does not go through sheet()
+  if (panel === "tree") return drawTree(grid, g, hits, ui.tnode);
   const spec = panelSpec(g, ui, panel, grid.cols);
   if (spec) sheet(grid, hits, spec.title, spec.lines, spec.minWidth);
 }
@@ -238,8 +258,12 @@ function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
     lines: [
       { text: `${t.glyph} ${u.hp}/${u.maxHp}`, fg: C.ink },
       { text: t.role, fg: C.gold },
-      { text: `hits for ${u.creature === "hero" ? heroDmg(g) : t.dmg}`, fg: C.mid },
+      { text: `hits for ${unitDmg(g, u)}`, fg: C.mid },
       { text: pace, fg: C.mid },
+      // Only worth saying to somebody who has bought a reason to care
+      ...(u.rooms > 0 && (perks(g).vetDmg || perks(g).vetHp)
+        ? [{ text: `${u.rooms} rooms lived`, fg: C.gold }]
+        : []),
       ...(t.tag ? [{ text: "" }, ...wrap(t.tag, wide).map((text) => ({ text, fg: C.dim }))] : []),
       { text: "" },
       { text: "back", act: { t: "army" } },
