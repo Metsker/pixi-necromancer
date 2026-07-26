@@ -134,9 +134,17 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
     Math.ceil(theirLine.length / perRank(cols)),
   );
   const head = 3;
-  const roster = Math.min(shown, Math.max(1, Math.floor((last - head - 6) / ROW_H)));
-  const fixed = roster * ROW_H + 2;
-  const arena = last - head - fixed >= ranks + 5 ? ranks + 3 : 0;
+  // The arena is what you opened the fight to watch, so it is served first and
+  // a long line does not squeeze it off the screen. The roster takes what is
+  // left over and says how many it could not fit; the log takes what is left
+  // after that, which is often nothing, and nothing is the right thing to lose.
+  const wants = ranks + 3;
+  const arena = last - head - (ROW_H + 3) >= wants ? wants : 0;
+  // Two rules, plus a row for "+n more" whenever the roster cannot show it all
+  const spare = last - head - arena - 2;
+  let roster = Math.min(shown, Math.max(1, Math.floor(spare / ROW_H)));
+  if (roster < shown && roster * ROW_H + 1 > spare) roster -= 1;
+  roster = Math.max(1, roster);
 
   let y = head;
   if (arena) {
@@ -160,7 +168,10 @@ export function drawBattle(full: Surface, g: GameState, f: Force, hits: Hits, sp
   for (let x = 0; x < cols; x++) grid.put(x, y, "─", C.frame);
   y += 1;
 
-  for (const line of b.log.slice(-(last - y))) grid.text(0, y++, line.slice(0, cols), C.dim);
+  // Whatever rows are left, and there may be none: slice(-0) is the whole log,
+  // which would write it over the button strip
+  const tail = Math.max(0, last - y);
+  for (const line of tail ? b.log.slice(-tail) : []) grid.text(0, y++, line.slice(0, cols), C.dim);
 
   // What the tree lets him do with a room he is standing in, if anything. Both
   // spend out of the pool that would otherwise have raised something.

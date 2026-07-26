@@ -364,6 +364,62 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   ok("on both sides of it", Math.max(...drawnAt) <= desk.cols - 5);
 }
 
+// A fight you cannot see is a fight there was no reason to open. A long line
+// used to push the arena off the bottom of the screen, because the roster was
+// given its rows first and took all of them.
+{
+  type Cell = { ch: string; fg: number; bg: number };
+  const cells = new Map<string, Cell>();
+  const stub = {
+    cols: 24,
+    rows: 52,
+    cssCell: 16,
+    put(x: number, y: number, ch: string, fg: number, bg?: number) {
+      const was = cells.get(`${x},${y}`);
+      cells.set(`${x},${y}`, { ch, fg, bg: bg ?? was?.bg ?? C.bg });
+    },
+    fill(x: number, y: number, w: number, h: number, bg: number) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.put(x + i, y + j, " ", bg, bg);
+    },
+    text(x: number, y: number, str: string, fg: number, bg?: number) {
+      [...str].forEach((ch, i) => this.put(x + i, y, ch, fg, bg));
+    },
+    center(x: number, y: number, w: number, str: string, fg: number, bg?: number) {
+      const t = [...str].slice(0, w);
+      this.text(x + Math.max(0, (w - t.length) >> 1), y, t.join(""), fg, bg);
+    },
+  };
+
+  const g = newGame(5150);
+  choosePath(g, "rat");
+  const f = g.forces[0];
+  while (raise(g, "rat")) {
+    /* the longest line he can field is the worst case for the arena */
+  }
+  orderHero(g, g.nodes.find((n) => n.state === "open")!.id);
+  advance(g, TUNING.marchTicks + 1);
+  const b = f.battle!;
+  ok("a long line is actually long", b.units.filter((u) => u.faction === "player").length >= 7);
+
+  // Every grid a phone or a desk will ever hand it, including the shortest
+  for (const rows of [MIN_ROWS, 32, 40, 52]) {
+    for (const cols of [MIN_COLS, 24, 44, MAX_COLS]) {
+      stub.rows = rows;
+      stub.cols = cols;
+      cells.clear();
+      drawBattle(stub as unknown as Parameters<typeof drawBattle>[0], g, f, new Hits(), 1);
+      const drawn = [...cells.values()];
+      ok(`${cols}x${rows}: the arena survives a full line`, drawn.some((c) => c.ch === "▔"));
+      ok(`${cols}x${rows}: and its floor with it`, drawn.some((c) => c.ch === "▁"));
+      // Somebody of his is still named, however little room is left for a roster
+      ok(
+        `${cols}x${rows}: the front of his line is still named`,
+        drawn.some((c) => c.ch === CREATURES.rat.short[0]),
+      );
+    }
+  }
+}
+
 // Anything the code draws has to exist in the sheet, or it renders as nothing at
 // all. Every non-ascii character in src/ is a glyph somebody meant to see.
 const seg = new Intl.Segmenter("en", { granularity: "grapheme" });
