@@ -49,10 +49,11 @@ export type Battle = {
   node: number;
   units: BattleUnit[];
   hit: Hit[];
-  // Whose line swings first this fight, decided on the way in
+  // Whose line swings first this fight, decided on the way in. The two sides
+  // then alternate, so twice the bodies is not twice the blows.
   lead: Faction;
-  order: number[];
-  turn: number;
+  next: Faction;
+  cursor: Record<Faction, number>;
   round: number;
   log: string[];
   done: "" | "win" | "loss";
@@ -122,8 +123,8 @@ export const TUNING = {
   idlePoll: 10,
   maxRounds: 60,
 
-  heroHp: 100,
-  heroDmg: 9,
+  heroHp: 200,
+  heroDmg: 26,
   startingMinions: 2,
   // A room he takes is a room he can rest in, so his question is only ever
   // whether he can win this one, not how much the last one cost
@@ -132,8 +133,8 @@ export const TUNING = {
   baseCap: 6,
   squadCap: 6,
   willPerPoint: 1,
-  mightPerPoint: 6,
-  wardPerPoint: 34,
+  mightPerPoint: 10,
+  wardPerPoint: 50,
   xpPerLevel: 26,
 
   raiseChance: 0.9,
@@ -146,15 +147,15 @@ export const TUNING = {
   swarmPerAlly: 1,
   swarmCap: 4,
   bulwarkCut: 0.5,
-  witherCut: 0.5,
+  witherCut: 0.7,
   witherTurns: 3,
-  siphonHeal: 5,
+  siphonHeal: 2,
   rendBonus: 3,
   tollDamage: 8,
   splitTiers: 2,
 
-  roomBase: 3,
-  tierHp: 10,
+  roomBase: 2,
+  tierHp: 4,
   tierDmgAt: 3,
   logLines: 40,
 };
@@ -174,11 +175,11 @@ export type Template = {
 
 // color is an index into PALETTE
 export const CREATURES: Record<CreatureId, Template> = {
-  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 16, hp: 100, dmg: 9, speed: 3, xp: 0,  ability: null,      tag: "" },
+  hero:    { name: "Necromancer", short: "You",    glyph: "🕱", color: 16, hp: 200, dmg: 26, speed: 3, xp: 0,  ability: null,      tag: "" },
   rat:     { name: "Plague Rat",  short: "Rat",    glyph: "⚇", color: 15, hp: 18,  dmg: 3, speed: 5, xp: 6,  ability: "swarm",   tag: "+1 dmg per ally" },
   hound:   { name: "Grave Hound", short: "Hound",  glyph: "⋒", color: 14, hp: 26,  dmg: 4, speed: 5, xp: 9,  ability: "rend",    tag: "+3 vs wounded" },
   knight:  { name: "Bone Knight", short: "Knight", glyph: "⌤", color: 22, hp: 40,  dmg: 3, speed: 2, xp: 12, ability: "bulwark", tag: "halves damage" },
-  moth:    { name: "Grave Moth",  short: "Moth",   glyph: "⫙", color: 20, hp: 24,  dmg: 3, speed: 4, xp: 9,  ability: "wither",  tag: "halves their dmg" },
+  moth:    { name: "Grave Moth",  short: "Moth",   glyph: "⫙", color: 20, hp: 24,  dmg: 3, speed: 4, xp: 9,  ability: "wither",  tag: "blunts their blows" },
   wisp:    { name: "Corpse Wisp", short: "Wisp",   glyph: "◉", color: 21, hp: 22,  dmg: 3, speed: 3, xp: 9,  ability: "siphon",  tag: "heals the hurt" },
   warden:  { name: "Tomb Warden", short: "Warden", glyph: "⛨", color: 19, hp: 46,  dmg: 4, speed: 2, xp: 14, ability: "toll",    tag: "hurts all on death" },
   ossuary: { name: "The Ossuary", short: "Ossuary",glyph: "⚱", color: 17, hp: 130, dmg: 8, speed: 3, xp: 60, ability: "split",   tag: "splits when broken" },
@@ -225,8 +226,8 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
 };
 
 export const STAT_LABEL: Record<Stat, string> = {
-  might: "MIGHT  +6 dmg",
-  ward: "WARD  +34 hp",
+  might: "MIGHT +10 dmg",
+  ward: "WARD  +50 hp",
   will: "WILL  +1 slot",
 };
 

@@ -378,44 +378,34 @@ function frontOf(b: Battle, side: BattleUnit["faction"]): BattleUnit | undefined
   return living(b, side).sort((a, z) => a.slot - z.slot || a.id - z.id)[0];
 }
 
-// One round is one pass down both lines, fastest first. Ties go to whichever
-// side won the toss on the way in, so the first blow is not always yours.
-export function orderFor(b: Battle): number[] {
-  const lead = b.lead;
-  return living(b, "player")
-    .concat(living(b, "enemy"))
-    .sort(
-      (a, z) =>
-        z.speed - a.speed ||
-        (a.faction === lead ? 0 : 1) - (z.faction === lead ? 0 : 1) ||
-        a.slot - z.slot ||
-        a.id - z.id,
-    )
+// A side's own queue, fastest first and front of the line to break a tie
+export function orderFor(b: Battle, side: BattleUnit["faction"]): number[] {
+  return living(b, side)
+    .sort((a, z) => z.speed - a.speed || a.slot - z.slot || a.id - z.id)
     .map((u) => u.id);
 }
 
-// One unit swings, and that is the whole tick. Watching a fight is watching the
-// line take its turns rather than a whole round landing at once.
+// The two lines take it in turns, one blow each, and each line cycles through
+// its own people. Bringing six against three means each of the six swings half
+// as often - the numbers buy you a deeper bench, not more blows.
 export function takeTurn(b: Battle) {
   if (b.done) return;
   b.hit = [];
-  let guard = b.units.length * 2 + 4;
-  while (guard-- > 0) {
-    if (b.turn >= b.order.length) {
-      b.round += 1;
-      b.order = orderFor(b);
-      b.turn = 0;
-      if (!b.order.length) break;
+  const side = b.next;
+  const list = orderFor(b, side);
+  if (list.length) {
+    const i = b.cursor[side] % list.length;
+    const u = b.units.find((o) => o.id === list[i]);
+    b.cursor[side] = i + 1 >= list.length ? 0 : i + 1;
+    if (b.cursor[side] === 0 && side === b.lead) b.round += 1;
+    const foe = u ? frontOf(b, side === "player" ? "enemy" : "player") : undefined;
+    if (u && foe) {
+      strike(b, u, foe);
+      if (u.withered > 0) u.withered -= 1;
     }
-    const u = b.units.find((o) => o.id === b.order[b.turn]);
-    b.turn += 1;
-    if (!u || u.hp <= 0) continue;
-    const foe = frontOf(b, u.faction === "player" ? "enemy" : "player");
-    if (!foe) break;
-    strike(b, u, foe);
-    if (u.withered > 0) u.withered -= 1;
-    break;
   }
+  b.next = side === "player" ? "enemy" : "player";
+
   if (!living(b, "enemy").length) b.done = "win";
   else if (!living(b, "player").length) b.done = "loss";
   // A fight that will not end is a fight you lost slowly
@@ -433,9 +423,9 @@ function makeBattle(g: GameState, f: Force): Battle {
     node: f.at,
     units: [],
     hit: [],
-    lead: rnd() < 0.5 ? "player" : "enemy",
-    order: [],
-    turn: 0,
+    lead: "player",
+    next: "player",
+    cursor: { player: 0, enemy: 0 },
     round: 0,
     log: [],
     done: "",
@@ -474,7 +464,8 @@ function makeBattle(g: GameState, f: Force): Battle {
       withered: 0,
     });
   });
-  b.order = orderFor(b);
+  b.lead = rnd() < 0.5 ? "player" : "enemy";
+  b.next = b.lead;
   blog(b, f.kind === "hero" ? "You step in." : "They go in.");
   blog(b, b.lead === "player" ? "You swing first." : "They swing first.");
   return b;
@@ -774,7 +765,7 @@ export function newGame(seedValue: number): GameState {
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 4;
+const SAVE_VERSION = 5;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [

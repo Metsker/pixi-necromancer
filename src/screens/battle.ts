@@ -14,6 +14,9 @@ import { BTN_ROWS, C, COL, Hits, bar, buttons } from "../ui.ts";
 const ROW_H = 2; // a name row and a bar row per unit in the roster
 const LUNGE = 2; // how far a fighter steps into the middle to land a blow
 
+// How long a blow stays lit, in ticks
+const FLASH_TICKS = 1;
+
 // The three beats of getting up: the light finds it, the colour comes back,
 // and then it is standing at the end of your line.
 const BEAM_UNTIL = 0.3;
@@ -48,7 +51,8 @@ export function drawBattle(grid: Grid, g: GameState, f: Force, hits: Hits, speed
   const age = clamp(TUNING.turnTicks - (f.next - g.time), 0, TUNING.turnTicks);
   const spoils = f.mode === "spoils";
   const swing = spoils ? 0 : age < 1 ? LUNGE : 1;
-  const landing = spoils ? [] : b.hit;
+  // The white is a flash, not a state: it is gone well before the turn is
+  const landing = spoils || age > FLASH_TICKS ? [] : b.hit;
 
   const raised = g.risen;
   let rise: Rise | null = null;
@@ -140,12 +144,12 @@ function drawArena(
       const home = mid - dir * (2 + (i % wide) * 3 + rank);
       const x = home + dir * step - dir * knocked;
       const t = CREATURES[u.creature];
-      grid.put(x, y, down ? "☠" : t.glyph, down ? C.frame : hurt ? C.ink : COL(t.color), C.bg);
-
-      // The light comes down out of the ceiling and finds the body
+      // The light comes down out of the ceiling and closes over the body
       if (woken && rise!.beam) {
-        for (let by = top + 1; by < y; by++) grid.put(x, by, "║", C.ink, C.bg);
+        for (let by = top + 1; by <= y; by++) grid.put(x, by, "║", C.ink, C.bg);
+        return;
       }
+      grid.put(x, y, down ? "☠" : t.glyph, down ? C.frame : hurt ? C.ink : COL(t.color), C.bg);
       if (!knocked) return;
       grid.put(x + dir, y, "✕", C.ink, C.bg);
       const num = `${hurt}`;

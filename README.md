@@ -30,8 +30,9 @@ its piece of the story until he goes through it himself.
 
 A fight of your own opens on screen by itself: two ranks facing off across a
 dark room, stepping in to swing and knocked back when a blow lands, with the
-health of both sides under them. It is taken **one blow at a time**, down both
-lines in speed order, and a toss on the way in decides which side opens.
+health of both sides under them. It is taken **one blow at a time**, and the two
+lines **alternate**: bringing six against three does not buy you six blows to
+three, it buys you a deeper bench. A toss on the way in decides who opens.
 
 **Order is the tactic.** Whoever stands at the front of a line is what the other
 side hits, and the army sheet numbers your line so you can see it: tap the arrow

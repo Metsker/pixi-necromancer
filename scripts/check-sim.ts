@@ -19,7 +19,6 @@ import {
   orderHero,
   raise,
   reserve,
-  orderFor,
   routeTo,
   takeTurn,
   save,
@@ -188,13 +187,10 @@ const unit = (over: Partial<BattleUnit>): BattleUnit => ({
   id: 0, src: -1, creature: "rat", faction: "player",
   hp: 10, maxHp: 10, dmg: 2, speed: 3, slot: slots++, tier: 0, withered: 0, ...over,
 });
-const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => {
-  const b: Battle = {
-    node: 0, units, hit: [], lead, order: [], turn: 0, round: 0, log: [], done: "", nextId: units.length,
-  };
-  b.order = orderFor(b);
-  return b;
-};
+const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
+  node: 0, units, hit: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
+  round: 0, log: [], done: "", nextId: units.length,
+});
 
 {
   const me = unit({ id: 0 });
@@ -240,6 +236,21 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   ABILITIES.split.onDeath!(deep, bt2);
   ok("splitting stops somewhere", bt2.units.length === 1);
 }
+{
+  // The lines alternate: four against one does not mean four blows to one.
+  // Plain heroes on both sides, so no ability muddies the arithmetic.
+  const plain = (id: number, faction: "player" | "enemy") =>
+    unit({ id, faction, creature: "hero", dmg: 1, hp: 200, maxHp: 200, speed: 3 });
+  const many = [0, 1, 2, 3].map((i) => plain(i, "player"));
+  const lone = plain(10, "enemy");
+  const bt = battle([...many, lone], "player");
+  for (let i = 0; i < 8; i++) takeTurn(bt);
+  ok("eight turns is four blows a side", 200 - lone.hp === 4);
+  ok("the outnumbered one swings just as often", 200 - many[0].hp === 4);
+  ok("and only the front of the line takes them", many.slice(1).every((u) => u.hp === 200));
+  ok("each of the four swings a quarter as often", bt.cursor.player === 0);
+}
+
 {
   // One unit swings a turn, and the front of the other line is what it hits
   const me = unit({ id: 0, dmg: 5 });
