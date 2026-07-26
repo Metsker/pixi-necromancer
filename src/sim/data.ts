@@ -161,7 +161,7 @@ export const TUNING = {
   bulwarkCut: 0.5,
   witherCut: 0.7,
   witherTurns: 3,
-  siphonHeal: 8,
+  siphonHeal: 4,
   rendBonus: 6,
   tollDamage: 14,
   splitTiers: 1,
