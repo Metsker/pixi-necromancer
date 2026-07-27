@@ -39,12 +39,13 @@ const FIGURE_W = 2;
 const FLASH_TICKS = 1;
 const MEND_TICKS = 3;
 
-// How long the light stays on a body that has just got up. It crosses to your
-// line on the frame you ask for it - the beam is what it stands up *in*, not a
-// beat you wait through before it is yours.
+// The three beats of getting up, in the arena: the light finds it, the colour
+// comes back, and then it walks to the end of your line. The roster does not
+// wait for any of it - see `answered` below.
 const BEAM_UNTIL = 0.3;
+const WAKE_UNTIL = 0.6;
 
-type Rise = { ids: Set<number>; beam: boolean };
+type Rise = { ids: Set<number>; beam: boolean; moved: boolean };
 
 // How a body is drawn right now: lit from above and still dead, or up
 type Look = { beam: (u: BattleUnit) => boolean; woken: (u: BattleUnit) => boolean };
@@ -105,19 +106,29 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
   let rise: Rise | null = null;
   if (raised && raised.node === b.node && g.time - raised.at <= TUNING.riseTicks) {
     const p = clamp((g.time - raised.at) / TUNING.riseTicks, 0, 1);
-    rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL };
+    rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL, moved: p >= WAKE_UNTIL };
   }
   const rising = (u: BattleUnit) => rise !== null && rise.ids.has(u.id);
-  // Asked for is up. Nothing waits out an animation to stop being a corpse on
-  // their side of the board.
-  const look: Look = { beam: (u) => rising(u) && rise!.beam, woken: (u) => taken.has(u.id) };
-  const crossedOver = (u: BattleUnit) => taken.has(u.id);
+  // Lit and still grey, its colour back, and standing in the line: the three
+  // beats, and the arena is the only place they are worth watching
+  const look: Look = {
+    beam: (u) => rising(u) && rise!.beam,
+    woken: (u) => taken.has(u.id) && !(rising(u) && rise!.beam),
+  };
+  const crossedOver = (u: BattleUnit) => taken.has(u.id) && (!rising(u) || rise!.moved);
 
-  // Once they have crossed they are on your side of the board, in the roster too.
-  // They land where a raise actually lands: at the end of the line.
+  // The figures walk across on their own clock. The roster does not: a body you
+  // have paid for is yours on that frame, and a health bar of yours has no
+  // business sitting in their column while an animation finishes.
+  const answered = (u: BattleUnit) => taken.has(u.id);
+  const rosterLook: Look = { beam: () => false, woken: answered };
+
+  // Where a raise actually lands, on both clocks: at the end of your line
   const ourLine = [...ours, ...theirs.filter(crossedOver)];
   const theirLine = theirs.filter((u) => !crossedOver(u));
-  const shown = Math.max(ourLine.length, theirLine.length);
+  const ourRows = [...ours, ...theirs.filter(answered)];
+  const theirRows = theirs.filter((u) => !answered(u));
+  const shown = Math.max(ourRows.length, theirRows.length);
 
   // A body you are standing over is yours to ask for, at a price, until you leave
   const holding = held(g) !== null;
@@ -158,18 +169,18 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
   y += 1;
 
   for (let i = 0; i < roster; i++) {
-    const mine = ourLine[i];
+    const mine = ourRows[i];
     if (mine) {
       const give = sellable(mine) ? TUNING.sellMana : 0;
-      side(grid, 0, half, y, mine, landing, mending, false, look, give ? 1 : 0, give, P);
+      side(grid, 0, half, y, mine, landing, mending, false, rosterLook, give ? 1 : 0, give, P);
       if (give) hits.add(at, y, half, ROW_H, { t: "sell", id: mine.src });
     }
-    if (theirLine[i]) {
-      const u = theirLine[i];
-      side(grid, rightX, rightW, y, u, landing, mending, true, look, bid(u), price(u), P);
+    if (theirRows[i]) {
+      const u = theirRows[i];
+      side(grid, rightX, rightW, y, u, landing, mending, true, rosterLook, bid(u), price(u), P);
       if (bid(u)) hits.add(at + rightX, y, rightW, ROW_H, { t: "reap", id: u.id });
     }
-    if (mine || theirLine[i]) grid.put(half, y, "│", C.frame);
+    if (mine || theirRows[i]) grid.put(half, y, "│", C.frame);
     y += ROW_H;
   }
   if (roster < shown) grid.center(0, y++, cols, `+${shown - roster} more`, C.frame);

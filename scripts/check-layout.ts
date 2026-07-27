@@ -311,10 +311,16 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   const lit = drawn.filter((c) => c.bg === C.violet && c.ch !== " " && c.ch !== "║");
   ok("and it is behind the body, not over it", lit.length === 1);
   ok("the body is still legible in it", lit[0].fg === C.shade);
+  // The figure keeps the three beats: it is lit where it fell, on their side of
+  // the arena, and walks across on its own clock
+  const litAt = [...r.cells.entries()].find(
+    ([, c]) => c.bg === C.violet && c.ch !== " " && c.ch !== "║",
+  )!;
+  ok("and it is lit where it fell", Number(litAt[0].split(",")[0]) > ((24 - 1) >> 1));
 
-  // Asked for is up. It crosses on the frame it is asked for, still lit, and
-  // stands where a raise actually puts it: at the end of your line. Nothing of
-  // it is left on their side of the divider wearing a health bar.
+  // ...while its row does not wait for any of that. A body you have paid for is
+  // yours on that frame, so the entry leaves their column at once and stands
+  // where a raise actually puts it: at the end of your line.
   const names: string[] = [];
   const column = new Map<string, number>();
   for (let y = 0; y < 52; y++) {
