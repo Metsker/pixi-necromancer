@@ -1262,6 +1262,27 @@ for (const p of POWERS) {
   ok("and is priced by what it becomes", manaCost(g, "peasant") === CREATURES.zombie.mana);
 }
 
+{
+  // ...and it stops being what it was on the frame it is asked for, or a
+  // villager stands in your line as a villager
+  const g = newGame(9194);
+  g.taken = TREE.map((n) => n.id);
+  const room = openRooms(g)[0];
+  room.foes = ["peasant", "peasant"];
+  g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
+  orderArmy(g, room.id);
+  advance(g, budgetFor);
+  const b = held(g)!;
+  ok("the village fell", b !== null);
+  const body = offered(g, b).find((u) => u.creature === "peasant");
+  if (body) {
+    ok("it answers", reap(g, body.id) === true);
+    ok("what stands up is bones", reserve(g).some((u) => u.creature === "skeleton"));
+    ok("and the board says bones too", body.creature === "skeleton");
+    ok("nothing living is left of it", !b.units.some((u) => b.taken.includes(u.id) && u.creature === "peasant"));
+  }
+}
+
 // ---------------------------------------------------------------- a fight you can watch
 
 {

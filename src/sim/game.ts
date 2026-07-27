@@ -935,6 +935,9 @@ export function reap(g: GameState, unitId: number): boolean {
   for (let i = 0; i < u.n; i++) raise(g, c);
   g.mana -= cost;
   b.taken.push(u.id);
+  // It is not what it was any more. The board reads this, so a villager asked
+  // for has to stop being a villager on the frame it is asked for.
+  u.creature = c;
   g.risen = { creatures: [c], units: [u.id], node: b.node, at: g.time };
   log(g, `${CREATURES[c].short} rises.`.slice(0, 20));
   return true;
@@ -1049,6 +1052,7 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
     for (let i = 0; i < u.n; i++) if (raise(g, c)) got += 1;
     if (!got) break;
     b.taken.push(u.id);
+    u.creature = c;
     rose.push(c);
     bodies.push(u.id);
   }

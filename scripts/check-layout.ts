@@ -312,19 +312,21 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   ok("and it is behind the body, not over it", lit.length === 1);
   ok("the body is still legible in it", lit[0].fg === C.shade);
 
-  // A body that has crossed stands where a raise actually puts it: at the end of
-  // the line. Getting up runs on its own clock, so the way to the end of it is
-  // to have started earlier.
-  g.risen.at = g.time - Math.ceil(TUNING.riseTicks * 0.9);
-  r.cells.clear();
-  drawBattle(r.surface, g, new Hits(), 1);
+  // Asked for is up. It crosses on the frame it is asked for, still lit, and
+  // stands where a raise actually puts it: at the end of your line. Nothing of
+  // it is left on their side of the divider wearing a health bar.
   const names: string[] = [];
+  const column = new Map<string, number>();
   for (let y = 0; y < 52; y++) {
     for (const who of [CREATURES[g.reserve[0].creature].short, CREATURES.warden.short]) {
-      if (r.row(y).includes(who) && !names.includes(who)) names.push(who);
+      const at = r.row(y).indexOf(who);
+      if (at < 0 || names.includes(who)) continue;
+      names.push(who);
+      column.set(who, at);
     }
   }
-  ok("the one that got up is on your side of it", names.includes(CREATURES.warden.short));
+  ok("the one that got up is on the board", names.includes(CREATURES.warden.short));
+  ok("and it is on your side of the divider", column.get(CREATURES.warden.short)! < ((24 - 1) >> 1));
   ok("and it stands behind what was already there", names[0] !== CREATURES.warden.short);
 
   // What you have to hand is on the board too, because they are the numbers you spend

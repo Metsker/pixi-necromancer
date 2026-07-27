@@ -39,12 +39,12 @@ const FIGURE_W = 2;
 const FLASH_TICKS = 1;
 const MEND_TICKS = 3;
 
-// The three beats of getting up: the light finds it, the colour comes back,
-// and then it is standing at the end of your line.
+// How long the light stays on a body that has just got up. It crosses to your
+// line on the frame you ask for it - the beam is what it stands up *in*, not a
+// beat you wait through before it is yours.
 const BEAM_UNTIL = 0.3;
-const WAKE_UNTIL = 0.6;
 
-type Rise = { ids: Set<number>; beam: boolean; moved: boolean };
+type Rise = { ids: Set<number>; beam: boolean };
 
 // How a body is drawn right now: lit from above and still dead, or up
 type Look = { beam: (u: BattleUnit) => boolean; woken: (u: BattleUnit) => boolean };
@@ -105,15 +105,13 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
   let rise: Rise | null = null;
   if (raised && raised.node === b.node && g.time - raised.at <= TUNING.riseTicks) {
     const p = clamp((g.time - raised.at) / TUNING.riseTicks, 0, 1);
-    rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL, moved: p >= WAKE_UNTIL };
+    rise = { ids: new Set(raised.units), beam: p < BEAM_UNTIL };
   }
   const rising = (u: BattleUnit) => rise !== null && rise.ids.has(u.id);
-  // Lit and still grey, its colour back, and standing in the line: the three beats
-  const look: Look = {
-    beam: (u) => rising(u) && rise!.beam,
-    woken: (u) => taken.has(u.id) && !(rising(u) && rise!.beam),
-  };
-  const crossedOver = (u: BattleUnit) => taken.has(u.id) && (!rising(u) || rise!.moved);
+  // Asked for is up. Nothing waits out an animation to stop being a corpse on
+  // their side of the board.
+  const look: Look = { beam: (u) => rising(u) && rise!.beam, woken: (u) => taken.has(u.id) };
+  const crossedOver = (u: BattleUnit) => taken.has(u.id);
 
   // Once they have crossed they are on your side of the board, in the roster too.
   // They land where a raise actually lands: at the end of the line.
