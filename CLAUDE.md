@@ -61,7 +61,9 @@ and cost a key, `boss` is the Ossuary. The map is coloured by *kind* and nothing
 Adding a room = one row in `KINDS` plus one entry in `KIND_ROLL`.
 
 **A key is a choice, never a wall.** `needsKey` blocks `canOrder` and `arrive` spends the key
-on the door, not on the room. Nothing sealed is rolled in the first ring (`OPEN_ROLL`), and
+on the door, not on the room. A sealed room says so on the map itself - it wears `⚷` in
+place of its right bracket, and the whole frame goes red until you are carrying one, because
+the panel behind it is a tap away and the map is not. Nothing sealed is rolled in the first ring (`OPEN_ROLL`), and
 `keepOpen` hands one over if every remaining way on is sealed and the purse is empty - so a
 key gates what is worth taking, never whether the run can go on.
 
@@ -70,7 +72,10 @@ the token on the map is the necromancer but he is not a combatant and has no hit
 A run opens on **one slot, `START_BAND` deep** - `rollBand` picks one thing out of
 `START_POOL` and hands you three of it, so the gate gives you a build to deepen rather than a
 spread to sort out. Raising a rat when you hold rats deepens that slot: `Unit.n` goes up and
-`hp`/`maxHp` are the whole stack's. Capacity is `commandCap` counted in **slots** (`fielded`) - four at the gate,
+`hp`/`maxHp` are the whole stack's. A body joins **at the slot's own size** (`eachHp`), never
+at the template's, so every body in a slot holds the same - that uniformity is what makes
+`maxHp` exactly `n` bodies, and what lets damage kill them one at a time.
+Capacity is `commandCap` counted in **slots** (`fielded`) - four at the gate,
 `TUNING.baseCap` plus the root - so what the cap holds is how many *different* things you can
 field. **Depth is free, breadth is the price.** `roomFor` is the one gate on `raise`: a kind
 it already holds never refuses another, which also means `while (raise(...))` never
@@ -79,15 +84,25 @@ blow. A slot is one body on the board with everything summed, so a narrow army h
 than a broad one - concentration is the tactic the arrows used to be. There is exactly one
 army and one order at a time.
 
-Nothing caps how deep one slot goes, and that is **not solved**. The probe says a slot cap
-flattens the arms - beast/undead/dark come in at 42/41/40 wins against an arm-agnostic 41,
-because free bodies outweigh the cards that buy power. The levers, when it needs one: a depth
-cap on `Unit.n`, or free rises (`raiseChance`, `glut`, `freeRise`, `gift`) only handing over
-kinds you do not already hold.
+Nothing caps how deep one slot goes, and that is **not solved** - but it stopped being
+urgent. A slot cap on its own flattened the arms (42/41/40 against an arm-agnostic 41, free
+bodies outweighing the cards); once bodies started falling out of a slot as it takes damage,
+depth stopped being free at the point it matters and the arms came back to 34/34/35/28. The
+levers, if it goes flat again: a depth cap on `Unit.n`, or free rises (`raiseChance`, `glut`,
+`freeRise`, `gift`) only handing over kinds you do not already hold.
 
 **The clock never stops for you** unless a sheet is up. `advance(g, ticks)` drives march,
 fight and spoils off `g.time` vs `g.next`; the speed control is x1/x2/x4/hold. Anything
 `shownPanel()` returns halts the ticker, so nothing you must answer can be missed.
+
+**A slot is a row of health bars, not one long one.** `BattleUnit.each` is what one body
+holds and `hp` is the pool; `n` is *derived* from the two and falls as the pool drains
+(`standing`). Five rats at ten taking thirty leaves two rats, and `dmg` is what **one** body
+hits for, so the blow is `dmg * n` and two rats hit for two rats. Every ability pays per body
+for the same reason. A wiped slot has `n === 0`, so anything counting the *dead* - xp, what
+rises, what a reap costs - asks `fell` instead, which is what the slot walked in with.
+`settle` writes the survivors back to the roster, shrinking `n` and `maxHp` with them, or a
+slot would heal its dead back at the next room.
 
 **A fight** is one blow at a time and the two lines alternate: bringing six against three
 does not buy six blows to three, it buys a deeper bench and (because the bigger line leads on

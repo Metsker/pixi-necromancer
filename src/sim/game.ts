@@ -231,6 +231,10 @@ export const unitDmg = (g: GameState, u: Unit): number => bodyDmg(perks(g), u.cr
 
 // ...and what the whole slot throws in one blow, which is what a fight uses
 export const stackDmg = (g: GameState, u: Unit): number => unitDmg(g, u) * u.n;
+
+// What one body of a slot holds. `maxHp` is always n of these - raise, sell and
+// every card that grows a body keep it that way - so it never needs storing.
+export const eachHp = (u: Unit) => Math.max(1, Math.round(u.maxHp / Math.max(1, u.n)));
 // Levelling sooner is a node of the board, held to the same cap as everything
 // else that is bought as a percentage
 export const xpNeeded = (g: GameState) =>
@@ -464,8 +468,12 @@ export const powerOf = (n: MapNode) =>
 // broad one, and makes the cap a question of how many kinds, not how many bodies.
 export function raise(g: GameState, creature: CreatureId): boolean {
   if (!roomFor(g, creature)) return false;
-  const hp = bodyHp(perks(g), creature);
   const stack = g.reserve.find((u) => u.creature === creature);
+  // Into the slot at the slot's own size, not at the template's. Bodies in a
+  // slot are one row of equal bars - that is what lets damage kill them off one
+  // at a time - so a body joining veterans is a veteran, and a slot that has
+  // been fed cards or rooms feeds them to what walks in.
+  const hp = stack ? eachHp(stack) : bodyHp(perks(g), creature);
   if (stack) {
     stack.n += 1;
     stack.maxHp += hp;
@@ -540,6 +548,8 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
       if (back <= 0) return;
       s.hp -= back;
       hurt.hp += back;
+      sync(s);
+      sync(hurt);
       b.mend.push({ id: hurt.id, by: s.id, n: back });
     },
   },
@@ -562,6 +572,7 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
         creature: s.creature,
         faction: s.faction,
         n: s.n,
+        each: Math.max(1, Math.ceil(s.each / 2)),
         hp: Math.ceil(s.maxHp / 2),
         maxHp: Math.ceil(s.maxHp / 2),
         dmg: Math.max(1, Math.floor(s.dmg * 0.6)),
@@ -586,9 +597,26 @@ function blog(b: Battle, line: string) {
   if (b.log.length > TUNING.logLines) b.log.shift();
 }
 
+// Bodies standing in a slot, off what the slot is still holding. A slot is a
+// row of health bars, not one long one: five rats at ten take thirty and two of
+// them walk out of it, and two rats hit for two rats.
+export const standing = (u: BattleUnit) =>
+  u.hp > 0 ? Math.min(Math.ceil(u.hp / Math.max(1, u.each)), Math.ceil(u.maxHp / Math.max(1, u.each))) : 0;
+
+const sync = (u: BattleUnit) => {
+  u.n = standing(u);
+};
+
+// How many bodies the slot walked in with, which is how many corpses it leaves.
+// `n` is the living count and a wiped slot has none, so anything counting the
+// dead - xp, what rises, what a reap costs - has to ask this instead.
+export const fell = (u: BattleUnit) =>
+  Math.max(1, Math.round(u.maxHp / Math.max(1, u.each)));
+
 function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
   if (u.hp <= 0) return;
   u.hp = Math.max(0, u.hp - amount);
+  sync(u);
   b.hit.push({ id: u.id, by, n: amount });
   if (u.hp > 0) return;
   blog(b, `${CREATURES[u.creature].short} falls.`);
@@ -601,7 +629,10 @@ function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
 }
 
 function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
-  let raw = a.dmg + (hooks(a).bonus?.(a, d, b) ?? 0);
+  // What one body hits for, times the bodies still standing. Everything the
+  // hooks add is paid per body too, so a slot that has lost three swings as
+  // three fewer bodies rather than as the slot it walked in as.
+  let raw = a.dmg * a.n + (hooks(a).bonus?.(a, d, b) ?? 0);
   // Bought deep enough, everything of yours crowds the way a rat does...
   if (a.faction === "player" && b.perks.swarmAll && CREATURES[a.creature].ability !== "swarm") {
     raw += ABILITIES.swarm.bonus!(a, d, b);
@@ -720,9 +751,10 @@ function makeBattle(g: GameState): Battle {
       creature: u.creature,
       faction: "player",
       n: u.n,
+      each: eachHp(u),
       hp: u.hp,
       maxHp: u.maxHp,
-      dmg: stackDmg(g, u),
+      dmg: unitDmg(g, u),
       tier: 0,
       withered: 0,
     });
@@ -731,16 +763,17 @@ function makeBattle(g: GameState): Battle {
   // blows to your one and the whole point of a slot would be on your side only
   stackOf(n.foes).forEach(([c, count], slot) => {
     const t = CREATURES[c];
-    const hp = (t.hp + tierHpFor(n.tier)) * count;
+    const each = t.hp + tierHpFor(n.tier);
     b.units.push({
       id: b.nextId++,
       src: -1,
       creature: c,
       faction: "enemy",
       n: count,
-      hp,
-      maxHp: hp,
-      dmg: (t.dmg + tierDmgFor(n.tier)) * count,
+      each,
+      hp: each * count,
+      maxHp: each * count,
+      dmg: t.dmg + tierDmgFor(n.tier),
       slot,
       tier: 0,
       withered: 0,
@@ -839,14 +872,22 @@ function dead(g: GameState) {
 }
 
 function settle(g: GameState, b: Battle) {
-  // Survivors keep their wounds; the fallen do not come back. A slot falls whole,
-  // so what it cost you is everybody who was standing in it.
+  // Survivors keep their wounds, and a slot comes out as deep as what lived
+  // through it: bodies fell out of the pool during the fight, so the roster has
+  // to lose them too, or a slot heals its dead back at the next room.
   const alive = new Map(
-    b.units.filter((u) => u.faction === "player" && u.hp > 0).map((u) => [u.src, u.hp]),
+    b.units.filter((u) => u.faction === "player" && u.hp > 0).map((u) => [u.src, u]),
   );
-  g.lost += g.reserve.filter((u) => !alive.has(u.id)).reduce((n, u) => n + u.n, 0);
+  const was = bodies(g);
   g.reserve = g.reserve.filter((u) => alive.has(u.id));
-  for (const u of g.reserve) u.hp = alive.get(u.id)!;
+  for (const u of g.reserve) {
+    const still = alive.get(u.id)!;
+    const each = eachHp(u);
+    u.n = still.n;
+    u.maxHp = each * still.n;
+    u.hp = Math.min(still.hp, u.maxHp);
+  }
+  g.lost += was - bodies(g);
 
   // The board stays up for a beat afterwards. That beat is where the dead get
   // up, which is the one thing in this game worth stopping to watch.
@@ -907,7 +948,10 @@ export function mend(g: GameState): boolean {
   const back = Math.min(u.maxHp - u.hp, perks(g).mend * u.n);
   u.hp += back;
   const shown = b.units.find((o) => o.src === u.id);
-  if (shown) shown.hp = u.hp;
+  if (shown) {
+    shown.hp = u.hp;
+    shown.n = u.n;
+  }
   b.mend.push({ id: shown?.id ?? -1, by: -1, n: back });
   log(g, `${CREATURES[u.creature].short} mended. +${back}`.slice(0, 20));
   return true;
@@ -921,7 +965,8 @@ export function reap(g: GameState, unitId: number): boolean {
   const u = b.units.find((o) => o.id === unitId);
   if (!u || !offered(g, b).includes(u)) return false;
   const c = raiseAs(perks(g), u.creature);
-  const cost = manaCost(g, u.creature) * u.n;
+  const bodies = fell(u);
+  const cost = manaCost(g, u.creature) * bodies;
   if (g.mana < cost) {
     log(g, "Not enough of you.");
     return false;
@@ -932,7 +977,7 @@ export function reap(g: GameState, unitId: number): boolean {
     log(g, "No room for it.");
     return false;
   }
-  for (let i = 0; i < u.n; i++) raise(g, c);
+  for (let i = 0; i < bodies; i++) raise(g, c);
   g.mana -= cost;
   b.taken.push(u.id);
   // It is not what it was any more. The board reads this, so a villager asked
@@ -966,6 +1011,7 @@ export function sell(g: GameState, unitId: number): boolean {
   const shown = b.units.find((o) => o.src === u.id);
   if (shown) {
     shown.n = u.n;
+    shown.each = each;
     shown.maxHp = Math.max(1, u.maxHp);
     shown.hp = u.hp;
   }
@@ -1023,6 +1069,8 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
     mended += u.hp - before;
     const shown = b.units.find((o) => o.src === u.id);
     if (shown) {
+      shown.each = eachHp(u);
+      shown.n = u.n;
       shown.maxHp = u.maxHp;
       shown.hp = u.hp;
     }
@@ -1031,7 +1079,7 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
 
   // Split spawns are not corpses anybody left behind, so they pay nothing
   const fallen = b.units.filter((u) => u.faction === "enemy" && u.hp <= 0 && u.tier === 0);
-  const xp = fallen.reduce((s, u) => s + CREATURES[u.creature].xp * u.n, 0);
+  const xp = fallen.reduce((s, u) => s + CREATURES[u.creature].xp * fell(u), 0);
   gainXp(g, xp);
 
   const res = loot(n);
@@ -1049,7 +1097,7 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
     if (!free && rnd() >= TUNING.raiseChance + P.riseLuck / 100) continue;
     const c = raiseAs(P, u.creature);
     let got = 0;
-    for (let i = 0; i < u.n; i++) if (raise(g, c)) got += 1;
+    for (let i = 0; i < fell(u); i++) if (raise(g, c)) got += 1;
     if (!got) break;
     b.taken.push(u.id);
     u.creature = c;

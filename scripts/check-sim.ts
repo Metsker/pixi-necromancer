@@ -38,6 +38,7 @@ import {
   rollBand,
   rollOffer,
   roomFor,
+  fell,
   routeTo,
   raiseAs,
   stackDmg,
@@ -93,6 +94,7 @@ function ok(label: string, cond: boolean) {
 
 // Rooms you can simply walk into. A sealed one is not one of them until a key
 // is in the purse, which is what the key block below is for.
+const living = (b: Battle) => b.units.filter((u) => u.hp > 0);
 const openRooms = (g: GameState) => g.nodes.filter((n) => n.state === "open" && !needsKey(n));
 // Levels, without having to find enough dead to pay for them
 const gainXpTo = (g: GameState, level: number) => {
@@ -273,7 +275,8 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
   const mine = g.battle!.units.filter((u) => u.faction === "player");
   ok("one body a slot on the board", mine.length === fielded(g));
   ok("carrying the count", mine[0].n === g.reserve[0].n);
-  ok("and the combined blow", mine[0].dmg === stackDmg(g, g.reserve[0]));
+  ok("and one body's blow", mine[0].dmg === unitDmg(g, g.reserve[0]));
+  ok("so the slot swings for all of them", mine[0].dmg * mine[0].n === stackDmg(g, g.reserve[0]));
 
   // Their side stacks the same way, or a room of four rats gets four blows to one
   const theirs = g.battle!.units.filter((u) => u.faction === "enemy");
@@ -509,15 +512,49 @@ let slots = 0;
 // A warden is the one thing that is completely inert while it is standing - its
 // only hook fires on death - so it is what the arithmetic below is measured on.
 // Anything else quietly adds a swarm bonus or halves what it takes.
-const unit = (over: Partial<BattleUnit>): BattleUnit => ({
-  id: 0, src: -1, creature: "warden", faction: "player", n: 1,
-  hp: 10, maxHp: 10, dmg: 2, slot: slots++, tier: 0, withered: 0, ...over,
-});
+const unit = (over: Partial<BattleUnit>): BattleUnit => {
+  const u = {
+    id: 0, src: -1, creature: "warden" as CreatureId, faction: "player" as const, n: 1,
+    each: 10, hp: 10, maxHp: 10, dmg: 2, slot: slots++, tier: 0, withered: 0, ...over,
+  };
+  // A slot of one holds all of it, so `each` follows maxHp unless it is asked for
+  if (over.each === undefined) u.each = Math.max(1, Math.round(u.maxHp / Math.max(1, u.n)));
+  return u;
+};
 const noPerks = perks({ ...newGame(1), taken: [], powers: [] } as GameState);
 const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battle => ({
   node: 0, units, hit: [], mend: [], lead, next: lead, cursor: { player: 0, enemy: 0 },
   round: 0, log: [], done: "", healed: 0, taken: [], nextId: units.length, perks: { ...noPerks },
 });
+
+{
+  // A slot is a row of health bars, not one long one. Bodies fall out of it as
+  // the pool drains, and what is left swings for what is left.
+  const five = unit({ id: 0, n: 5, each: 10, hp: 50, maxHp: 50, dmg: 3 });
+  const hitter = unit({ id: 1, faction: "enemy", n: 1, each: 9999, hp: 9999, maxHp: 9999, dmg: 30 });
+  const b = battle([five, hitter], "enemy");
+  takeTurn(b);
+  ok("thirty off five tens kills three of them", five.n === 2);
+  ok("and leaves the two of them whole", five.hp === 20);
+  ok("the slot is still standing", five.hp > 0 && living(b).includes(five));
+  takeTurn(b);
+  ok("and two of them swing for two", 9999 - hitter.hp === 6);
+
+  // A body half gone is a body still standing, so the count rounds up
+  const part = unit({ id: 2, n: 5, each: 10, hp: 50, maxHp: 50, dmg: 3 });
+  const chip = unit({ id: 3, faction: "enemy", n: 1, each: 9999, hp: 9999, maxHp: 9999, dmg: 25 });
+  const c = battle([part, chip], "enemy");
+  takeTurn(c);
+  ok("twenty-five leaves three, one of them hurt", part.n === 3 && part.hp === 25);
+
+  // ...and the last of them takes the slot with it
+  const last = unit({ id: 4, n: 2, each: 10, hp: 20, maxHp: 20, dmg: 3 });
+  const wipe = unit({ id: 5, faction: "enemy", n: 1, each: 9999, hp: 9999, maxHp: 9999, dmg: 40 });
+  const d = battle([last, wipe], "enemy");
+  takeTurn(d);
+  ok("nothing is left standing in it", last.n === 0 && last.hp === 0);
+  ok("and that is the fight", d.done === "loss");
+}
 
 {
   // A blow lands on nobody in particular. Over enough turns everybody standing
@@ -808,14 +845,17 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   const b = g.battle!;
   const body = offered(g, b)[0];
   ok("there is a body left to ask for", body !== undefined);
-  // A slot is asked for whole, and priced by what it comes back as
-  const cost = manaCost(g, body.creature) * body.n;
+  // A slot is asked for whole, and priced by what it comes back as. A wiped slot
+  // has nothing standing in it, so what it costs is what fell in it.
+  const corpses = fell(body);
+  ok("a pile of corpses is nobody standing", body.n === 0 && corpses > 0);
+  const cost = manaCost(g, body.creature) * corpses;
   const rises = raiseAs(perks(g), body.creature);
   const before = bodies(g);
   const pool = g.mana;
   ok("it answers", reap(g, body.id) === true);
   ok("and it costs what all of it costs", g.mana === pool - cost);
-  ok("all of it is standing with you now", bodies(g) === before + body.n);
+  ok("all of it is standing with you now", bodies(g) === before + corpses);
   ok("as whatever it comes back as", reserve(g).some((u) => u.creature === rises));
   ok("and the same body cannot be asked twice", reap(g, body.id) === false);
   ok("the board knows it is yours", b.taken.includes(body.id));
@@ -1113,6 +1153,11 @@ const scores = [null, ...ARM_IDS].map((arm) => {
     const { g, stuck, said } = autoplay(4000 + s * 101, arm);
     ok(`${arm ?? "any"} seed ${s} terminates`, !stuck);
     ok(`${arm ?? "any"} seed ${s} is never stranded`, g.over !== "");
+    // maxHp is always n bodies' worth, or a slot has quietly healed its dead back
+    ok(
+      `${arm ?? "any"} seed ${s} keeps its slots honest`,
+      g.reserve.every((u) => u.n >= 1 && u.hp > 0 && u.hp <= u.maxHp && u.maxHp % u.n === 0),
+    );
     for (const line of said) chatter.add(line);
     if (g.over === "won") wins += 1;
     if (g.over === "dead") deaths += 1;

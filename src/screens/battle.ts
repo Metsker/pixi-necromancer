@@ -13,6 +13,7 @@ import {
 import {
   canSell,
   commandCap,
+  fell,
   fielded,
   held,
   hpFrac,
@@ -136,7 +137,7 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
   const open = new Set(holding ? offered(g, b).map((u) => u.id) : []);
   // A slot is asked for whole: what it costs is what all of it costs, and all of
   // it lands in one slot - so the only room it needs is room for its kind
-  const price = (u: BattleUnit) => manaCost(g, u.creature) * u.n;
+  const price = (u: BattleUnit) => manaCost(g, u.creature) * fell(u);
   const bid: Bid = (u) =>
     !open.has(u.id) ? 0 : g.mana >= price(u) && roomFor(g, raiseAs(P, u.creature)) ? 2 : 1;
   const tap = (u: BattleUnit, x: number, y: number) => {
@@ -328,7 +329,8 @@ function side(
 
   // A slot says how deep it is next to its own name, because that number is
   // both what it hits for and what falls with it
-  const full = u.n > 1 ? `${t.short} x${u.n}` : t.short;
+  const count = down ? fell(u) : u.n;
+  const full = count > 1 ? `${t.short} x${count}` : t.short;
   const name = cut(full, Math.max(1, w - 2 - (mark ? cells(mark) + 1 : 0)));
   if (mirrored) {
     grid.text(x + w - cells(name) - 2, y, name, ink);

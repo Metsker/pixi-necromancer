@@ -44,10 +44,14 @@ export type BattleUnit = {
   src: number; // the roster stack id, or -1 for anything with no roster entry
   creature: CreatureId;
   faction: Faction;
-  n: number; // bodies in this stack; hp and dmg are already the sum of them
-  hp: number;
-  maxHp: number;
-  dmg: number;
+  // Bodies still standing in this slot. It is *derived*: `hp` is the slot's pool
+  // and `each` is what one body holds, so damage kills bodies out of it and
+  // `n` falls with them. Five rats at 10 taking 30 leaves two rats.
+  n: number;
+  each: number; // what one body of this slot holds
+  hp: number; // the pool, all of them together
+  maxHp: number; // what the slot walked in with, so the bar shows what it lost
+  dmg: number; // what ONE body hits for; the blow is this times `n`
   slot: number; // place in its own line, front first, and the order it swings in
   tier: number;
   withered: number;

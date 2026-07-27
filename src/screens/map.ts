@@ -91,20 +91,24 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     const busy = here && g.mode === "fight";
     const locked = n.state === "locked";
     const cleared = n.state === "cleared";
-    // The brackets say whether you can act on it; a sealed room wears its own,
-    // because a door you cannot open yet is not a door you tap by mistake
+    // The brackets say whether you can act on it. A sealed room wears the key it
+    // wants in place of one of them, and wears the whole thing red until you are
+    // carrying one - a door you cannot open is not a door you tap by mistake.
     const sealed = needsKey(n) && n.state !== "locked";
+    const shut = sealed && g.res.keys < 1;
     const frame = busy
       ? C.hot
       : locked
         ? C.frame
-        : canOrder(g, n.id)
-          ? C.cyan
-          : cleared
-            ? C.dim
-            : C.mid;
+        : shut
+          ? C.red
+          : canOrder(g, n.id)
+            ? C.cyan
+            : cleared
+              ? C.dim
+              : C.mid;
     if (on(x - 1, y)) grid.put(x - 1, y, sealed ? "[" : "(", frame, C.bg);
-    if (on(x + 1, y)) grid.put(x + 1, y, sealed ? "]" : ")", frame, C.bg);
+    if (on(x + 1, y)) grid.put(x + 1, y, sealed ? RESOURCES.keys.glyph : ")", frame, C.bg);
     if (on(x, y)) {
       // A room is coloured by what kind of room it is, and by nothing else. How
       // frightened to be of it is what the sheet you open is for.

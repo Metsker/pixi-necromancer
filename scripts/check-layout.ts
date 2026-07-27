@@ -1,6 +1,6 @@
 // Run: node scripts/check-layout.ts
 import { MAX_COLS, MIN_COLS, MIN_ROWS, TARGET_TILE_CSS, computeLayout } from "../src/layout.ts";
-import { HUD_ROWS, clampCam, mapSize, viewRows } from "../src/screens/map.ts";
+import { HUD_ROWS, clampCam, drawMap, mapSize, viewRows } from "../src/screens/map.ts";
 import { PANELS, SHEET_COLS, panelSpec, type Ui } from "../src/screens/panels.ts";
 import { drawBattle } from "../src/screens/battle.ts";
 import { LORE } from "../src/sim/lore.ts";
@@ -24,6 +24,7 @@ import {
   KINDS,
   MANA_GLYPH,
   RAISABLE,
+  RESOURCES,
   TAUNT_GLYPH,
   TUNING,
   poolFor,
@@ -390,6 +391,31 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     .map(([at]) => Number(at.split(",")[0]));
   ok("with the width to spare left spare", Math.min(...drawnAt) >= 4);
   ok("on both sides of it", Math.max(...drawnAt) <= desk.cols - 5);
+}
+
+// A door that wants a key says so on the map itself, and says it in red until
+// you are carrying one. The panel behind it is a tap away; the map is not.
+{
+  const g = newGame(9191);
+  const shut = g.nodes.find((n) => KINDS[n.kind].key)!;
+  ok("there is a door somebody meant to keep shut", shut !== undefined);
+  for (const n of g.nodes) n.state = "cleared";
+  shut.state = "open";
+  const key = RESOURCES.keys.glyph;
+  const draw = (keys: number) => {
+    const r = recorder(MAX_COLS, 40);
+    g.res.keys = keys;
+    const cam = clampCam({ x: 0, y: 0 }, MAX_COLS, 40);
+    drawMap(r.surface as unknown as Parameters<typeof drawMap>[0], g, cam, new Hits(), 1);
+    return r.drawn();
+  };
+  // The hud carries one of its own, so the map has to add to it
+  const bare = draw(0);
+  ok("the room wears the key it wants", bare.filter((c) => c.ch === key).length >= 2);
+  ok("and wears it red with nothing to open it", bare.some((c) => c.ch === key && c.fg === C.red));
+  const armed = draw(1);
+  ok("it stops being red once you carry one", !armed.some((c) => c.ch === key && c.fg === C.red));
+  ok("but it still says what it wants", armed.filter((c) => c.ch === key).length >= 2);
 }
 
 // A slot's depth and the number against the divider share one row. They used to
