@@ -10,6 +10,7 @@ import {
   canSell,
   clearSave,
   commandCap,
+  bodies,
   fielded,
   gainXp,
   held,
@@ -28,6 +29,7 @@ import {
   orderArmy,
   nodeCost,
   perks,
+  needsKey,
   powerOf,
   raise,
   reap,
@@ -35,27 +37,35 @@ import {
   reserve,
   rollBand,
   rollOffer,
+  roomFor,
   routeTo,
+  raiseAs,
+  stackDmg,
+  stackOf,
   save,
   saveMeta,
   sell,
   takePower,
   takeTurn,
   targetFor,
-  threatOf,
   treeOpen,
   unitDmg,
   wallish,
   xpNeeded,
 } from "../src/sim/game.ts";
 import {
+  ABILITY_TIER,
   CREATURES,
+  CREATURE_IDS,
+  KINDS,
+  RAISABLE,
   START_BAND,
   START_POOL,
   TUNING,
   type Battle,
   type BattleUnit,
   type CreatureId,
+  type NodeKind,
   tierDmgFor,
   tierHpFor,
   type GameState,
@@ -80,7 +90,9 @@ function ok(label: string, cond: boolean) {
   }
 }
 
-const openRooms = (g: GameState) => g.nodes.filter((n) => n.state === "open");
+// Rooms you can simply walk into. A sealed one is not one of them until a key
+// is in the purse, which is what the key block below is for.
+const openRooms = (g: GameState) => g.nodes.filter((n) => n.state === "open" && !needsKey(n));
 // Levels, without having to find enough dead to pay for them
 const gainXpTo = (g: GameState, level: number) => {
   let guard = 200;
@@ -162,26 +174,34 @@ ok("different seeds differ", JSON.stringify(newGame(1000)) !== JSON.stringify(a)
 }
 
 {
-  // The colour on a room is what is standing in it, and all three show up
-  const seen = new Set<number>();
-  for (let seed = 0; seed < 20; seed++) {
-    const g = newGame(2200 + seed * 13);
-    for (const n of g.nodes) {
-      if (!n.foes.length) continue;
-      seen.add(threatOf(n));
-      ok(`seed ${seed}: threat is a band`, [0, 1, 2].includes(threatOf(n)));
-    }
-    const rooms = g.nodes.filter((n) => n.foes.length);
-    const worst = rooms.reduce((x, z) => (powerOf(z) > powerOf(x) ? z : x));
-    const softest = rooms.reduce((x, z) => (powerOf(z) < powerOf(x) ? z : x));
-    ok(`seed ${seed}: the worst room is not the softest`, threatOf(worst) >= threatOf(softest));
-  }
-  ok("all three colours turn up on the map", seen.size === 3);
+  // The map is not coloured by threat any more - it is coloured by what kind of
+  // room it is - but the number the sheet ranks a room by still has to be real
   const g = newGame(4242);
   const n = g.nodes.find((x) => x.foes.length)!;
   const before = powerOf(n);
   n.foes.push("warden");
   ok("something more in it makes it worse", powerOf(n) > before);
+
+  // Every kind of room has to actually turn up, or a themed pool is dead data
+  const seen = new Set<NodeKind>();
+  for (let seed = 0; seed < 20; seed++) {
+    for (const room of newGame(2200 + seed * 13).nodes) seen.add(room.kind);
+  }
+  for (const kind of Object.keys(KINDS) as NodeKind[]) {
+    ok(`${kind}: it turns up on the map`, seen.has(kind));
+  }
+
+  // ...and what stands in it is what that kind of room holds
+  for (let seed = 0; seed < 20; seed++) {
+    const run = newGame(3300 + seed * 17);
+    for (const room of run.nodes) {
+      const pool = KINDS[room.kind].pool.flat();
+      ok(
+        `${room.kind}: it is stocked from its own pool`,
+        room.foes.every((c) => pool.includes(c)),
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------- routing
@@ -208,19 +228,59 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
 
 {
   const g = newGame(7);
-  ok("a run opens with a band", reserve(g).length === START_BAND);
+  ok("a run opens with a band", bodies(g) === START_BAND);
   ok(
     "three different things, never three of one",
     new Set(reserve(g).map((u) => u.creature)).size === START_BAND,
   );
   ok("all of them out of the early pool", reserve(g).every((u) => START_POOL.includes(u.creature)));
-  while (raise(g, "rat")) {
-    /* fill it */
-  }
-  ok("the command cap holds", reserve(g).length === commandCap(g));
-  ok("a full reserve refuses another", raise(g, "rat") === false);
-  ok("the root of the tree is worth a body", commandCap(g) === TUNING.baseCap + 1);
+  // Depth is free: a slot it already holds never refuses another, so `raise` in
+  // a while-loop never ends - fill by kind, not by asking until it says no
+  for (const c of RAISABLE) raise(g, c);
+  ok("the command cap holds slots", fielded(g) === commandCap(g));
+  const spare = RAISABLE.find((c) => !reserve(g).some((u) => u.creature === c))!;
+  ok("a full board refuses a new kind", raise(g, spare) === false);
+  const mine = reserve(g)[0].creature;
+  for (let i = 0; i < 20; i++) ok("but never one it already holds", raise(g, mine) === true);
+  ok("so the bodies run past the cap", bodies(g) > commandCap(g));
+  ok("and the slots do not", fielded(g) === commandCap(g));
+  ok("the root of the tree is worth a slot", commandCap(g) === TUNING.baseCap + 1);
   ok("the curve grows with level", xpNeeded({ ...g, level: 1 } as GameState) > xpNeeded(g));
+}
+
+{
+  // The same thing goes in the same slot, and everything about it adds up
+  const g = newGame(70);
+  g.reserve.length = 0;
+  raise(g, "rat");
+  const one = { ...g.reserve[0] };
+  raise(g, "rat");
+  raise(g, "rat");
+  ok("three rats is one slot", fielded(g) === 1);
+  ok("and three bodies", bodies(g) === 3 && g.reserve[0].n === 3);
+  ok("the health is all of theirs", g.reserve[0].maxHp === one.maxHp * 3);
+  ok("and so is the blow", stackDmg(g, g.reserve[0]) === unitDmg(g, g.reserve[0]) * 3);
+  raise(g, "hound");
+  ok("something else opens its own slot", fielded(g) === 2);
+
+  // A wounded slot still takes the whole of a fresh body
+  g.reserve[0].hp = 1;
+  raise(g, "rat");
+  ok("a fresh body brings its own health", g.reserve[0].hp === 1 + one.maxHp);
+
+  // ...and the line that walks in is one body a slot, with everything summed
+  const room = openRooms(g)[0];
+  orderArmy(g, room.id);
+  advance(g, TUNING.marchTicks + 1);
+  const mine = g.battle!.units.filter((u) => u.faction === "player");
+  ok("one body a slot on the board", mine.length === fielded(g));
+  ok("carrying the count", mine[0].n === g.reserve[0].n);
+  ok("and the combined blow", mine[0].dmg === stackDmg(g, g.reserve[0]));
+
+  // Their side stacks the same way, or a room of four rats gets four blows to one
+  const theirs = g.battle!.units.filter((u) => u.faction === "enemy");
+  ok("their line stacks too", theirs.length === stackOf(room.foes).length);
+  ok("and holds every body in the room", theirs.reduce((n, u) => n + u.n, 0) === room.foes.length);
 }
 
 {
@@ -332,7 +392,7 @@ for (const arm of ARM_IDS) {
   );
 }
 // The tree is neutral: nothing on it touches a fight
-const COMBAT: (typeof PERK_IDS)[number][] = ["ratDmg", "minionDmg", "wallHp", "dread", "mend"];
+const COMBAT: (typeof PERK_IDS)[number][] = ["beastDmg", "deadDmg", "minionDmg", "wallHp", "dread", "mend"];
 for (const k of COMBAT) {
   ok(`${k}: the board does not sell it`, !TREE.some((n) => k in n.gives));
 }
@@ -418,24 +478,28 @@ for (const k of PERK_IDS) {
   const g = newGame(1004);
   g.reserve.length = 0;
   raise(g, "rat");
+  raise(g, "rat");
   raise(g, "knight");
-  const rat = g.reserve[0];
+  const beast = g.reserve[0];
   const wall = g.reserve[1];
-  const ratWas = rat.maxHp;
+  const beastWas = beast.maxHp;
   const wallWas = wall.maxHp;
-  for (const k of ["ratHp", "wallHp"] as const) {
+  for (const k of ["beastHp", "wallHp"] as const) {
     const card = POWERS.find((p) => p.gives[k])!;
     g.unspent = 1;
     g.offer = [card.id];
     ok(`${card.name} is taken`, takePower(g, card.id) === true);
   }
   const P = perks(g);
-  ok("thin blood reaches a rat already standing", rat.maxHp === ratWas + P.ratHp);
-  ok("and hands it what it added", rat.hp === rat.maxHp);
-  ok("stone skin reaches a wall already standing", wall.maxHp === wallWas + P.wallHp);
+  // Every body in the slot, not the slot: a card that misses two of three rats
+  // is a card that reads as broken
+  ok("thick hide reaches a beast already standing", beast.maxHp === beastWas + P.beastHp * beast.n);
+  ok("and hands it what it added", beast.hp === beast.maxHp);
+  ok("stone skin reaches a wall already standing", wall.maxHp === wallWas + P.wallHp + P.deadHp);
   // ...and one raised afterwards gets it on the way up
+  const was = beast.maxHp;
   raise(g, "rat");
-  ok("and one raised after it is born with it", g.reserve.at(-1)!.maxHp === ratWas + P.ratHp);
+  ok("and one raised after it is born with it", beast.maxHp === was + beastWas / 2 + P.beastHp);
 }
 
 // ---------------------------------------------------------------- battle
@@ -445,7 +509,7 @@ let slots = 0;
 // only hook fires on death - so it is what the arithmetic below is measured on.
 // Anything else quietly adds a swarm bonus or halves what it takes.
 const unit = (over: Partial<BattleUnit>): BattleUnit => ({
-  id: 0, src: -1, creature: "warden", faction: "player",
+  id: 0, src: -1, creature: "warden", faction: "player", n: 1,
   hp: 10, maxHp: 10, dmg: 2, slot: slots++, tier: 0, withered: 0, ...over,
 });
 const noPerks = perks({ ...newGame(1), taken: [], powers: [] } as GameState);
@@ -482,15 +546,13 @@ const battle = (units: BattleUnit[], lead: "player" | "enemy" = "player"): Battl
 }
 
 {
-  // A wall is a template flag, not a slot. Both of them are one.
+  // A wall is a template flag, not a slot, and it is the deep end of a family
+  const walls = CREATURE_IDS.filter((c) => CREATURES[c].taunt);
   ok("a knight is a wall", CREATURES.knight.taunt);
   ok("so is a warden", CREATURES.warden.taunt);
-  ok(
-    "and nothing else is",
-    (Object.keys(CREATURES) as CreatureId[])
-      .filter((c) => c !== "knight" && c !== "warden")
-      .every((c) => !CREATURES[c].taunt),
-  );
+  ok("both paths get one", ["beast", "undead"].every((f) => walls.some((c) => CREATURES[c].family === f)));
+  ok("and nothing shallow is one", walls.every((c) => CREATURES[c].tier >= 2));
+  ok("nor is everything", walls.length < CREATURE_IDS.length / 2);
 
   // The shield wall hands it to everybody, and only on your side of the board
   const mine = unit({ id: 1, creature: "hound", faction: "player" });
@@ -745,12 +807,15 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   const b = g.battle!;
   const body = offered(g, b)[0];
   ok("there is a body left to ask for", body !== undefined);
-  const cost = manaCost(g, body.creature);
-  const before = g.reserve.length;
+  // A slot is asked for whole, and priced by what it comes back as
+  const cost = manaCost(g, body.creature) * body.n;
+  const rises = raiseAs(perks(g), body.creature);
+  const before = bodies(g);
   const pool = g.mana;
   ok("it answers", reap(g, body.id) === true);
-  ok("and it costs what it says on it", g.mana === pool - cost);
-  ok("it is standing with you now", g.reserve.length === before + 1);
+  ok("and it costs what all of it costs", g.mana === pool - cost);
+  ok("all of it is standing with you now", bodies(g) === before + body.n);
+  ok("as whatever it comes back as", reserve(g).some((u) => u.creature === rises));
   ok("and the same body cannot be asked twice", reap(g, body.id) === false);
   ok("the board knows it is yours", b.taken.includes(body.id));
 
@@ -780,17 +845,26 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   advance(g, budgetFor);
   ok("the room fell", held(g) !== null);
 
-  const before = g.reserve.length;
+  const before = bodies(g);
   g.mana = 0;
   ok("a body can be given back", sell(g, one.id) === true);
   ok("it pays what it always pays", g.mana === TUNING.sellMana);
-  ok("and it is a slot back", g.reserve.length === before - 1);
-  ok("it is gone for good", reserve(g).every((u) => u.id !== one.id));
+  ok("and it is a body back", bodies(g) === before - 1);
+  ok("a slot of one is gone for good", reserve(g).every((u) => u.id !== one.id));
   ok("selling the same one twice does nothing", sell(g, one.id) === false);
 
+  // ...and off a deep slot it is one body, not the slot
+  for (let i = 0; i < 5; i++) raise(g, "rat");
+  const stack = reserve(g).find((u) => u.creature === "rat")!;
+  const deep = stack.n;
+  ok("a deep slot is deep", deep > 1);
+  ok("one comes off it", sell(g, stack.id) === true);
+  ok("and the slot is still standing", stack.n === deep - 1 && reserve(g).includes(stack));
+
   // Never the last of them. An army of nobody is a dead run, not a button.
-  while (g.reserve.length > 1) sell(g, g.reserve[0].id);
-  ok("one is left", g.reserve.length === 1);
+  let guard = 200;
+  while (bodies(g) > 1 && guard-- > 0) sell(g, g.reserve[0].id);
+  ok("one is left", bodies(g) === 1);
   ok("and it cannot be sold", canSell(g, g.reserve[0].id) === false);
   ok("nor the pool topped up past its ceiling", g.mana <= manaCap(g));
 }
@@ -802,8 +876,8 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     if (CREATURES[c].mana === 0) continue;
     ok(`${c}: it costs more than unmaking pays`, CREATURES[c].mana > TUNING.sellMana);
   }
-  ok("a rat is the cheapest thing there is", CREATURES.rat.mana === 2);
-  ok("and a warden is not", CREATURES.warden.mana > CREATURES.rat.mana);
+  ok("the shallow end is the cheapest there is", CREATURES.skeleton.mana === 2);
+  ok("and a warden is not", CREATURES.warden.mana > CREATURES.skeleton.mana);
   ok("the Ossuary never answers", CREATURES.ossuary.mana === 0);
   const g = newGame(1);
   for (const c of Object.keys(CREATURES) as CreatureId[]) {
@@ -869,25 +943,27 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   // ones stay a trickle: everything else on the floor has to be paid for.
   let fallen = 0;
   let up = 0;
-  let crypts = 0;
-  let cryptUp = 0;
+  let graves = 0;
+  let gravesUp = 0;
   for (let seed = 0; seed < 300; seed++) {
     const g = newGame(6100 + seed * 7);
+    // Room enough to hold whatever answers, or the cap is what is being measured
+    g.taken = TREE.map((n) => n.id);
     g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
     const room = g.nodes[openRooms(g)[0].id];
-    const before = g.reserve.length;
-    const bodies = room.foes.length;
-    const crypt = room.kind === "crypt";
+    const before = bodies(g);
+    const corpses = room.foes.length;
+    const free = KINDS[room.kind].freeRise;
     orderArmy(g, room.id);
     advance(g, budgetFor);
     if (room.state !== "cleared") continue;
-    const got = g.reserve.length - before;
-    if (crypt) {
-      crypts += bodies;
-      cryptUp += got;
+    const got = bodies(g) - before;
+    if (free) {
+      graves += corpses;
+      gravesUp += got;
       continue;
     }
-    fallen += bodies;
+    fallen += corpses;
     up += got;
   }
   ok("a decent sample of corpses", fallen > 200);
@@ -896,8 +972,8 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
     `the odd one gets up by itself (${(rate * 100).toFixed(0)}%)`,
     rate > TUNING.raiseChance / 3 && rate < TUNING.raiseChance * 3,
   );
-  ok("a crypt still gives up all of its dead", crypts === 0 || cryptUp === crypts);
-  console.log(`raising: ${up}/${fallen} got up on their own, and ${cryptUp}/${crypts} in crypts`);
+  ok("a graveyard still gives up all of its dead", graves === 0 || gravesUp === graves);
+  console.log(`raising: ${up}/${fallen} got up on their own, and ${gravesUp}/${graves} in graves`);
 }
 
 // ---------------------------------------------------------------- the clock
@@ -982,16 +1058,21 @@ function autoplay(seedValue: number, arm: ArmId | null = null, owned = [rootId])
         // is - by price a Wisp is a Hound, and a bot that believes that fields
         // six menders and calls the build weak.
         const bulk = t.hp * (t.ability === "bulwark" ? 2 : 1);
-        const mine = c === "rat" ? P.ratHp + (P.ratDmg + P.swarmPer * 4) * 6 : 0;
+        const mine =
+          (t.family === "beast" ? P.beastHp + P.beastDmg * 6 : 0) +
+          (t.family === "undead" ? P.deadHp + P.deadDmg * 6 : 0) +
+          (t.ability === "swarm" ? P.swarmPer * 24 : 0);
         return bulk + t.dmg * 6 + mine;
       };
       // Best first, and it will unmake the least of them to make room
       for (const u of [...offered(g, b)].sort((x, z) => worth(z.creature) - worth(x.creature))) {
-        if (g.mana < manaCost(g, u.creature)) continue;
-        if (fielded(g) >= commandCap(g)) {
+        if (g.mana < manaCost(g, u.creature) * u.n) continue;
+        // A slot it already holds is free to deepen; a new kind costs a slot,
+        // and the only way to find one is to unmake the worst thing it has
+        while (!roomFor(g, raiseAs(perks(g), u.creature))) {
           const chaff = [...g.reserve].sort((x, z) => worth(x.creature) - worth(z.creature))[0];
-          if (!chaff || worth(chaff.creature) >= worth(u.creature)) continue;
-          if (!sell(g, chaff.id)) continue;
+          if (!chaff || worth(chaff.creature) >= worth(u.creature)) break;
+          if (!sell(g, chaff.id)) break;
         }
         reap(g, u.id);
       }
@@ -999,11 +1080,15 @@ function autoplay(seedValue: number, arm: ArmId | null = null, owned = [rootId])
     }
 
     if (g.mode === "idle") {
-      const soft = openRooms(g)
+      // Everything it can actually walk into, sealed doors included when there
+      // is a key in the purse
+      const reachable = g.nodes.filter((n) => n.state === "open" && canOrder(g, n.id));
+      const soft = reachable
         .filter((n) => n.kind !== "boss")
         .sort((x, y) => powerOf(x) - powerOf(y))[0];
-      const mine = soft ?? openRooms(g).find((n) => n.kind === "boss");
+      const mine = soft ?? reachable.find((n) => n.kind === "boss");
       if (mine) orderArmy(g, mine.id);
+      else break;
     }
     advance(g, 20);
     for (const line of g.log) said.add(line);
@@ -1098,6 +1183,83 @@ for (const [id, t] of Object.entries(CREATURES)) {
   ok(`${id}: an ability implies a tag`, !t.ability || t.tag.length > 0);
   ok(`${id}: a short name fits the roster`, t.short.length <= 7);
   ok(`${id}: a wall says so`, !t.taunt || t.tag.startsWith("a wall"));
+  // The shallow end of the map is bodies, not rules. A card is what makes them
+  // interesting, and the tier bands are what make depth readable.
+  ok(`${id}: nothing shallow carries a rule`, t.tier >= ABILITY_TIER || t.ability === null);
+  ok(`${id}: it belongs to a family`, ["beast", "undead", "living"].includes(t.family));
+  // Nothing living joins you as it was, and what it comes back as is undead
+  ok(`${id}: living is never yours`, t.family !== "living" || t.rises !== undefined);
+  ok(`${id}: and what it rises as is dead`, !t.rises || CREATURES[t.rises].family === "undead");
+}
+
+// Both build paths have to be worth building, at both ends of the map
+for (const family of ["beast", "undead"] as const) {
+  const mine = CREATURE_IDS.filter((c) => CREATURES[c].family === family);
+  ok(`${family}: there is a line of them`, mine.length >= 5);
+  ok(`${family}: something to start on`, mine.some((c) => CREATURES[c].tier < ABILITY_TIER));
+  ok(`${family}: and something to build to`, mine.some((c) => CREATURES[c].tier >= 3));
+  ok(`${family}: it can be drafted for`, POWERS.some((p) => p.arm === family));
+}
+ok("everything raisable is one of the two", RAISABLE.every((c) => CREATURES[c].family !== "living"));
+
+// A card nobody can read is a card nobody drafts on purpose
+for (const p of POWERS) {
+  ok(`${p.name}: it says what it does`, p.desc.length > p.note.length);
+  ok(`${p.name}: in whole words`, p.desc.endsWith(".") && p.desc[0] === p.desc[0].toUpperCase());
+}
+
+{
+  // A sealed room is the one thing on the map that refuses you, and a key is
+  // the only thing that changes its mind
+  const g = newGame(9191);
+  const shut = g.nodes.find((n) => KINDS[n.kind].key)!;
+  ok("there are doors somebody meant to keep shut", shut !== undefined);
+  ok("and they read as sealed", needsKey(shut));
+  // Cleared ground right up to it, so the seal is the only thing in the way
+  for (const n of g.nodes) n.state = "cleared";
+  shut.state = "open";
+  g.res.keys = 0;
+  ok("no key, no way in", canOrder(g, shut.id) === false);
+  g.res.keys = 1;
+  ok("a key is the whole of the lock", canOrder(g, shut.id) === true);
+
+  // Somebody on the map has to be carrying one, or the doors are decoration
+  ok("keys are handed out", g.nodes.some((n) => KINDS[n.kind].keys > 0));
+  ok("and a sealed room is worth the key", g.nodes.every((n) => !KINDS[n.kind].key || KINDS[n.kind].gold > 3 || KINDS[n.kind].gift !== null));
+}
+
+{
+  // A crypt hands over what it was hiding, and the key is spent getting in
+  const g = newGame(9192);
+  g.taken = TREE.map((n) => n.id);
+  const shut = g.nodes.find((n) => KINDS[n.kind].gift)!;
+  for (const n of g.nodes) n.state = "cleared";
+  shut.state = "open";
+  shut.foes = ["skeleton"];
+  g.res.keys = 2;
+  g.reserve.forEach((u) => ((u.maxHp = 4000), (u.hp = 4000)));
+  orderArmy(g, shut.id);
+  advance(g, budgetFor);
+  ok("the seal is what the key was for", g.res.keys === 1);
+  ok("the room fell", g.nodes[shut.id].state === "cleared");
+  ok(
+    "and it was hiding something",
+    reserve(g).some((u) => u.creature === KINDS[shut.kind].gift),
+  );
+  ok("a cleared door never asks again", needsKey(shut) === false);
+}
+
+{
+  // What the living come back as, and the card that changes it
+  const g = newGame(9193);
+  const P = perks(g);
+  ok("a villager is not yours as it stands", CREATURES.peasant.family === "living");
+  ok("it comes back as bones", raiseAs(P, "peasant") === "skeleton");
+  ok("and a beast comes back as itself", raiseAs(P, "rat") === "rat");
+  const card = POWERS.find((p) => p.gives.zombify)!;
+  g.powers.push(card.id);
+  ok(`${card.name} changes what gets up`, raiseAs(perks(g), "peasant") === "zombie");
+  ok("and is priced by what it becomes", manaCost(g, "peasant") === CREATURES.zombie.mana);
 }
 
 // ---------------------------------------------------------------- a fight you can watch

@@ -1,9 +1,10 @@
 import { pick, rnd, rngState, seed as seedRng, setRngState, shuffle } from "./rng.ts";
 import { LORE } from "./lore.ts";
 import {
-  BOSS_FOES,
   CREATURES,
+  KINDS,
   KIND_ROLL,
+  OPEN_ROLL,
   RESOURCES,
   RES_IDS,
   START_BAND,
@@ -50,16 +51,44 @@ export function perks(g: GameState): Perks {
   return out;
 }
 
+// What one body of this is worth standing up, everything bought counted in. A
+// stack is n of these, so this is the number every slot of the army is built of.
+export const bodyHp = (P: Perks, c: CreatureId) => {
+  const t = CREATURES[c];
+  return (
+    t.hp +
+    (t.family === "beast" ? P.beastHp : 0) +
+    (t.family === "undead" ? P.deadHp : 0) +
+    (t.taunt ? P.wallHp : 0)
+  );
+};
+
+// What one body of this hits for, which is what the stack's blow is n of
+export const bodyDmg = (P: Perks, c: CreatureId, rooms: number) => {
+  const t = CREATURES[c];
+  const years = Math.min(rooms, TUNING.vetCap);
+  return (
+    t.dmg +
+    P.minionDmg +
+    P.vetDmg * years +
+    (t.family === "beast" ? P.beastDmg : 0) +
+    (t.family === "undead" ? P.deadDmg : 0)
+  );
+};
+
 // What a card adds the moment it is taken. A card that makes bodies bigger has
-// to reach the bodies already standing, or taking it late takes nothing.
+// to reach the bodies already standing, or taking it late takes nothing - and it
+// has to reach every body in a stack, not the stack.
 function applyGives(g: GameState, gives: Partial<Perks>) {
   for (const u of g.reserve) {
-    const gain =
-      (gives.ratHp && u.creature === "rat" ? gives.ratHp : 0) +
-      (gives.wallHp && CREATURES[u.creature].taunt ? gives.wallHp : 0);
-    if (!gain) continue;
-    u.maxHp += gain;
-    u.hp += gain;
+    const t = CREATURES[u.creature];
+    const each =
+      (t.family === "beast" ? (gives.beastHp ?? 0) : 0) +
+      (t.family === "undead" ? (gives.deadHp ?? 0) : 0) +
+      (t.taunt ? (gives.wallHp ?? 0) : 0);
+    if (!each) continue;
+    u.maxHp += each * u.n;
+    u.hp += each * u.n;
   }
 }
 
@@ -150,24 +179,58 @@ export function reroll(g: GameState): boolean {
 
 export const commandCap = (g: GameState) => Math.max(1, TUNING.baseCap + perks(g).slots);
 export const manaCap = (g: GameState) => TUNING.manaBase + perks(g).manaPool;
-export const manaCost = (g: GameState, c: CreatureId) =>
-  CREATURES[c].mana === 0 ? 0 : Math.max(1, CREATURES[c].mana + perks(g).raiseCost);
+
+// What a body is when it gets up. Nothing living joins you as it was: the dark
+// makes bones of it, or a shambler once you hold the card that says so.
+export const raiseAs = (P: Perks, c: CreatureId): CreatureId => {
+  const to = CREATURES[c].rises;
+  if (!to) return c;
+  return P.zombify > 0 ? "zombie" : to;
+};
+
+// Priced by what it comes back as, not by what it was: a villager costs what a
+// pile of bones costs, because bones is what you get.
+export const manaCost = (g: GameState, c: CreatureId) => {
+  if (CREATURES[c].mana === 0) return 0;
+  const P = perks(g);
+  return Math.max(1, CREATURES[raiseAs(P, c)].mana + P.raiseCost);
+};
 
 // The army standing in a room it has not finished with. It cannot be given a new
 // order: the board is still up and the dead on it are still yours to ask.
 export const busy = (g: GameState) => g.mode === "fight" || g.mode === "spoils";
 
+// Slots, not bodies. The same thing shares one, so what the cap holds is how
+// many *different* things you can field: depth is free, breadth is the price.
 export const fielded = (g: GameState) => g.reserve.length;
 
-// What a body actually hits for: what it is, plus what the tree makes of it,
+// Everything standing, counted one at a time. What leads a fight and what
+// crowds a blow are both this, never the slot count.
+export const bodies = (g: GameState) => g.reserve.reduce((n, u) => n + u.n, 0);
+
+// Whether one more of this can be stood up: a slot it already has, or a free one
+export const roomFor = (g: GameState, c: CreatureId) =>
+  g.reserve.some((u) => u.creature === c) || fielded(g) < commandCap(g);
+
+// The same thing in one slot, in the order it first turned up. Both lines are
+// built out of this, so a room of four rats stands as one body of four rats.
+export function stackOf<T>(list: T[]): [T, number][] {
+  const out: [T, number][] = [];
+  for (const c of list) {
+    const seen = out.find(([id]) => id === c);
+    if (seen) seen[1] += 1;
+    else out.push([c, 1]);
+  }
+  return out;
+}
+
+// What one body of a stack hits for: what it is, plus what the dark makes of it,
 // plus whatever it has earned by not dying yet. The sheet and the board read
 // this same function, or the sheet lies about the thing you are about to spend.
-export const unitDmg = (g: GameState, u: Unit): number => {
-  const P = perks(g);
-  const t = CREATURES[u.creature];
-  const years = Math.min(u.rooms, TUNING.vetCap);
-  return t.dmg + P.minionDmg + P.vetDmg * years + (u.creature === "rat" ? P.ratDmg : 0);
-};
+export const unitDmg = (g: GameState, u: Unit): number => bodyDmg(perks(g), u.creature, u.rooms);
+
+// ...and what the whole slot throws in one blow, which is what a fight uses
+export const stackDmg = (g: GameState, u: Unit): number => unitDmg(g, u) * u.n;
 // Levelling sooner is a node of the board, held to the same cap as everything
 // else that is bought as a percentage
 export const xpNeeded = (g: GameState) =>
@@ -204,18 +267,17 @@ export function log(g: GameState, line: string) {
 export const tierForDist = (dist: number, far: number) =>
   clamp(Math.round(((dist - 1) * (TUNING.tiers - 1)) / Math.max(1, far - 1)), 0, TUNING.tiers - 1);
 
+// What is standing in a room is what that kind of room holds, at the depth it
+// stands at. The theme is the pool, so a sewer is rats wherever you find it.
 function rollFoes(kind: NodeKind, tier: number): CreatureId[] {
-  if (kind === "boss") return [...BOSS_FOES];
+  const info = KINDS[kind];
+  const pool = poolFor(kind, tier);
+  if (!pool.length) return [];
+  if (kind === "boss") return [...pool];
   // Rooms near the gate are small enough that an opening band has a real chance;
-  // the deep ones are not
-  const grow = tierGrow(tier);
-  const base = TUNING.roomBase;
-  // Never nothing: a room with no one in it is a room that wins itself
-  const n = Math.max(
-    1,
-    kind === "elite" ? base + 1 + grow : kind === "crypt" ? base - 1 + grow : base + grow,
-  );
-  return Array.from({ length: n }, () => pick(poolFor(tier)));
+  // the deep ones are not. Never nothing: an empty room wins itself.
+  const n = Math.max(1, TUNING.roomBase + info.size + tierGrow(tier));
+  return Array.from({ length: n }, () => pick(pool));
 }
 
 // Cave-in: a cell can be missing, as long as nothing is cut off by its going.
@@ -284,11 +346,14 @@ function buildMap(g: GameState) {
     for (let col = 0; col < mapCols; col++) {
       const k = key(col, row);
       if (!solid.has(k)) continue;
-      const kind: NodeKind = k === gate ? "gate" : k === boss ? "boss" : pick(KIND_ROLL);
+      // Nothing sealed in the first ring, or a run can open with no way out of
+      // the gate and no key to buy one with
+      const roll = away(col, row) <= 1 ? OPEN_ROLL : KIND_ROLL;
+      const kind: NodeKind = k === gate ? "gate" : k === boss ? "boss" : pick(roll);
       const tier =
         kind === "boss"
           ? TUNING.tiers - 1
-          : clamp(tierForDist(away(col, row), far) + (kind === "elite" ? 1 : 0), 0, TUNING.tiers - 1);
+          : clamp(tierForDist(away(col, row), far) + KINDS[kind].tierUp, 0, TUNING.tiers - 1);
       id.set(k, g.nodes.length);
       g.nodes.push({
         id: g.nodes.length,
@@ -336,6 +401,18 @@ function unlock(g: GameState) {
     if (n.state !== "cleared") continue;
     for (const id of n.links) if (g.nodes[id].state === "locked") g.nodes[id].state = "open";
   }
+  keepOpen(g);
+}
+
+// A door is a choice, never a wall. If every way on is sealed and there is
+// nothing to open one with, one turns up - a key gates what is worth taking, not
+// whether the run can go on at all.
+function keepOpen(g: GameState) {
+  if (g.res.keys > 0) return;
+  const open = g.nodes.filter((n) => n.state === "open");
+  if (!open.length || open.some((n) => !KINDS[n.kind].key)) return;
+  g.res.keys += 1;
+  log(g, "A key turns up.");
 }
 
 // A route over ground already taken, where only the last room may still be
@@ -364,8 +441,9 @@ export function routeTo(g: GameState, from: number, target: number): number[] | 
 }
 
 // What is standing in a room, as one number: what it can take plus what it can
-// give. Three bands, because a map you have to read at a glance is a map with
-// three colours on it.
+// give. The map is not coloured by this any more - a room says what it is, and
+// the sheet you open before walking in says what is in it. This is what the
+// probe bot sorts by, and what the sheet ranks a room against your own line with.
 export const powerOf = (n: MapNode) =>
   n.foes.reduce((sum, c) => {
     const t = CREATURES[c];
@@ -375,21 +453,26 @@ export const powerOf = (n: MapNode) =>
     return sum + soak + (t.dmg + tierDmgFor(n.tier)) * 6;
   }, 0);
 
-export const threatOf = (n: MapNode): 0 | 1 | 2 => {
-  const p = powerOf(n);
-  return p < TUNING.threatMild ? 0 : p < TUNING.threatBad ? 1 : 2;
-};
-
 // ---------------------------------------------------------------- army
 
 // Raised bodies are the army. There is nobody else: what is standing is what
 // fights, and when none of it is standing the run is over.
+//
+// The same thing goes in the same slot, and a slot is what the cap counts. A
+// stack is one body on the board with everything added up, so a slot of six rats
+// swings once for six rats' worth - which makes a narrow army hit harder than a
+// broad one, and makes the cap a question of how many kinds, not how many bodies.
 export function raise(g: GameState, creature: CreatureId): boolean {
-  if (fielded(g) >= commandCap(g)) return false;
-  const t = CREATURES[creature];
-  const P = perks(g);
-  const hp = t.hp + (creature === "rat" ? P.ratHp : 0) + (t.taunt ? P.wallHp : 0);
-  g.reserve.push({ id: g.nextUnit++, creature, hp, maxHp: hp, rooms: 0 });
+  if (!roomFor(g, creature)) return false;
+  const hp = bodyHp(perks(g), creature);
+  const stack = g.reserve.find((u) => u.creature === creature);
+  if (stack) {
+    stack.n += 1;
+    stack.maxHp += hp;
+    stack.hp += hp;
+    return true;
+  }
+  g.reserve.push({ id: g.nextUnit++, creature, n: 1, hp, maxHp: hp, rooms: 0 });
   return true;
 }
 
@@ -428,7 +511,10 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
         mine && b.perks.swarmDead
           ? b.units.filter((u) => u.faction === s.faction)
           : living(b, s.faction);
-      return Math.min(cap, (side.length - 1) * per);
+      // Counted per body and paid per body, or a slot holding the whole army
+      // would be a slot with no allies in the room
+      const bodies = side.reduce((n, u) => n + u.n, 0);
+      return Math.min(cap, (bodies - 1) * per) * s.n;
     },
   },
   bulwark: { taken: (_s, n) => Math.max(1, Math.ceil(n * TUNING.bulwarkCut)) },
@@ -448,7 +534,8 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
         .filter((u) => u.id !== s.id && u.hp < u.maxHp)
         .sort((a, z) => a.hp / a.maxHp - z.hp / z.maxHp)[0];
       if (!hurt) return;
-      const spare = Math.min(TUNING.siphonHeal, s.hp - TUNING.siphonFloor);
+      // A slot of three wisps gives three wisps' worth and keeps three wisps' floor
+      const spare = Math.min(TUNING.siphonHeal * s.n, s.hp - TUNING.siphonFloor * s.n);
       const back = Math.min(hurt.maxHp - hurt.hp, spare);
       if (back <= 0) return;
       s.hp -= back;
@@ -456,11 +543,11 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
       b.mend.push({ id: hurt.id, by: s.id, n: back });
     },
   },
-  rend: { bonus: (_s, t) => (t.hp * 2 <= t.maxHp ? TUNING.rendBonus : 0) },
+  rend: { bonus: (s, t) => (t.hp * 2 <= t.maxHp ? TUNING.rendBonus * s.n : 0) },
   toll: {
     onDeath: (s, b) => {
       for (const o of living(b, s.faction === "player" ? "enemy" : "player")) {
-        damage(b, o, TUNING.tollDamage, s.id);
+        damage(b, o, TUNING.tollDamage * s.n, s.id);
       }
     },
   },
@@ -474,6 +561,7 @@ export const ABILITIES: Record<AbilityId, Hooks> = {
         src: -1,
         creature: s.creature,
         faction: s.faction,
+        n: s.n,
         hp: Math.ceil(s.maxHp / 2),
         maxHp: Math.ceil(s.maxHp / 2),
         dmg: Math.max(1, Math.floor(s.dmg * 0.6)),
@@ -514,9 +602,13 @@ function damage(b: Battle, u: BattleUnit, amount: number, by: number) {
 
 function strike(b: Battle, a: BattleUnit, d: BattleUnit) {
   let raw = a.dmg + (hooks(a).bonus?.(a, d, b) ?? 0);
-  // Bought deep enough, everything of yours crowds the way a rat does
+  // Bought deep enough, everything of yours crowds the way a rat does...
   if (a.faction === "player" && b.perks.swarmAll && CREATURES[a.creature].ability !== "swarm") {
     raw += ABILITIES.swarm.bonus!(a, d, b);
+  }
+  // ...and bites the wounded the way a grave hound does
+  if (a.faction === "player" && b.perks.rendAll && CREATURES[a.creature].ability !== "rend") {
+    raw += ABILITIES.rend.bonus!(a, d, b);
   }
   // What the dark has already touched is easier to break open
   if (a.faction === "player" && d.withered > 0) raw += b.perks.hexDmg;
@@ -627,31 +719,36 @@ function makeBattle(g: GameState): Battle {
       slot,
       creature: u.creature,
       faction: "player",
+      n: u.n,
       hp: u.hp,
       maxHp: u.maxHp,
-      dmg: unitDmg(g, u),
+      dmg: stackDmg(g, u),
       tier: 0,
       withered: 0,
     });
   });
-  n.foes.forEach((c, slot) => {
+  // Their line stacks the way yours does, or a room of four rats would get four
+  // blows to your one and the whole point of a slot would be on your side only
+  stackOf(n.foes).forEach(([c, count], slot) => {
     const t = CREATURES[c];
+    const hp = (t.hp + tierHpFor(n.tier)) * count;
     b.units.push({
       id: b.nextId++,
       src: -1,
       creature: c,
       faction: "enemy",
-      hp: t.hp + tierHpFor(n.tier),
-      maxHp: t.hp + tierHpFor(n.tier),
-      dmg: t.dmg + tierDmgFor(n.tier),
+      n: count,
+      hp,
+      maxHp: hp,
+      dmg: (t.dmg + tierDmgFor(n.tier)) * count,
       slot,
       tier: 0,
       withered: 0,
     });
   });
 
-  // The bigger line opens. Even sides toss for it.
-  const ours = g.reserve.length;
+  // The bigger line opens, counted in bodies rather than slots. Even sides toss.
+  const ours = bodies(g);
   const theirs = n.foes.length;
   b.lead = ours > theirs ? "player" : theirs > ours ? "enemy" : rnd() < 0.5 ? "player" : "enemy";
   b.next = b.lead;
@@ -662,11 +759,16 @@ function makeBattle(g: GameState): Battle {
 
 // ---------------------------------------------------------------- orders
 
+// A sealed room takes a key to walk into, and stays sealed until it is cleared.
+// Nothing else on the map ever refuses you.
+export const needsKey = (n: MapNode | undefined) => n !== undefined && KINDS[n.kind].key && n.state !== "cleared";
+
 export const canOrder = (g: GameState, id: number) =>
   !g.over &&
   !busy(g) &&
   g.reserve.length > 0 &&
-  routeTo(g, g.at, id) !== null;
+  routeTo(g, g.at, id) !== null &&
+  (!needsKey(g.nodes[id]) || g.res.keys > 0);
 
 export function orderArmy(g: GameState, id: number): boolean {
   if (!canOrder(g, id)) return false;
@@ -704,7 +806,15 @@ function march(g: GameState) {
 }
 
 function arrive(g: GameState) {
-  if (g.nodes[g.at].state === "open") {
+  const n = g.nodes[g.at];
+  // The key is spent on the door, not on the room: walking away from a sealed
+  // room you have opened does not seal it again
+  const sealed = needsKey(n);
+  if (n.state === "open" && (!sealed || g.res.keys > 0)) {
+    if (sealed) {
+      g.res.keys -= 1;
+      log(g, "The seal gives.");
+    }
     g.battle = makeBattle(g);
     g.mode = "fight";
     g.next = g.time + TUNING.turnTicks;
@@ -729,11 +839,12 @@ function dead(g: GameState) {
 }
 
 function settle(g: GameState, b: Battle) {
-  // Survivors keep their wounds; the fallen do not come back
+  // Survivors keep their wounds; the fallen do not come back. A slot falls whole,
+  // so what it cost you is everybody who was standing in it.
   const alive = new Map(
     b.units.filter((u) => u.faction === "player" && u.hp > 0).map((u) => [u.src, u.hp]),
   );
-  g.lost += g.reserve.filter((u) => !alive.has(u.id)).length;
+  g.lost += g.reserve.filter((u) => !alive.has(u.id)).reduce((n, u) => n + u.n, 0);
   g.reserve = g.reserve.filter((u) => alive.has(u.id));
   for (const u of g.reserve) u.hp = alive.get(u.id)!;
 
@@ -776,11 +887,14 @@ export const offered = (g: GameState, b: Battle) =>
 export const held = (g: GameState): Battle | null =>
   g.battle && g.mode === "spoils" && g.battle.done === "win" ? g.battle : null;
 
-// Whoever is worst off, which is the same one a wisp would go for
+// Whoever is worst off, which is the same one a wisp would go for. Paid for and
+// paid out per body, so mending a deep slot is a deep slot's worth of both.
+export const mendCost = (g: GameState, u: Unit) => manaCost(g, u.creature) * u.n;
+
 export const mendable = (g: GameState) => {
   if (!held(g) || !perks(g).mend) return null;
   const u = g.reserve.filter((o) => o.hp < o.maxHp).sort((a, z) => hpFrac(a) - hpFrac(z))[0];
-  return u && g.mana >= manaCost(g, u.creature) ? u : null;
+  return u && g.mana >= mendCost(g, u) ? u : null;
 };
 
 // The one place a body goes back up instead of only down, and it is paid for out
@@ -789,8 +903,8 @@ export function mend(g: GameState): boolean {
   const b = held(g);
   const u = mendable(g);
   if (!b || !u) return false;
-  g.mana -= manaCost(g, u.creature);
-  const back = Math.min(u.maxHp - u.hp, perks(g).mend);
+  g.mana -= mendCost(g, u);
+  const back = Math.min(u.maxHp - u.hp, perks(g).mend * u.n);
   u.hp += back;
   const shown = b.units.find((o) => o.src === u.id);
   if (shown) shown.hp = u.hp;
@@ -799,45 +913,60 @@ export function mend(g: GameState): boolean {
   return true;
 }
 
-// One body, bought. The free ones a room gives up are luck; this is the choice.
+// One slot, bought whole. The free ones a room gives up are luck; this is the
+// choice - and a slot of four costs four, because four is what you get.
 export function reap(g: GameState, unitId: number): boolean {
   const b = held(g);
   if (!b) return false;
   const u = b.units.find((o) => o.id === unitId);
   if (!u || !offered(g, b).includes(u)) return false;
-  const cost = manaCost(g, u.creature);
+  const c = raiseAs(perks(g), u.creature);
+  const cost = manaCost(g, u.creature) * u.n;
   if (g.mana < cost) {
     log(g, "Not enough of you.");
     return false;
   }
-  if (!raise(g, u.creature)) {
+  // One slot for the whole of it, however deep it is - so the only thing that
+  // ever refuses a slot is having no room for a thing of that kind at all
+  if (!roomFor(g, c)) {
     log(g, "No room for it.");
     return false;
   }
+  for (let i = 0; i < u.n; i++) raise(g, c);
   g.mana -= cost;
   b.taken.push(u.id);
-  g.risen = { creatures: [u.creature], units: [u.id], node: b.node, at: g.time };
-  log(g, `${CREATURES[u.creature].short} rises.`.slice(0, 20));
+  g.risen = { creatures: [c], units: [u.id], node: b.node, at: g.time };
+  log(g, `${CREATURES[c].short} rises.`.slice(0, 20));
   return true;
 }
 
-// Whether unmaking this one is allowed at all. Never the last of them: an army
-// of nobody is a dead run, and that is not a button.
+// Whether unmaking one out of this slot is allowed at all. Never the last of
+// them: an army of nobody is a dead run, and that is not a button.
 export const canSell = (g: GameState, unitId: number) =>
-  held(g) !== null && g.reserve.length > 1 && g.reserve.some((u) => u.id === unitId);
+  held(g) !== null && bodies(g) > 1 && g.reserve.some((u) => u.id === unitId);
 
-// A body given back to the pool it came out of. It always pays the same, and it
-// always pays less than the cheapest thing there is - so this is a slot you
-// wanted and a body you would rather have, never a way to make mana.
+// One body given back to the pool it came out of, off the top of its slot. It
+// always pays the same, and it always pays less than the cheapest thing there
+// is - so this is a slot you wanted and a body you would rather have, never a
+// way to make mana.
 export function sell(g: GameState, unitId: number): boolean {
   if (!canSell(g, unitId)) return false;
   const i = g.reserve.findIndex((u) => u.id === unitId);
-  const [gone] = g.reserve.splice(i, 1);
+  const u = g.reserve[i];
+  const each = Math.round(u.maxHp / u.n);
+  u.n -= 1;
+  u.maxHp = Math.max(0, u.maxHp - each);
+  u.hp = Math.min(u.hp, u.maxHp);
+  if (u.n <= 0) g.reserve.splice(i, 1);
   g.mana = Math.min(manaCap(g), g.mana + TUNING.sellMana);
   const b = held(g)!;
-  const shown = b.units.find((o) => o.src === gone.id);
-  if (shown) shown.hp = 0;
-  log(g, `${CREATURES[gone.creature].short} unmade.`.slice(0, 20));
+  const shown = b.units.find((o) => o.src === u.id);
+  if (shown) {
+    shown.n = u.n;
+    shown.maxHp = Math.max(1, u.maxHp);
+    shown.hp = u.hp;
+  }
+  log(g, `${CREATURES[u.creature].short} unmade.`.slice(0, 20));
   return true;
 }
 
@@ -858,12 +987,13 @@ function finish(g: GameState) {
   readLore(g, g.nodes[b.node]);
 }
 
-// Gold falls out of anything. Keys are only ever hidden, or held by the last
-// thing standing. Neither buys anything yet.
-function loot(n: MapNode): Record<Resource, number> {
-  const rolls = n.kind === "boss" ? 6 : n.kind === "cache" ? 4 : n.kind === "elite" ? 3 : 2;
-  return { gold: rolls, keys: n.kind === "cache" || n.kind === "boss" ? 1 : 0 };
-}
+// Gold falls out of anything and is banked into the tree at the end of a run. A
+// key is carried by the living and the well guarded, and it is what opens a door
+// somebody meant to keep shut.
+const loot = (n: MapNode): Record<Resource, number> => ({
+  gold: KINDS[n.kind].gold,
+  keys: KINDS[n.kind].keys,
+});
 
 // Everything a won room pays. There is no sheet to stop and read in a game that
 // keeps running, so it all goes to the log.
@@ -883,9 +1013,10 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
   const rest = TUNING.restFrac + P.restMore / 100;
   for (const u of g.reserve) {
     u.rooms += 1;
-    if (u.rooms <= TUNING.vetCap) u.maxHp += P.vetHp;
+    // Paid per body, or a slot of six veterans would be one veteran's worth
+    if (u.rooms <= TUNING.vetCap) u.maxHp += P.vetHp * u.n;
     const before = u.hp;
-    u.hp = Math.min(u.maxHp, u.hp + P.vetHp + Math.ceil(u.maxHp * rest));
+    u.hp = Math.min(u.maxHp, u.hp + P.vetHp * u.n + Math.ceil(u.maxHp * rest));
     mended += u.hp - before;
     const shown = b.units.find((o) => o.src === u.id);
     if (shown) {
@@ -897,7 +1028,7 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
 
   // Split spawns are not corpses anybody left behind, so they pay nothing
   const fallen = b.units.filter((u) => u.faction === "enemy" && u.hp <= 0 && u.tier === 0);
-  const xp = fallen.reduce((s, u) => s + CREATURES[u.creature].xp, 0);
+  const xp = fallen.reduce((s, u) => s + CREATURES[u.creature].xp * u.n, 0);
   gainXp(g, xp);
 
   const res = loot(n);
@@ -905,23 +1036,30 @@ function clearRoom(g: GameState, b: Battle, n: MapNode) {
   const spoils = RES_IDS.filter((k) => res[k] > 0).map((k) => `${RESOURCES[k].glyph}${res[k]}`);
   log(g, `+${xp}xp ${spoils.join(" ")}`.slice(0, 20));
 
-  // Only a little of it gets up on its own. The rest has to be asked for, one
-  // at a time, and paid for.
+  // Only a little of it gets up on its own. The rest has to be asked for, a slot
+  // at a time, and paid for. The roll is per slot, because a slot is the body.
   const rose: CreatureId[] = [];
   const bodies: number[] = [];
+  const free = KINDS[n.kind].freeRise || P.glut > 0;
   for (const u of fallen) {
     if (u.creature === "ossuary") continue;
-    // A crypt gives up all of it, and so does an open grave
-    const free = n.kind === "crypt" || P.glut > 0;
     if (!free && rnd() >= TUNING.raiseChance + P.riseLuck / 100) continue;
-    if (!raise(g, u.creature)) break;
+    const c = raiseAs(P, u.creature);
+    let got = 0;
+    for (let i = 0; i < u.n; i++) if (raise(g, c)) got += 1;
+    if (!got) break;
     b.taken.push(u.id);
-    rose.push(u.creature);
+    rose.push(c);
     bodies.push(u.id);
+  }
+  // What a sealed room was hiding. It is why you spent the key.
+  const gift = KINDS[n.kind].gift;
+  if (gift) {
+    for (let i = 0; i < TUNING.giftBodies; i++) if (raise(g, gift)) rose.push(gift);
   }
   if (rose.length) {
     g.risen = { creatures: rose, units: bodies, node: n.id, at: g.time };
-    log(g, `${rose.map((c) => CREATURES[c].short).join(", ")} rises.`.slice(0, 20));
+    log(g, `${[...new Set(rose)].map((c) => CREATURES[c].short).join(", ")} rises.`.slice(0, 20));
   }
 }
 
@@ -988,7 +1126,7 @@ export function newGame(seedValue: number, owned: number[] = [rootId]): GameStat
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 10;
+const SAVE_VERSION = 11;
 // Checked as well as the version, because the likely mistake is adding a field
 // and forgetting to bump
 const REQUIRED: (keyof GameState)[] = [

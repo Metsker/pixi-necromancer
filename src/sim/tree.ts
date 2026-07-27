@@ -13,24 +13,28 @@ export type Perk =
   | "rerolls"
   | "xpCut"
   | "startBand"
-  // swarm: more of them, cheaper to ask for, and rats worth having a lot of
-  | "riseLuck"
+  // beasts: more of them, and they crowd
+  | "beastHp"
+  | "beastDmg"
   | "swarmPer"
   | "swarmCap"
   | "swarmAll"
   | "swarmDead"
-  | "glut"
-  | "ratHp"
-  | "ratDmg"
-  // bond: fewer of them, and a wall worth standing behind
-  | "minionDmg"
+  | "rendAll"
   | "vetDmg"
   | "vetHp"
-  | "mend"
+  // undead: harder to put down, and more of them get back up
+  | "deadHp"
+  | "deadDmg"
+  | "riseLuck"
+  | "glut"
+  | "zombify"
   | "wallHp"
   | "wallCut"
   | "wallAll"
-  // control: what the dark does to the other side
+  // the dark: what it does to the other side, and what it puts back together
+  | "minionDmg"
+  | "mend"
   | "witherPow"
   | "witherLong"
   | "witherAll"
@@ -43,9 +47,9 @@ export type Perks = Record<Perk, number>;
 
 export const PERK_IDS: Perk[] = [
   "slots", "manaPool", "manaRise", "raiseCost", "restMore", "offers", "rerolls", "xpCut", "startBand",
-  "riseLuck", "swarmPer", "swarmCap", "swarmAll", "swarmDead", "glut", "ratHp", "ratDmg",
-  "minionDmg", "vetDmg", "vetHp", "mend", "wallHp", "wallCut", "wallAll",
-  "witherPow", "witherLong", "witherAll", "rot", "hexDmg", "dread", "spite",
+  "beastHp", "beastDmg", "swarmPer", "swarmCap", "swarmAll", "swarmDead", "rendAll", "vetDmg", "vetHp",
+  "deadHp", "deadDmg", "riseLuck", "glut", "zombify", "wallHp", "wallCut", "wallAll",
+  "minionDmg", "mend", "witherPow", "witherLong", "witherAll", "rot", "hexDmg", "dread", "spite",
 ];
 
 // col and row place it on the board; the links are whatever it ends up beside,

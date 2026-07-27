@@ -2,7 +2,7 @@ import type { Grid } from "../gfx/grid.ts";
 import {
   ARMY_COLOR,
   ARMY_GLYPH,
-  KIND_GLYPH,
+  KINDS,
   MANA_GLYPH,
   RESOURCES,
   RES_IDS,
@@ -14,10 +14,11 @@ import {
 import {
   canOrder,
   commandCap,
+  bodies,
   fielded,
   manaCap,
+  needsKey,
   reserve,
-  threatOf,
   xpNeeded,
 } from "../sim/game.ts";
 import { BTN_ROWS, C, COL, Hits, buttons } from "../ui.ts";
@@ -30,9 +31,6 @@ export const ROOM_W = 6;
 export const ROOM_H = 4;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
-
-// Mild, bad, and do not walk in there
-const THREAT = [C.pale, C.gold, C.hot];
 
 export const viewRows = (rows: number) => Math.max(1, rows - HUD_ROWS - BTN_ROWS);
 
@@ -93,8 +91,9 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     const busy = here && g.mode === "fight";
     const locked = n.state === "locked";
     const cleared = n.state === "cleared";
-    // The brackets say whether you can act on it and the glyph says how bad it
-    // is, so the brackets stay cool and the threat colours stay warm
+    // The brackets say whether you can act on it; a sealed room wears its own,
+    // because a door you cannot open yet is not a door you tap by mistake
+    const sealed = needsKey(n) && n.state !== "locked";
     const frame = busy
       ? C.hot
       : locked
@@ -104,12 +103,13 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
           : cleared
             ? C.dim
             : C.mid;
-    if (on(x - 1, y)) grid.put(x - 1, y, "(", frame, C.bg);
-    if (on(x + 1, y)) grid.put(x + 1, y, ")", frame, C.bg);
+    if (on(x - 1, y)) grid.put(x - 1, y, sealed ? "[" : "(", frame, C.bg);
+    if (on(x + 1, y)) grid.put(x + 1, y, sealed ? "]" : ")", frame, C.bg);
     if (on(x, y)) {
-      // A room you can still walk into is coloured by what is waiting in it
-      const ink = locked ? C.frame : busy ? C.hot : cleared ? C.dim : THREAT[threatOf(n)];
-      grid.put(x, y, locked ? "?" : KIND_GLYPH[n.kind], ink, C.bg);
+      // A room is coloured by what kind of room it is, and by nothing else. How
+      // frightened to be of it is what the sheet you open is for.
+      const ink = locked ? C.frame : busy ? C.hot : cleared ? C.dim : COL(KINDS[n.kind].color);
+      grid.put(x, y, locked ? "?" : KINDS[n.kind].glyph, ink, C.bg);
     }
     // He stands under the room he is in. How the army is holding up is the
     // heart in the hud; this is only where you are.
@@ -124,7 +124,7 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
   drawHud(grid, g, view);
   buttons(grid, hits, [
     { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
-    { label: `ARMY ${reserve(g).length}`, act: { t: "army" } },
+    { label: `ARMY ${bodies(g)}`, act: { t: "army" } },
     { label: "MENU", act: { t: "menu" } },
   ]);
 }

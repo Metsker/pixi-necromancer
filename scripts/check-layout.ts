@@ -18,7 +18,18 @@ import {
   treeOpen,
 } from "../src/sim/game.ts";
 import { BTN_ROWS, C, Hits, cells, tailW } from "../src/ui.ts";
-import { CREATURES, MANA_GLYPH, RAISABLE, TAUNT_GLYPH, TUNING } from "../src/sim/data.ts";
+import {
+  CREATURES,
+  KINDS,
+  MANA_GLYPH,
+  RAISABLE,
+  TAUNT_GLYPH,
+  TUNING,
+  poolFor,
+  type NodeKind,
+} from "../src/sim/data.ts";
+
+const KIND_IDS = Object.keys(KINDS) as NodeKind[];
 import { TREE, rootId } from "../src/sim/tree.ts";
 import { POWERS, powerLines } from "../src/sim/powers.ts";
 import { TREE_TEXT, stateOf, treeLines, treeWidth } from "../src/screens/tree.ts";
@@ -125,9 +136,12 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
   // The widest hand the board can pay for, with the reroll line under it
   g.offer = POWERS.slice(0, 3 + 4).map((p) => p.id);
   g.rerolls = 9;
-  while (raise(g, "warden")) {
-    /* a full roster of the widest names is the widest roster */
-  }
+  // A full roster of the widest names, one of them stacked deep. `raise` never
+  // refuses a kind it already holds, so this fills by kind and then piles on.
+  for (const c of RAISABLE) raise(g, c);
+  for (let i = 0; i < 99; i++) raise(g, g.reserve[0].creature);
+  // Everything the dark has ever handed out, on one sheet, several deep
+  g.powers = POWERS.flatMap((p) => [p.id, p.id]);
   const ui: Ui = {
     panel: "",
     node: 1,
@@ -137,6 +151,19 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     typed: 1e9,
     loreId: null,
     tnode: 0,
+    power: POWERS[0].id,
+  };
+
+  const fits = (panel: Parameters<typeof panelSpec>[2], cols: number, label: string) => {
+    const spec = panelSpec(g, ui, panel, cols);
+    if (!spec) return;
+    ok(`${label}/${cols}: the title fits`, cells(spec.title) <= cols - 4);
+    for (const l of spec.lines) {
+      const w = cells(l.text) + tailW(l);
+      ok(`${label}/${cols}: "${l.text}" fits`, w <= cols - 4);
+      // A wide grid must not stretch prose into one long line of it
+      ok(`${label}/${cols}: "${l.text}" stays readable`, w <= SHEET_COLS);
+    }
   };
 
   for (const cols of [MIN_COLS, 20, 24, MAX_COLS]) {
@@ -145,18 +172,26 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
         g.loreQueue = [lore];
         for (const state of ["locked", "open", "cleared"] as const) {
           g.nodes[1].state = state;
-          const spec = panelSpec(g, ui, panel, cols);
-          if (!spec) continue;
-          ok(`${panel}/${cols}: the title fits`, cells(spec.title) <= cols - 4);
-          for (const l of spec.lines) {
-            const w = cells(l.text) + tailW(l);
-            ok(`${panel}/${cols}: "${l.text}" fits`, w <= cols - 4);
-            // A wide grid must not stretch prose into one long line of it
-            ok(`${panel}/${cols}: "${l.text}" stays readable`, w <= SHEET_COLS);
+          // Every kind of room draws the same sheet, and the sealed ones say the
+          // most on it - keys, gifts, and what gets up for free
+          for (const kind of KIND_IDS) {
+            g.nodes[1].kind = kind;
+            g.nodes[1].foes = kind === "gate" ? [] : [...poolFor(kind, g.nodes[1].tier), "guard"];
+            for (const keys of [0, 1]) {
+              g.res.keys = keys;
+              fits(panel, cols, panel);
+            }
           }
         }
       }
     }
+    // Every card's whole description, at every width, because that sheet is the
+    // one place the rules are actually written down
+    for (const p of POWERS) {
+      ui.power = p.id;
+      fits("power", cols, `power ${p.id}`);
+    }
+    ui.power = POWERS[0].id;
   }
 
   // The line is reordered from this sheet, both ways, and the ends of it say so
@@ -195,7 +230,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 {
   const r = recorder(24, 52);
   const g = newGame(8642);
-  orderArmy(g, g.nodes.find((n) => n.state === "open")!.id);
+  orderArmy(g, g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!.id);
   advance(g, TUNING.marchTicks + 1);
   const b = g.battle!;
   const mended = b.units.find((u) => u.faction === "player")!;
@@ -229,6 +264,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
       typed: 1e9,
       loreId: null,
       tnode: 0,
+      power: POWERS[0].id,
     };
     for (const cols of [MIN_COLS, 24, MAX_COLS]) {
       const spec = panelSpec(g, ui, "unit", cols)!;
@@ -237,7 +273,7 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
       ok(`${c}/${cols}: it says what it does`, spec.lines.some((l) => l.text.includes("hits for")));
     }
     // The one line that decides where a blow goes is said on the sheet
-    const spec = panelSpec(g, { panel: "unit", node: 0, speed: 1, watch: false, unit: g.reserve[0].id, typed: 1e9, loreId: null, tnode: 0 }, "unit", MIN_COLS)!;
+    const spec = panelSpec(g, ui, "unit", MIN_COLS)!;
     ok(
       `${c}: a wall says it is one`,
       CREATURES[c].taunt === spec.lines.some((l) => l.text.includes(TAUNT_GLYPH)),
@@ -249,9 +285,10 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 {
   const r = recorder(24, 52);
   const g = newGame(31313);
-  // Two of them at least: this scans a board with a body still on the floor
-  // after one has been spoken for, and a crypt by the gate holds only one
-  const room = g.nodes.find((n) => n.state === "open" && n.foes.length >= 2)!;
+  // Two different things at least: this scans a board with a slot still on the
+  // floor after one has been spoken for, and one kind of thing is one slot
+  const room = g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!;
+  room.foes = ["rat", "hound"];
   orderArmy(g, room.id);
   advance(g, TUNING.marchTicks + 1);
   const b = g.battle!;
@@ -350,15 +387,18 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
 // stand on one row each at any width worth playing on.
 {
   const g = newGame(5150);
-  while (raise(g, "rat")) {
-    /* the longest line the cap allows is the worst case for the arena */
-  }
-  const room = g.nodes.find((n) => n.state === "open")!;
+  g.reserve.length = 0;
+  // The longest line the cap allows is one slot per kind, because the same thing
+  // shares a slot - so the worst case for the arena is all different things. A
+  // room is not capped, so theirs is the longer of the two.
+  for (const c of RAISABLE) raise(g, c);
+  const room = g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!;
   room.foes = ["rat", "hound", "moth", "wisp", "knight", "warden"];
   orderArmy(g, room.id);
   advance(g, TUNING.marchTicks + 1);
   const b = g.battle!;
-  ok("a long line is actually long", b.units.filter((u) => u.faction === "player").length >= 6);
+  ok("a long line is actually long", b.units.filter((u) => u.faction === "enemy").length >= 6);
+  ok("and yours is every slot you have", b.units.filter((u) => u.faction === "player").length === commandCap(g));
 
   for (const rows of [MIN_ROWS, 32, 40, 52]) {
     for (const cols of [MIN_COLS, 24, 44, MAX_COLS]) {
@@ -378,9 +418,14 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
             .filter(([, c]) => c.ch === CREATURES.rat.glyph || c.ch === CREATURES.warden.glyph)
             .map(([at]) => Number(at.split(",")[1])),
         );
-        // The roster below writes glyphs too, so what is pinned is the arena:
-        // its figures share one row per side, which is two at most
-        ok(`${cols}x${rows}: nobody is stacked in ranks`, rowsWith.size <= 2 + g.reserve.length);
+        // The roster below writes glyphs too, and it is as long as the longer of
+        // the two lines. What is pinned is the arena: its figures share one row
+        // per side, which is two at most.
+        const roster = Math.max(
+          b.units.filter((u) => u.faction === "player").length,
+          b.units.filter((u) => u.faction === "enemy").length,
+        );
+        ok(`${cols}x${rows}: nobody is stacked in ranks`, rowsWith.size <= 2 + roster);
       }
     }
   }

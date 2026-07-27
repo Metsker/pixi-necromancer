@@ -2,19 +2,34 @@
 import type { Perks } from "./tree.ts";
 
 export type Point = { x: number; y: number };
-// Nothing spends these yet. They are here so a room can pay something a shop
-// and a locked door will want later.
+// Gold is banked into the tree at the end of a run; a key opens a sealed room
 export type Resource = "gold" | "keys";
 export type Faction = "player" | "enemy";
 export type AbilityId = "swarm" | "bulwark" | "wither" | "siphon" | "rend" | "toll" | "split";
-export type CreatureId = "rat" | "hound" | "knight" | "moth" | "wisp" | "warden" | "ossuary";
-export type NodeKind = "gate" | "fight" | "elite" | "crypt" | "cache" | "boss";
+// The two things a card can be about, plus the one thing that is neither: what
+// is still breathing when you find it. Living bodies never join you as they are.
+export type Family = "beast" | "undead" | "living";
+export type CreatureId =
+  | "crow" | "rat" | "hound" | "moth" | "boar"
+  | "skeleton" | "zombie" | "ghoul" | "wisp" | "knight" | "warden"
+  | "peasant" | "guard"
+  | "ossuary";
+export type NodeKind =
+  | "gate" | "sewer" | "village" | "wilds" | "barrow" | "graves" | "crypt" | "vault" | "boss";
 export type NodeState = "locked" | "open" | "cleared";
 export type ArmyMode = "idle" | "march" | "fight" | "spoils";
 
-// `rooms` is how many it has lived through. It ticks for everybody; only the
-// bond arm reads it, and only the bond arm pays it back.
-export type Unit = { id: number; creature: CreatureId; hp: number; maxHp: number; rooms: number };
+// One slot of the army: `n` of the same thing, standing together. `hp`/`maxHp`
+// are the whole stack's, so a stack is one body with everything combined.
+// `rooms` is how many it has lived through; only veterancy reads it.
+export type Unit = {
+  id: number;
+  creature: CreatureId;
+  n: number;
+  hp: number;
+  maxHp: number;
+  rooms: number;
+};
 
 // The last time the dead got up, so the map can make a moment of it
 export type Risen = {
@@ -26,9 +41,10 @@ export type Risen = {
 
 export type BattleUnit = {
   id: number;
-  src: number; // the roster unit id, or -1 for anything with no roster entry
+  src: number; // the roster stack id, or -1 for anything with no roster entry
   creature: CreatureId;
   faction: Faction;
+  n: number; // bodies in this stack; hp and dmg are already the sum of them
   hp: number;
   maxHp: number;
   dmg: number;
@@ -46,7 +62,7 @@ export type Battle = {
   hit: Hit[];
   mend: Hit[]; // who got put back together this turn, and by how much
   // Whose line swings first this fight, decided on the way in by who brought
-  // more. The two sides then alternate, so twice the bodies is not twice the blows.
+  // more bodies. The two sides then alternate, one blow a side.
   lead: Faction;
   next: Faction;
   cursor: Record<Faction, number>;
@@ -54,7 +70,7 @@ export type Battle = {
   log: string[];
   done: "" | "win" | "loss";
   healed: number; // what the room gave the army back, for the board to show
-  taken: number[]; // bodies out of this room that are yours now, however they got up
+  taken: number[]; // stacks out of this room that are yours now, however they got up
   nextId: number;
   // What you had bought when this fight started. Carried on the battle because a
   // blow is resolved without the game state to hand.
@@ -115,9 +131,6 @@ export const TUNING = {
   mapRows: 7,
   holeChance: 0.16,
   tiers: 6,
-  // What a room is worth being afraid of, in the two places the bands change
-  threatMild: 200,
-  threatBad: 340,
 
   // Ticks. The clock runs at TICK_MS a tick, multiplied by the speed control.
   marchTicks: 5,
@@ -132,8 +145,9 @@ export const TUNING = {
   // of what it can hold. Nothing else heals without a node of the tree.
   restFrac: 0.25,
 
-  // The root of the tree is worth a body, so a run opens on six
-  baseCap: 5,
+  // Slots, not bodies. The root of the tree is worth one, so a run opens on four
+  // and the opening band already fills three of them.
+  baseCap: 3,
   xpPerLevel: 22,
 
   // What a level-up puts on the table, and how deep one of them can be stacked
@@ -157,6 +171,8 @@ export const TUNING = {
 
   raiseChance: 0.12,
   riseTicks: 24,
+  // What a sealed room hands over outright, on top of whatever fell in it
+  giftBodies: 2,
 
   swarmPerAlly: 2,
   swarmCap: 10,
@@ -176,10 +192,12 @@ export const TUNING = {
   rotDamage: 6,
   splitTiers: 1,
 
-  // The most rooms a body is ever paid for living through. Uncapped, a long run
-  // turns veterancy into a number nothing else on the board can answer.
-  vetCap: 10,
+  // The most rooms a body is ever paid for living through. Uncapped - or capped
+  // too high - a long run turns veterancy into a number nothing else on the
+  // board can answer, and the arm holding it is simply the answer.
+  vetCap: 6,
 
+  // Bodies in a room before depth starts adding to them
   roomBase: 2,
   tierHp: 5,
   logLines: 40,
@@ -189,6 +207,10 @@ export type Template = {
   name: string;
   short: string;
   role: string; // what it is for, in one word
+  family: Family;
+  // Roughly how deep it belongs. Nothing under `abilityTier` carries an
+  // ability at all: the shallow end of the map is bodies, not rules.
+  tier: number;
   glyph: string;
   color: number;
   hp: number;
@@ -199,72 +221,143 @@ export type Template = {
   // standing, which is the only thing that decides who gets hit.
   taunt: boolean;
   ability: AbilityId | null;
+  // What it is when it gets up, if it is not itself. Nothing living joins you
+  // as it was; it comes back as whatever the dark makes of it.
+  rises?: CreatureId;
   tag: string;
 };
 
-// color is an index into PALETTE
+// Nothing shallower than this carries an ability. A check holds the table to it.
+export const ABILITY_TIER = 1;
+
+// color is an index into PALETTE, and no two of them share one
 export const CREATURES: Record<CreatureId, Template> = {
-  rat:     { name: "Plague Rat",  short: "Rat",    role: "swarm",  glyph: "⚇", color: 15, hp: 22,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: "swarm",   tag: "+2 dmg per ally" },
-  hound:   { name: "Grave Hound", short: "Hound",  role: "heavy",  glyph: "⋒", color: 14, hp: 30,  dmg: 13, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
-  moth:    { name: "Grave Moth",  short: "Moth",   role: "hex",    glyph: "⫙", color: 16, hp: 26,  dmg: 6,  xp: 10, mana: 3, taunt: false, ability: "wither",  tag: "blunts their blows" },
-  wisp:    { name: "Corpse Wisp", short: "Wisp",   role: "mender", glyph: "◉", color: 21, hp: 28,  dmg: 4,  xp: 12, mana: 3, taunt: false, ability: "siphon",  tag: "gives itself to the worst hurt" },
-  knight:  { name: "Bone Knight", short: "Knight", role: "wall",   glyph: "⌤", color: 22, hp: 55,  dmg: 6,  xp: 16, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
-  warden:  { name: "Tomb Warden", short: "Warden", role: "guard",  glyph: "⛨", color: 19, hp: 80,  dmg: 8,  xp: 20, mana: 5, taunt: true,  ability: "toll",    tag: "a wall, and hurts all when it falls" },
-  ossuary: { name: "The Ossuary", short: "Ossuary",role: "the end",glyph: "⚱", color: 17, hp: 130, dmg: 15, xp: 60, mana: 0, taunt: false, ability: "split",   tag: "splits when broken" },
+  // beasts: cheap, many, and they hit before they think
+  crow:     { name: "Carrion Crow", short: "Crow",   role: "flock",  family: "beast",  tier: 0, glyph: "⸙", color: 9,  hp: 18,  dmg: 7,  xp: 6,  mana: 2, taunt: false, ability: null,      tag: "" },
+  rat:      { name: "Plague Rat",   short: "Rat",    role: "swarm",  family: "beast",  tier: 1, glyph: "⚇", color: 15, hp: 22,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: "swarm",   tag: "+2 dmg per ally" },
+  hound:    { name: "Grave Hound",  short: "Hound",  role: "hunter", family: "beast",  tier: 1, glyph: "⋒", color: 14, hp: 30,  dmg: 13, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
+  moth:     { name: "Grave Moth",   short: "Moth",   role: "hex",    family: "beast",  tier: 2, glyph: "⫙", color: 16, hp: 26,  dmg: 6,  xp: 10, mana: 3, taunt: false, ability: "wither",  tag: "blunts their blows" },
+  boar:     { name: "Tomb Boar",    short: "Boar",   role: "wall",   family: "beast",  tier: 3, glyph: "⟁", color: 13, hp: 60,  dmg: 9,  xp: 18, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
+
+  // undead: slower, harder to put down, and they were already yours once
+  skeleton: { name: "Rattlebones",  short: "Bones",  role: "rank",   family: "undead", tier: 0, glyph: "⚉", color: 17, hp: 24,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: null,      tag: "" },
+  zombie:   { name: "Shambler",     short: "Shambr", role: "meat",   family: "undead", tier: 0, glyph: "⩌", color: 21, hp: 34,  dmg: 4,  xp: 7,  mana: 2, taunt: false, ability: null,      tag: "" },
+  ghoul:    { name: "Ghoul",        short: "Ghoul",  role: "eater",  family: "undead", tier: 1, glyph: "♠", color: 11, hp: 34,  dmg: 10, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
+  wisp:     { name: "Corpse Wisp",  short: "Wisp",   role: "mender", family: "undead", tier: 2, glyph: "◉", color: 23, hp: 28,  dmg: 4,  xp: 12, mana: 3, taunt: false, ability: "siphon",  tag: "gives itself to the worst hurt" },
+  knight:   { name: "Bone Knight",  short: "Knight", role: "wall",   family: "undead", tier: 3, glyph: "⌤", color: 22, hp: 55,  dmg: 6,  xp: 16, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
+  warden:   { name: "Tomb Warden",  short: "Warden", role: "guard",  family: "undead", tier: 4, glyph: "⛨", color: 19, hp: 80,  dmg: 8,  xp: 20, mana: 5, taunt: true,  ability: "toll",    tag: "a wall, and hurts all when it falls" },
+
+  // living: they are somebody else's until they are yours, and then they are bones
+  peasant:  { name: "Villager",     short: "Villgr", role: "fodder", family: "living", tier: 0, glyph: "⛑", color: 10, hp: 16,  dmg: 3,  xp: 4,  mana: 2, taunt: false, ability: null,      rises: "skeleton", tag: "" },
+  guard:    { name: "Vault Guard",  short: "Guard",  role: "wall",   family: "living", tier: 2, glyph: "⟎", color: 12, hp: 45,  dmg: 9,  xp: 16, mana: 4, taunt: true,  ability: null,      rises: "skeleton", tag: "a wall" },
+
+  ossuary:  { name: "The Ossuary",  short: "Ossuar", role: "the end",family: "undead", tier: 5, glyph: "⚱", color: 20, hp: 130, dmg: 15, xp: 60, mana: 0, taunt: false, ability: "split",   tag: "splits when broken" },
 };
 
-export const RAISABLE: CreatureId[] = ["rat", "hound", "knight", "moth", "wisp", "warden"];
+export const CREATURE_IDS = Object.keys(CREATURES) as CreatureId[];
 
-// Three bands, not two, so a wall arrives before both walls do. Every step out
-// from the gate changes exactly one of these: what is in the room, how many of
-// them, or how big they are - which is what makes distance readable.
-export const EARLY_POOL: CreatureId[] = ["rat", "rat", "hound", "moth", "wisp"];
-export const MID_POOL: CreatureId[] = ["rat", "hound", "moth", "moth", "wisp", "knight"];
-export const LATE_POOL: CreatureId[] = ["rat", "hound", "knight", "moth", "wisp", "warden"];
-export const poolFor = (tier: number) =>
-  tier < 2 ? EARLY_POOL : tier < 4 ? MID_POOL : LATE_POOL;
+// Anything that can end up standing in your line. The Ossuary never answers, and
+// nothing living joins you as it was - it joins you as what it rises into.
+export const RAISABLE: CreatureId[] = CREATURE_IDS.filter(
+  (c) => CREATURES[c].mana > 0 && CREATURES[c].family !== "living",
+);
+
+// Three bands of depth. Every step out from the gate changes what is in the
+// room, how many of them, or how big they are - which is what makes distance
+// readable without a colour for it.
+export const bandFor = (tier: number) => (tier < 2 ? 0 : tier < 4 ? 1 : 2);
+
+export type KindInfo = {
+  name: string;
+  note: string;
+  glyph: string;
+  // The one thing the map is coloured by now. A room says what it is, not how
+  // frightened of it to be - that is what the sheet you open is for.
+  color: number;
+  // What stands in it, by band. An empty pool is a room with nobody in it.
+  pool: [CreatureId[], CreatureId[], CreatureId[]];
+  size: number; // bodies on top of TUNING.roomBase, before depth adds more
+  tierUp: number; // deeper than where it stands
+  key: boolean; // sealed, and a key is what opens it
+  freeRise: boolean; // everything that falls here gets up for nothing
+  gift: CreatureId | null; // what opening it hands you outright
+  gold: number;
+  keys: number;
+};
+
+const NOBODY: [CreatureId[], CreatureId[], CreatureId[]] = [[], [], []];
+
+export const KINDS: Record<NodeKind, KindInfo> = {
+  gate: {
+    name: "THE GATE", note: "where you came in", glyph: "⌂", color: 11,
+    pool: NOBODY, size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 0, keys: 0,
+  },
+  sewer: {
+    name: "THE SEWERS", note: "it moves in the water", glyph: "≈", color: 21,
+    pool: [["rat", "rat", "crow"], ["rat", "rat", "hound", "crow"], ["rat", "hound", "ghoul"]],
+    size: 1, tierUp: 0, key: false, freeRise: false, gift: null, gold: 2, keys: 0,
+  },
+  village: {
+    name: "THE VILLAGE", note: "they were alive this morning", glyph: "▤", color: 10,
+    pool: [["peasant", "peasant"], ["peasant", "peasant", "guard"], ["peasant", "guard", "guard"]],
+    size: 1, tierUp: 0, key: false, freeRise: false, gift: null, gold: 3, keys: 1,
+  },
+  wilds: {
+    name: "THE WILDS", note: "something keeps it fed", glyph: "♣", color: 14,
+    pool: [["crow", "hound"], ["hound", "moth", "crow"], ["hound", "moth", "boar"]],
+    size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 2, keys: 0,
+  },
+  barrow: {
+    name: "THE BARROW", note: "they were expecting us", glyph: "☠", color: 15,
+    pool: [["skeleton", "ghoul"], ["ghoul", "zombie", "knight"], ["knight", "warden", "ghoul"]],
+    size: 1, tierUp: 1, key: false, freeRise: false, gift: null, gold: 4, keys: 1,
+  },
+  graves: {
+    name: "THE GRAVEYARD", note: "the dead here rise easily", glyph: "⛼", color: 22,
+    pool: [["skeleton", "ghoul"], ["skeleton", "zombie", "ghoul"], ["zombie", "ghoul", "knight"]],
+    size: 0, tierUp: 0, key: false, freeRise: true, gift: null, gold: 2, keys: 0,
+  },
+  crypt: {
+    name: "THE CRYPT", note: "sealed, and somebody is still in there", glyph: "♖", color: 20,
+    pool: [["skeleton", "knight"], ["knight", "ghoul"], ["knight", "warden"]],
+    size: 0, tierUp: 0, key: true, freeRise: true, gift: "knight", gold: 4, keys: 0,
+  },
+  vault: {
+    name: "THE VAULT", note: "sealed, and well looked after", glyph: "⧇", color: 16,
+    pool: [["guard", "guard"], ["guard", "guard", "knight"], ["guard", "warden", "knight"]],
+    size: 1, tierUp: 1, key: true, freeRise: false, gift: null, gold: 12, keys: 0,
+  },
+  boss: {
+    name: "THE OSSUARY", note: "everything you dismissed", glyph: "⚱", color: 20,
+    pool: [["ossuary", "warden"], ["ossuary", "warden"], ["ossuary", "warden"]],
+    size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 20, keys: 0,
+  },
+};
+
+// What a room draws from at the depth it stands at
+export const poolFor = (kind: NodeKind, tier: number) => KINDS[kind].pool[bandFor(tier)];
 
 // What depth is worth to a body standing in the room, and to its blow. Read by
-// the board that builds the fight and by the colour the map paints on it, or
-// the colour lies about the fight inside.
+// the board that builds the fight and by the sheet you open before walking in.
 export const tierHpFor = (tier: number) => tier * TUNING.tierHp;
 export const tierDmgFor = (tier: number) => Math.floor(tier / 2);
 // A room fills up as it gets further out, a step behind the pool it draws from
 export const tierGrow = (tier: number) => (tier >= 5 ? 2 : tier >= 3 ? 1 : 0);
-// What a run opens with is three different things out of this, so no roll ever
-// hands out a band with nothing in it that can kill
-export const START_POOL: CreatureId[] = ["rat", "hound", "moth", "wisp"];
+
+// What a run opens with: three different things, one hand of each path, so the
+// first level-up is a choice rather than a confirmation.
+export const START_POOL: CreatureId[] = ["rat", "hound", "skeleton", "zombie"];
 export const START_BAND = 3;
-export const KIND_ROLL: NodeKind[] = ["fight", "fight", "fight", "elite", "crypt", "cache"];
-// One wall in front of it, not two. Everything the run dismissed is behind it.
-export const BOSS_FOES: CreatureId[] = ["ossuary", "warden"];
 
-export const KIND_GLYPH: Record<NodeKind, string> = {
-  gate: "⌂",
-  fight: "✕",
-  elite: "☠",
-  crypt: "⛼",
-  cache: "⩀",
-  boss: "⚱",
-};
+// The sealed rooms are one roll in nine each, so a key is worth carrying and
+// worth spending on the right door
+export const KIND_ROLL: NodeKind[] = [
+  "sewer", "sewer", "village", "wilds", "wilds", "barrow", "graves", "crypt", "vault",
+];
 
-export const KIND_NAME: Record<NodeKind, string> = {
-  gate: "THE GATE",
-  fight: "WARREN",
-  elite: "BARROW",
-  crypt: "CRYPT",
-  cache: "RELIQUARY",
-  boss: "THE OSSUARY",
-};
-
-export const KIND_NOTE: Record<NodeKind, string> = {
-  gate: "where you came in",
-  fight: "a few of them, loose",
-  elite: "they were expecting us",
-  crypt: "the dead here rise easily",
-  cache: "somebody hid something",
-  boss: "everything you dismissed",
-};
+// What the first ring out from the gate is allowed to be. A run that opens
+// surrounded by doors it has no key for is a run with nowhere to go.
+export const OPEN_ROLL: NodeKind[] = KIND_ROLL.filter((k) => !KINDS[k].key);
 
 export const RES_IDS: Resource[] = ["gold", "keys"];
 

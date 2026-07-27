@@ -1,7 +1,7 @@
 import { inset, type Surface } from "../gfx/surface.ts";
 import {
   CREATURES,
-  KIND_NAME,
+  KINDS,
   MANA_GLYPH,
   TAUNT_GLYPH,
   TUNING,
@@ -20,10 +20,12 @@ import {
   mendable,
   offered,
   perks,
+  raiseAs,
+  roomFor,
   wallish,
 } from "../sim/game.ts";
 import type { Perks } from "../sim/tree.ts";
-import { BTN_ROWS, C, COL, Hits, bar, buttons, cells } from "../ui.ts";
+import { BTN_ROWS, C, COL, Hits, bar, buttons, cells, cut } from "../ui.ts";
 
 const ROW_H = 2; // a name row and a bar row per unit in the roster
 const LUNGE = 2; // how far a fighter steps into the middle to land a blow
@@ -77,7 +79,9 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
   grid.put(cols - pool.length - 1, 1, MANA_GLYPH, C.cyan);
   grid.text(cols - pool.length, 1, pool, C.mid);
 
-  grid.center(0, 0, cols - slots.length - 2, KIND_NAME[n.kind], C.gold);
+  // The room says what kind of room it is, in its own colour, the same as it
+  // does on the map - a fight opens where you tapped, and it says so
+  grid.center(0, 0, cols - slots.length - 2, KINDS[n.kind].name, COL(KINDS[n.kind].color));
   const beat = b.done ? (b.done === "win" ? "it is yours" : "it is over") : `round ${b.round + 1}`;
   grid.center(0, 1, cols - pool.length - 2, beat, b.done === "win" ? C.green : b.done ? C.red : C.frame);
 
@@ -120,8 +124,11 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
   // A body you are standing over is yours to ask for, at a price, until you leave
   const holding = held(g) !== null;
   const open = new Set(holding ? offered(g, b).map((u) => u.id) : []);
+  // A slot is asked for whole: what it costs is what all of it costs, and all of
+  // it lands in one slot - so the only room it needs is room for its kind
+  const price = (u: BattleUnit) => manaCost(g, u.creature) * u.n;
   const bid: Bid = (u) =>
-    !open.has(u.id) ? 0 : g.mana >= manaCost(g, u.creature) && fielded(g) < commandCap(g) ? 2 : 1;
+    !open.has(u.id) ? 0 : g.mana >= price(u) && roomFor(g, raiseAs(P, u.creature)) ? 2 : 1;
   const tap = (u: BattleUnit, x: number, y: number) => {
     if (bid(u)) hits.add(at + x - 1, y, 3, 2, { t: "reap", id: u.id });
   };
@@ -161,7 +168,7 @@ export function drawBattle(full: Surface, g: GameState, hits: Hits, speed: numbe
     }
     if (theirLine[i]) {
       const u = theirLine[i];
-      side(grid, rightX, rightW, y, u, landing, mending, true, look, bid(u), manaCost(g, u.creature), P);
+      side(grid, rightX, rightW, y, u, landing, mending, true, look, bid(u), price(u), P);
       if (bid(u)) hits.add(at + rightX, y, rightW, ROW_H, { t: "reap", id: u.id });
     }
     if (mine || theirLine[i]) grid.put(half, y, "│", C.frame);
@@ -295,9 +302,12 @@ function side(
   const tone =
     offer === 2 ? C.cyan : down ? C.frame : struck ? C.ink : put ? C.green : COL(t.color);
 
-  const name = t.short.slice(0, Math.max(1, w - 2));
+  // A slot says how deep it is next to its own name, because that number is
+  // both what it hits for and what falls with it
+  const full = u.n > 1 ? `${t.short} x${u.n}` : t.short;
+  const name = cut(full, Math.max(1, w - 2));
   if (mirrored) {
-    grid.text(x + w - name.length - 2, y, name, ink);
+    grid.text(x + w - cells(name) - 2, y, name, ink);
     grid.put(x + w - 1, y, glyph, tone);
   } else {
     grid.put(x, y, glyph, tone);

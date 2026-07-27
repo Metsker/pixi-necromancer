@@ -44,6 +44,8 @@ const ACT_SFX: Partial<Record<Act["t"], SfxName>> = {
   inspect: "open",
   watch: "open",
   restart: "open",
+  read: "open",
+  gifts: "open",
   up: "move",
   down: "move",
   pick: "move",
@@ -102,6 +104,7 @@ async function main() {
     typed: 0,
     loreId: null,
     tnode: rootId,
+    power: "",
   };
   const hits = new Hits();
   let cam: Point = { x: 0, y: 0 };
@@ -262,6 +265,15 @@ async function main() {
         break;
       case "power":
         takePower(g, a.id);
+        // A card read on the way to taking it leaves the sheet behind it up
+        ui.panel = "";
+        break;
+      case "read":
+        ui.power = a.id;
+        ui.panel = "power";
+        break;
+      case "gifts":
+        ui.panel = "gifts";
         break;
       case "reroll":
         reroll(g);

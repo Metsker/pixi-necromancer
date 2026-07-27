@@ -47,24 +47,49 @@ punched at `holeChance`, one at a time, and only where the remaining rooms stay 
 no repair pass, because that is where a generator quietly starts producing corridors. You
 enter at the centre; tier rises with distance out (`tierForDist`, 6 bands), so difficulty
 radiates rather than descends. The Ossuary sits at whatever room survives furthest from the
-gate. Rooms are `locked` -> `open` (something beside them is cleared) -> `cleared`. Kinds:
-`gate`, `fight`, `elite` (+1 tier, more of them), `crypt` (fewer, and every corpse rises),
-`cache` (loot), `boss`. Room colour is `threatOf` - three bands off `powerOf`, which counts a
-wall's health twice because nothing behind it can be touched until it is down.
+gate. Rooms are `locked` -> `open` (something beside them is cleared) -> `cleared`.
 
-**One army, no hero.** `g.reserve` is everything you have; the token on the map is the
-necromancer but he is not a combatant and has no hit points. When the reserve is empty the
-run is over. Capacity is `commandCap` (`TUNING.baseCap` + `slots` perks). There is exactly
-one army and one order at a time - `orderArmy` walks it over cleared ground to an open room
-and starts a fight on arrival.
+**A room is a theme, and the theme is the pool.** Every kind is one row of `KINDS` in
+`data.ts` - name, glyph, colour, three tiered pools, size, loot, and the three flags that
+make it interesting (`key`, `freeRise`, `gift`). `sewer` is rats and crows, `village` is
+living peasants who come back as bones, `wilds` is hounds and moths, `barrow` is elite
+(`tierUp: 1`), `graves` gives up all of its dead for free, `crypt` and `vault` are **sealed**
+and cost a key, `boss` is the Ossuary. The map is coloured by *kind* and nothing else -
+`powerOf` still exists, but it prices a room on the sheet you open, it does not paint it.
+Adding a room = one row in `KINDS` plus one entry in `KIND_ROLL`.
+
+**A key is a choice, never a wall.** `needsKey` blocks `canOrder` and `arrive` spends the key
+on the door, not on the room. Nothing sealed is rolled in the first ring (`OPEN_ROLL`), and
+`keepOpen` hands one over if every remaining way on is sealed and the purse is empty - so a
+key gates what is worth taking, never whether the run can go on.
+
+**One army, no hero, and the same thing shares a slot.** `g.reserve` is everything you have;
+the token on the map is the necromancer but he is not a combatant and has no hit points.
+Raising a rat when you hold rats deepens that slot: `Unit.n` goes up and `hp`/`maxHp` are the
+whole stack's. Capacity is `commandCap` counted in **slots** (`fielded`) - four at the gate,
+`TUNING.baseCap` plus the root - so what the cap holds is how many *different* things you can
+field. **Depth is free, breadth is the price.** `roomFor` is the one gate on `raise`: a kind
+it already holds never refuses another, which also means `while (raise(...))` never
+terminates. `bodies()` is the other count, and it is what leads a fight and what crowds a
+blow. A slot is one body on the board with everything summed, so a narrow army hits harder
+than a broad one - concentration is the tactic the arrows used to be. There is exactly one
+army and one order at a time.
+
+Nothing caps how deep one slot goes, and that is **not solved**. The probe says a slot cap
+flattens the arms - beast/undead/dark come in at 42/41/40 wins against an arm-agnostic 41,
+because free bodies outweigh the cards that buy power. The levers, when it needs one: a depth
+cap on `Unit.n`, or free rises (`raiseChance`, `glut`, `freeRise`, `gift`) only handing over
+kinds you do not already hold.
 
 **The clock never stops for you** unless a sheet is up. `advance(g, ticks)` drives march,
 fight and spoils off `g.time` vs `g.next`; the speed control is x1/x2/x4/hold. Anything
 `shownPanel()` returns halts the ticker, so nothing you must answer can be missed.
 
 **A fight** is one blow at a time and the two lines alternate: bringing six against three
-does not buy six blows to three, it buys a deeper bench and (because the bigger line leads,
-ties tossed for) the opening blow. Each side cycles its own line by `slot`, so line order is
+does not buy six blows to three, it buys a deeper bench and (because the bigger line leads on
+*bodies*, ties tossed for) the opening blow. Both lines stack the same way - `stackOf` folds a
+room of four rats into one body of four rats - or a room would get four blows to your one and
+the whole point of a slot would be on your side only. Each side cycles its own line by `slot`, so line order is
 *swing* order - the arrows on the army sheet are how you decide who acts first. Targeting is
 separate: a blow lands on a random living wall (`taunt`, plus everything of yours once
 `wallAll` is drafted) if any is standing, otherwise on a random survivor. `wallCut` deliberately
@@ -73,42 +98,61 @@ card puts the soft cap on every body you own. Breaking the wall is the tactic, n
 `TUNING.maxRounds` exchanges without a result is a loss - a fight that will not end is a
 fight you lost slowly.
 
+**Two families, and everything on a body is one of them.** `CREATURES[c].family` is `beast`,
+`undead` or `living`, and `Template.tier` says how deep it belongs. Nothing under
+`ABILITY_TIER` carries an ability at all (a check holds the table to it), so the shallow end
+of the map is bodies and the deep end is rules. Nothing `living` ever joins you as it was:
+`raiseAs` turns it into what `Template.rises` says - bones, or a shambler once `zombify` is
+drafted - and `manaCost` prices it by what it becomes.
+
 **Abilities** hang off `CREATURES[c].ability` and resolve through the four hooks in
-`ABILITIES` (`bonus`, `taken`, `onAttack`, `onDeath`): `swarm` (rats, per living ally),
-`bulwark` (halves what it takes), `wither` (blunts their next blows), `siphon` (a wisp moves
-its *own* life into whoever is worst off and stops at `siphonFloor`, so it burns down rather
-than healing for free), `rend` (bonus vs wounded), `toll` (hurts everyone when it falls),
-`split` (the Ossuary, once). Four drafted rules bolt onto the same loop without an ability of
-their own: `swarmAll` (everything of yours crowds), `swarmDead` (the fallen still count toward
-it), `rot` (a withered enemy pays to swing anyway), `spite` (one of theirs falling is felt by
-the rest).
+`ABILITIES` (`bonus`, `taken`, `onAttack`, `onDeath`): `swarm` (per living *body* on its side,
+paid per body in the slot), `bulwark` (halves what it takes), `wither` (blunts their next
+blows), `siphon` (a wisp moves its *own* life into whoever is worst off and stops at
+`siphonFloor`, so it burns down rather than healing for free), `rend` (bonus vs wounded),
+`toll` (hurts everyone when it falls), `split` (the Ossuary, once). Everything a slot throws
+or takes scales by `n`. Five drafted rules bolt onto the same loop without an ability of their
+own: `swarmAll` (everything of yours crowds), `rendAll` (everything of yours bites the
+wounded), `swarmDead` (the fallen still count toward the crowd), `rot` (a withered enemy pays
+to swing anyway), `spite` (one of theirs falling is felt by the rest).
 
 **The spoils are the decision.** A won room holds the board open forever (`g.next = HELD`)
-until you leave it. A little of what fell gets up free (`raiseChance` + `riseLuck`; a crypt,
-or a drafted `glut`, gives up all of it); everything else must be `reap`ed one body at a time
-and paid for in mana. Mana is the only real currency - it regenerates a share of its cap per
-room cleared (`manaRegen` + `manaRise`),
-and `mend` (a bond rule) and `reap` come out of the same pool, so mending is a body you will not
-raise. `sell` unmakes a body for `sellMana`, always less than the cheapest thing there is:
-it is a slot you wanted, never a profit, and never the last body. What a body has when it
-gets up is what it has for the run - only a cleared room heals (`restFrac` + `restMore`), and
-only what lived through it.
+until you leave it. A slot of what fell gets up free (one roll a slot, `raiseChance` +
+`riseLuck`; a `graves` room, a `freeRise` kind, or a drafted `glut`, gives up all of it), and
+a `gift` kind hands over `TUNING.giftBodies` outright - that is what the key bought.
+Everything else must be `reap`ed, a **whole slot at a time**, at `manaCost` x n - and all of
+it lands in one slot, so the only thing that ever refuses it is having no room for its *kind*. Mana is the only real currency - it regenerates a share of its cap per room cleared
+(`manaRegen` + `manaRise`), and `mend` (a dark card) and `reap` come out of the same pool, so
+mending is a body you will not raise. `sell` unmakes **one body off a slot** for `sellMana`,
+always less than the cheapest thing there is: it is a slot you wanted, never a profit, and
+never the last body. What a body has when it gets up is what it has for the run - only a
+cleared room heals (`restFrac` + `restMore`), and only what lived through it.
 
 **A level-up is a hand of three.** `unspent > 0` with something on the table forces the draft
 sheet up and stops the clock, which is what makes a level a decision instead of a number. The
 hand is rolled in the sim (`rollOffer`) and lives on `g.offer`, **not** on the ui - a reload
 mid-level-up must not deal a fresh hand. `TUNING.offerCount` cards, plus one per `offers` node
 of the board; a `rerolls` node buys the right to throw a hand back. The probe averages level
-~9-10 over a full run, so a run drafts about ten of them.
+~8 over a full run, so a run drafts about eight of them.
 
-**The cards** are `POWERS` in `src/sim/powers.ts`, seven per arm - five commons and two rares,
+**Every card says exactly what it does.** `Power.note` is the card face at a card's width;
+`Power.desc` is the whole rule in plain words, and the `?` at the end of a card on the draft
+sheet opens the `power` panel on it. The same panel is reachable from `menu -> gifts`, which
+lists what you already hold, stacked. `shownPanel` puts `power` **above** `draft`, or a card
+could not be read at the one moment reading it is worth anything. A check holds every
+description to the narrowest grid, and asserts it is longer than the face.
+
+**The cards** are `POWERS` in `src/sim/powers.ts`, eight per arm - six commons and two rares,
 held level by a check, because an arm that is a shallower walk than another is an arm the probe
 cannot compare. A common is a number and stacks to `TUNING.powerStack`; a rare is a rule and
-leaves the pool once taken. A number here is worth about a *third* of the same node on the old
-tree: the tree made you walk past things you did not want and this does not, so three of the one
-card you were after is the build. Each arm's engine sits on a **common**, not a rare - `witherAll`
-for control, `swarmAll` for swarm - or four of that arm's five commons do nothing most runs.
-Both are written `{ engine: 1, number: 1 }` so a repeat draw is not a dud.
+leaves the pool once taken. The three arms are `beast`, `undead` and `dark`: the first two are
+the build - **a card names a family, never one creature**, or it reads as a trap the moment you
+are running anything else - and `dark` is neither, because what it does to the other side helps
+whichever of them you are running. Each arm's engine sits on a **common**, not a rare -
+`swarmAll` for beasts, `zombify` for the dead, `witherAll` for the dark - and they are written
+`{ engine: 1, number: 1 }` so a repeat draw is not a dud. Capacity is the *tree's* to sell and
+no arm's: a card that buys bodies buys health, damage and crowding at once, and the other arms
+have no answer to it.
 
 **The tree** is 19 *neutral* nodes on a 5x5 board and carries no arm: it buys access, the cards
 buy power. Nothing on it may touch a fight (a check asserts this). It sells capacity, mana,
@@ -142,16 +186,18 @@ right. Keep it that way - a Pixi import in `src/sim/` breaks both check scripts.
 
 - `src/sim/game.ts` - all behaviour. `advance(g, ticks)` is the only clock. `HELD`
   (MAX_SAFE_INTEGER) is how a won room waits for the player instead of timing out.
-- `src/sim/data.ts` - types plus `TUNING`, the single bag of balance numbers, and the
-  `CREATURES` templates. Numbers and templates only; no behaviour.
+- `src/sim/data.ts` - types plus `TUNING`, the single bag of balance numbers, the `CREATURES`
+  templates (family, tier, glyph, colour, ability, what it `rises` as) and the `KINDS` table
+  that makes a room a theme. Numbers and templates only; no behaviour. Adding a creature = one
+  row in `CREATURES` with a colour nothing else wears; adding a room = one row in `KINDS`.
 - `src/sim/tree.ts` - the neutral board as data, plus `Perk`/`Perks`/`PERK_IDS`, which both
   halves share. `LAID` is written out cell by cell because the board shape *is* the data:
   `linksOf` derives edges from adjacency, `depthOf` from distance to root. Adding a node = one
   row in `LAID`. Adding a *perk* = a key in `Perk`, a string in `PERK_IDS`, and exactly one read
   site in `game.ts`.
 - `src/sim/powers.ts` - the draft pool and the three arms (`ArmId`/`ARMS`/`ARM_IDS` live here,
-  not on the tree). Adding a card = one row in `POWERS`, keeping the five-and-two-per-arm shape
-  the check holds it to.
+  not on the tree). Adding a card = one row in `POWERS` with both a `note` and a `desc`, keeping
+  the six-and-two-per-arm shape the check holds it to.
 - `src/sim/lore.ts` - the story pieces, spread over the map at generation and queued when he
   walks into the room himself.
 - `src/sim/rng.ts` - mulberry32 with **module-global state**, mirrored into `g.rng` every step

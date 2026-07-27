@@ -2,19 +2,31 @@ import type { Grid } from "../gfx/grid.ts";
 import { LORE } from "../sim/lore.ts";
 import {
   CREATURES,
-  KIND_NAME,
-  KIND_NOTE,
+  KINDS,
   RESOURCES,
   RES_IDS,
   TAUNT_GLYPH,
-  type CreatureId,
+  TUNING,
+  tierDmgFor,
+  tierHpFor,
   type GameState,
 } from "../sim/data.ts";
-import { canOrder, perks, reserve, unitDmg, wallish, type Meta } from "../sim/game.ts";
+import {
+  canOrder,
+  needsKey,
+  perks,
+  raiseAs,
+  reserve,
+  stackDmg,
+  stackOf,
+  unitDmg,
+  wallish,
+  type Meta,
+} from "../sim/game.ts";
 import { sfxMuted } from "../sfx.ts";
 import { TREE } from "../sim/tree.ts";
-import { ARMS, POWER_BY_ID } from "../sim/powers.ts";
-import { C, COL, Hits, type Line, sheet, wrap } from "../ui.ts";
+import { ARMS, POWERS, POWER_BY_ID } from "../sim/powers.ts";
+import { C, COL, Hits, cells, cut, type Line, sheet, wrap } from "../ui.ts";
 import { drawTree } from "./tree.ts";
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
@@ -22,7 +34,7 @@ const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), h
 // The widest a line of a sheet is allowed to get, however wide the grid is
 export const SHEET_COLS = 40;
 
-export type PanelId = "" | "node" | "army" | "unit" | "menu" | "confirm" | "tree";
+export type PanelId = "" | "node" | "army" | "unit" | "menu" | "confirm" | "tree" | "power" | "gifts";
 
 export type Ui = {
   panel: PanelId;
@@ -36,13 +48,17 @@ export type Ui = {
   loreId: number | null;
   // The node of the tree being read, which is not the same as one being bought
   tnode: number;
+  // The card being read. A card nobody can read is a card nobody drafts on purpose.
+  power: string;
 };
 
 export type Shown = PanelId | "lore" | "over" | "draft";
 
 // The tree draws itself rather than going through sheet(), so it is not listed
 // here: what this drives is the width check, and a board is not a list of lines.
-export const PANELS: Shown[] = ["node", "army", "unit", "menu", "confirm", "lore", "over", "draft"];
+export const PANELS: Shown[] = [
+  "node", "army", "unit", "menu", "confirm", "lore", "over", "draft", "power", "gifts",
+];
 
 export type Spec = { title: string; lines: Line[]; minWidth: number };
 
@@ -50,24 +66,15 @@ export type Spec = { title: string; lines: Line[]; minWidth: number };
 // for. While any of these is up the clock is stopped, so nothing is missed.
 export function shownPanel(g: GameState, ui: Ui): Shown {
   if (g.loreQueue.length) return "lore";
+  // Above the draft, or a card cannot be read before it is taken - which is the
+  // one moment reading it is worth anything
+  if (ui.panel === "power") return "power";
   if (g.unspent > 0 && g.offer.length) return "draft";
   // Above the end of a run, because the end of a run is where the board is spent
   if (ui.panel === "tree") return "tree";
   if (g.over) return "over";
   return ui.panel;
 }
-
-const tally = (foes: CreatureId[]) => {
-  const seen: CreatureId[] = [];
-  const count = new Map<CreatureId, number>();
-  for (const f of foes) {
-    if (!count.has(f)) seen.push(f);
-    count.set(f, (count.get(f) ?? 0) + 1);
-  }
-  return seen
-    .map((f) => (count.get(f)! > 1 ? `${CREATURES[f].short} x${count.get(f)}` : CREATURES[f].short))
-    .join(", ");
-};
 
 // What a sheet says and what its lines do, built in one place and at a known
 // width, so a check can hold every panel to the narrowest grid there is
@@ -83,12 +90,17 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
       return armySpec(g, wide);
     case "unit":
       return unitSpec(g, ui, wide);
+    case "power":
+      return powerSpec(g, ui, wide);
+    case "gifts":
+      return giftsSpec(g, wide);
     case "menu":
       return {
         title: "MENU",
         minWidth: Math.min(wide, 16),
         lines: [
           { text: `tree ${g.taken.length}/${TREE.length}`, act: { t: "tree" }, fg: C.gold },
+          { text: `gifts ${g.powers.length}`, act: { t: "gifts" }, fg: C.violet },
           ...RES_IDS.map((r) => ({
             text: `${RESOURCES[r].glyph} ${RESOURCES[r].short.padEnd(5)}${g.res[r]}`,
             fg: C.mid,
@@ -128,8 +140,8 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         lines: [...body, { text: "" }, { text: "continue", act: { t: "ok" } }],
       };
     }
-    // The level-up. Three of them, coloured by the arm they belong to, and the
-    // arm is the whole of what the colour is for.
+    // The level-up. Three of them, coloured by the arm they belong to, with the
+    // whole of what each one does one tap away behind the `?`.
     case "draft": {
       const lines: Line[] = [];
       for (const id of g.offer) {
@@ -137,7 +149,12 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         if (!p) continue;
         // A gap between the cards, or one card's note reads as the next one's
         if (lines.length) lines.push({ text: "" });
-        lines.push({ text: p.name, act: { t: "power", id }, fg: COL(ARMS[p.arm].color) });
+        lines.push({
+          text: p.name,
+          act: { t: "power", id },
+          fg: COL(ARMS[p.arm].color),
+          tails: [{ text: "?", act: { t: "read", id } }],
+        });
         lines.push(...wrap(p.note, wide).map((text) => ({ text, fg: C.dim })));
       }
       if (g.rerolls > 0) {
@@ -171,8 +188,21 @@ export function drawPanel(grid: Grid, g: GameState, m: Meta, ui: Ui, hits: Hits,
   if (spec) sheet(grid, hits, spec.title, spec.lines, spec.minWidth);
 }
 
+// A name on the left and a number against the right edge, at exactly `wide`.
+// Every list in here is built out of this, so nothing drifts out of its column.
+const rowAt = (wide: number, left: string, right: string, fg: number): Line => {
+  const r = cut(right, Math.max(0, wide - 1));
+  const room = Math.max(0, wide - cells(r) - 1);
+  const l = cut(left, room);
+  return { text: `${l}${" ".repeat(room - cells(l))} ${r}`, fg };
+};
+
+// What is standing in a room, before you walk into it: one line a slot, in the
+// colour it fights in, with what it can take against what it can give. This is
+// the whole of the decision to take a room or leave it standing.
 function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   const n = g.nodes[ui.node];
+  const info = KINDS[n.kind];
   const lines: Line[] = [];
   const say = (s: string, fg: number) => {
     for (const text of wrap(s, wide)) lines.push({ text, fg });
@@ -181,11 +211,53 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   if (n.state === "locked") {
     say("sealed until a way is opened beside it", C.dim);
   } else if (n.state === "cleared") {
-    say(KIND_NOTE[n.kind], C.dim);
+    say(info.note, C.dim);
     say("already quiet", C.dim);
   } else {
-    say(KIND_NOTE[n.kind], C.dim);
-    say(tally(n.foes), C.mid);
+    say(info.note, C.dim);
+    lines.push({ text: "" });
+
+    let theirHp = 0;
+    let theirDmg = 0;
+    let wall = false;
+    for (const [c, count] of stackOf(n.foes)) {
+      const t = CREATURES[c];
+      const hp = (t.hp + tierHpFor(n.tier)) * count;
+      const dmg = (t.dmg + tierDmgFor(n.tier)) * count;
+      theirHp += hp;
+      theirDmg += dmg;
+      wall = wall || t.taunt;
+      const mark = t.taunt ? TAUNT_GLYPH : "";
+      lines.push(rowAt(wide, `${t.glyph}${t.short}${count > 1 ? ` x${count}` : ""}${mark}`, `♥${hp}`, COL(t.color)));
+    }
+
+    // Yours against theirs, in the two numbers a fight is actually decided by.
+    // A wall on their side means none of that damage reaches anything behind it.
+    const troop = reserve(g);
+    const ourHp = troop.reduce((s, u) => s + u.hp, 0);
+    const ourDmg = troop.reduce((s, u) => s + stackDmg(g, u), 0);
+    lines.push({ text: "" });
+    lines.push(rowAt(wide, `them ✕${theirDmg}`, `♥${theirHp}`, C.red));
+    lines.push(rowAt(wide, `you  ✕${ourDmg}`, `♥${ourHp}`, C.green));
+    if (wall) say(`${TAUNT_GLYPH} a wall stands in front`, C.blue);
+
+    // What the room is worth beyond the fight: what it hands over, what gets up
+    // out of it for nothing, and what a living body comes back as
+    const P = perks(g);
+    const living = n.foes.filter((c) => CREATURES[c].rises);
+    if (living.length) {
+      say(`they rise as ${CREATURES[raiseAs(P, living[0])].short}`, C.violet);
+    }
+    if (info.freeRise) say("the dead here rise free", C.violet);
+    if (info.gift) say(`${CREATURES[info.gift].short} is sealed in here`, C.violet);
+    if (info.keys) say(`${RESOURCES.keys.glyph} it is carrying a key`, C.cyan);
+    if (needsKey(n)) {
+      const have = g.res.keys > 0;
+      say(
+        have ? `${RESOURCES.keys.glyph} a key opens it` : `${RESOURCES.keys.glyph} you have no key`,
+        have ? C.cyan : C.red,
+      );
+    }
   }
 
   // A room being fought over can be watched, and a room taken but not left is
@@ -204,25 +276,74 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   lines.push({ text: "close", act: { t: "close" } });
 
   return {
-    title: (n.state === "locked" ? "SEALED" : KIND_NAME[n.kind]).slice(0, wide),
+    title: (n.state === "locked" ? "SEALED" : `${info.glyph} ${info.name}`).slice(0, wide),
     minWidth: Math.min(wide, 16),
     lines,
   };
 }
 
-// What a body is, on its own sheet, so the line in the list stays a line
+// The whole of what a card does, in plain words. Reachable from the hand it is
+// offered in and from the list of what has already been taken.
+function powerSpec(g: GameState, ui: Ui, wide: number): Spec {
+  const p = POWER_BY_ID[ui.power] ?? POWERS[0];
+  const held = g.powers.filter((id) => id === p.id).length;
+  const offered = g.offer.includes(p.id) && g.unspent > 0;
+  return {
+    title: p.name.slice(0, wide),
+    minWidth: Math.min(wide, 16),
+    lines: [
+      { text: ARMS[p.arm].name, fg: COL(ARMS[p.arm].color) },
+      ...wrap(
+        p.rare ? "a rule, taken once" : `a number, up to ${TUNING.powerStack} deep`,
+        wide,
+      ).map((text) => ({ text, fg: C.dim })),
+      { text: "" },
+      ...wrap(p.desc, wide).map((text) => ({ text, fg: C.mid })),
+      ...(held ? [{ text: "" }, { text: `you hold ${held}`, fg: C.gold }] : []),
+      { text: "" },
+      ...(offered ? [{ text: "take it", act: { t: "power" as const, id: p.id }, fg: C.ink }] : []),
+      // Back where it was read from, or reading a card you already hold throws
+      // you out to the map
+      { text: "back", act: offered ? { t: "close" } : { t: "gifts" } },
+    ],
+  };
+}
+
+// Everything the dark has already given, stacked, and every one of them one tap
+// from what it actually does
+function giftsSpec(g: GameState, wide: number): Spec {
+  const held = stackOf(g.powers);
+  const lines: Line[] = held.length
+    ? held.map(([id, n]) => {
+        const p = POWER_BY_ID[id];
+        return {
+          ...rowAt(wide, p ? p.name : id, n > 1 ? `x${n}` : "", p ? COL(ARMS[p.arm].color) : C.dim),
+          act: { t: "read" as const, id },
+        };
+      })
+    : [{ text: "nothing yet", fg: C.dim }];
+  lines.push({ text: "" }, { text: "close", act: { t: "close" } });
+  return { title: "THE DARK GAVE", minWidth: Math.min(wide, 16), lines };
+}
+
+// What a slot is, on its own sheet, so the line in the list stays a line
 function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
   const u = reserve(g).find((o) => o.id === ui.unit);
   if (!u) return { title: "GONE", minWidth: 0, lines: [{ text: "back", act: { t: "army" } }] };
   const t = CREATURES[u.creature];
   const P = perks(g);
+  const each = unitDmg(g, u);
   return {
     title: t.name.slice(0, wide),
     minWidth: Math.min(wide, 16),
     lines: [
-      { text: `${t.glyph} ${u.hp}/${u.maxHp}`, fg: C.ink },
-      { text: t.role, fg: C.gold },
-      { text: `hits for ${unitDmg(g, u)}`, fg: C.mid },
+      // Nothing caps how deep a slot goes, so every line of this sheet is cut to
+      // the box rather than trusted to be short
+      { text: cut(`${t.glyph} ${u.hp}/${u.maxHp}`, wide), fg: C.ink },
+      { text: `${t.role} - ${t.family}`, fg: C.gold },
+      ...(u.n > 1 ? [{ text: cut(`${u.n} of them`, wide), fg: C.mid }] : []),
+      { text: cut(`hits for ${each * u.n}`, wide), fg: C.mid },
+      ...(u.n > 1 ? [{ text: cut(`${each} each`, wide), fg: C.dim }] : []),
       // The one line that changes where a blow goes, so it is said plainly
       ...(wallish(u, P) ? [{ text: `${TAUNT_GLYPH} a wall`, fg: C.blue }] : []),
       // Only worth saying to somebody who has bought a reason to care
@@ -236,16 +357,18 @@ function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
   };
 }
 
+
 // The line as it will stand, which is also the order it swings in. The arrows
 // are the whole of the tactics you get outside a fight.
 function armySpec(g: GameState, wide: number): Spec {
   const troop = reserve(g);
+  // Room for the arrows at the end of the line, which is what a tap moves
+  const room = Math.max(4, wide - 3);
   const lines: Line[] = troop.length
     ? troop.map((u, k) => {
         const t = CREATURES[u.creature];
         return {
-          text: `${k + 1}.${t.glyph}${t.short.padEnd(6)}${u.hp}`.slice(0, wide),
-          fg: C.mid,
+          ...rowAt(room, `${k + 1}.${t.glyph}${t.short}${u.n > 1 ? ` x${u.n}` : ""}`, `${u.hp}`, C.mid),
           act: { t: "inspect" as const, id: u.id },
           tails: [
             ...(k > 0 ? [{ text: "▲", act: { t: "up" as const, k } }] : []),
