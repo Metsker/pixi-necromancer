@@ -55,6 +55,7 @@ import {
 } from "../src/sim/game.ts";
 import {
   ABILITY_TIER,
+  ARMY_COLOR,
   CREATURES,
   CREATURE_IDS,
   KINDS,
@@ -229,11 +230,8 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
 {
   const g = newGame(7);
   ok("a run opens with a band", bodies(g) === START_BAND);
-  ok(
-    "three different things, never three of one",
-    new Set(reserve(g).map((u) => u.creature)).size === START_BAND,
-  );
-  ok("all of them out of the early pool", reserve(g).every((u) => START_POOL.includes(u.creature)));
+  ok("and it is one slot, not a spread", fielded(g) === 1 && reserve(g)[0].n === START_BAND);
+  ok("out of the early pool", reserve(g).every((u) => START_POOL.includes(u.creature)));
   // Depth is free: a slot it already holds never refuses another, so `raise` in
   // a while-loop never ends - fill by kind, not by asking until it says no
   for (const c of RAISABLE) raise(g, c);
@@ -286,17 +284,20 @@ ok("the boss carries the last piece", g0.nodes.find((n) => n.kind === "boss")!.l
 {
   // Over enough rolls, every opening can kill something. This is the one thing
   // the distinct rule is here to guarantee.
-  const seen = new Set<string>();
+  const seen = new Set<CreatureId>();
   for (let seed = 0; seed < 200; seed++) {
     const g = newGame(9000 + seed * 13);
-    const band = reserve(g).map((u) => u.creature);
-    seen.add([...band].sort().join());
-    const punch = band.reduce((s, c) => s + CREATURES[c].dmg, 0);
-    ok(`roll ${seed}: it can kill something`, punch >= 12);
-    ok(`roll ${seed}: and it can take something`, band.reduce((s, c) => s + CREATURES[c].hp, 0) >= 60);
+    const slot = reserve(g)[0];
+    seen.add(slot.creature);
+    ok(`roll ${seed}: it is one thing, several times`, fielded(g) === 1);
+    const t = CREATURES[slot.creature];
+    ok(`roll ${seed}: it can kill something`, t.dmg * slot.n >= 12);
+    ok(`roll ${seed}: and it can take something`, t.hp * slot.n >= 60);
   }
   ok("more than one opening turns up", seen.size >= 3);
-  ok("and none of them is impossible", seen.size <= 4);
+  ok("and every one of them is out of the pool", [...seen].every((c) => START_POOL.includes(c)));
+  // A build to deepen: the first room can already put more of it on the board
+  ok("what you open on is worth deepening", [...seen].every((c) => CREATURES[c].mana > 0));
   void rollBand;
 }
 
@@ -845,21 +846,25 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   advance(g, budgetFor);
   ok("the room fell", held(g) !== null);
 
+  // Off a deep slot it is one body, not the slot - and the gate hands you a deep
+  // one, so this is the case a run actually opens in
   const before = bodies(g);
+  const deep = one.n;
   g.mana = 0;
+  ok("a deep slot is deep", deep > 1);
   ok("a body can be given back", sell(g, one.id) === true);
   ok("it pays what it always pays", g.mana === TUNING.sellMana);
   ok("and it is a body back", bodies(g) === before - 1);
-  ok("a slot of one is gone for good", reserve(g).every((u) => u.id !== one.id));
-  ok("selling the same one twice does nothing", sell(g, one.id) === false);
+  ok("off the slot, not the slot", one.n === deep - 1 && reserve(g).includes(one));
 
-  // ...and off a deep slot it is one body, not the slot
-  for (let i = 0; i < 5; i++) raise(g, "rat");
-  const stack = reserve(g).find((u) => u.creature === "rat")!;
-  const deep = stack.n;
-  ok("a deep slot is deep", deep > 1);
-  ok("one comes off it", sell(g, stack.id) === true);
-  ok("and the slot is still standing", stack.n === deep - 1 && reserve(g).includes(stack));
+  // ...and the last body out of a slot takes the slot with it
+  const lone = CREATURE_IDS.find((c) => c !== one.creature && CREATURES[c].mana > 0)!;
+  ok("something else stands up", raise(g, lone) === true);
+  const single = reserve(g).find((u) => u.creature === lone)!;
+  ok("a slot of one is a slot of one", single.n === 1);
+  ok("it can be given back", sell(g, single.id) === true);
+  ok("and the slot goes with it", reserve(g).every((u) => u.id !== single.id));
+  ok("selling the same one twice does nothing", sell(g, single.id) === false);
 
   // Never the last of them. An army of nobody is a dead run, not a button.
   let guard = 200;
@@ -993,7 +998,9 @@ ok("rend bites at half", ABILITIES.rend.bonus!(unit({}), unit({ hp: 5 }), battle
   advance(g, TUNING.turnTicks * 4);
   ok("turns land on the clock", g.battle!.round >= 1);
   ok("you cannot be ordered mid-fight", canOrder(g, g.at) === false);
-  ok("and the whole army went in", g.battle!.units.filter((u) => u.faction === "player").length === START_BAND);
+  const line = g.battle!.units.filter((u) => u.faction === "player");
+  ok("and the whole army went in", line.reduce((n, u) => n + u.n, 0) === START_BAND);
+  ok("as the slots it stands in", line.length === fielded(g));
 }
 
 // ---------------------------------------------------------------- persistence
@@ -1175,6 +1182,22 @@ for (const line of chatter) ok(`"${line}" fits the narrowest hud`, line.length <
   for (const [id, t] of Object.entries(CREATURES)) {
     ok(`${id}: nothing else wears its colour`, !used.has(t.color));
     used.set(t.color, id);
+  }
+}
+
+// ...and the same on the map, where a room is now nothing but its colour and its
+// glyph. He is not a room and must never read as one.
+{
+  const used = new Map<number, string>();
+  for (const [id, k] of Object.entries(KINDS)) {
+    ok(`${id}: no other room wears its colour`, !used.has(k.color));
+    used.set(k.color, id);
+    ok(`${id}: nor is it his`, k.color !== ARMY_COLOR);
+  }
+  const glyphs = new Map<string, string>();
+  for (const [id, k] of Object.entries(KINDS)) {
+    ok(`${id}: no other room wears its glyph`, !glyphs.has(k.glyph));
+    glyphs.set(k.glyph, id);
   }
 }
 

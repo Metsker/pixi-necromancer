@@ -198,7 +198,7 @@ export const TUNING = {
   vetCap: 6,
 
   // Bodies in a room before depth starts adding to them
-  roomBase: 2,
+  roomBase: 3,
   tierHp: 5,
   logLines: 40,
 };
@@ -240,7 +240,7 @@ export const CREATURES: Record<CreatureId, Template> = {
   boar:     { name: "Tomb Boar",    short: "Boar",   role: "wall",   family: "beast",  tier: 3, glyph: "⟁", color: 13, hp: 60,  dmg: 9,  xp: 18, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
 
   // undead: slower, harder to put down, and they were already yours once
-  skeleton: { name: "Rattlebones",  short: "Bones",  role: "rank",   family: "undead", tier: 0, glyph: "⚉", color: 17, hp: 24,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: null,      tag: "" },
+  skeleton: { name: "Rattlebones",  short: "Bones",  role: "rank",   family: "undead", tier: 0, glyph: "☠", color: 17, hp: 24,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: null,      tag: "" },
   zombie:   { name: "Shambler",     short: "Shambr", role: "meat",   family: "undead", tier: 0, glyph: "⩌", color: 21, hp: 34,  dmg: 4,  xp: 7,  mana: 2, taunt: false, ability: null,      tag: "" },
   ghoul:    { name: "Ghoul",        short: "Ghoul",  role: "eater",  family: "undead", tier: 1, glyph: "♠", color: 11, hp: 34,  dmg: 10, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
   wisp:     { name: "Corpse Wisp",  short: "Wisp",   role: "mender", family: "undead", tier: 2, glyph: "◉", color: 23, hp: 28,  dmg: 4,  xp: 12, mana: 3, taunt: false, ability: "siphon",  tag: "gives itself to the worst hurt" },
@@ -308,7 +308,7 @@ export const KINDS: Record<NodeKind, KindInfo> = {
     size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 2, keys: 0,
   },
   barrow: {
-    name: "THE BARROW", note: "they were expecting us", glyph: "☠", color: 15,
+    name: "THE BARROW", note: "they were expecting us", glyph: "⚉", color: 15,
     pool: [["skeleton", "ghoul"], ["ghoul", "zombie", "knight"], ["knight", "warden", "ghoul"]],
     size: 1, tierUp: 1, key: false, freeRise: false, gift: null, gold: 4, keys: 1,
   },
@@ -318,7 +318,7 @@ export const KINDS: Record<NodeKind, KindInfo> = {
     size: 0, tierUp: 0, key: false, freeRise: true, gift: null, gold: 2, keys: 0,
   },
   crypt: {
-    name: "THE CRYPT", note: "sealed, and somebody is still in there", glyph: "♖", color: 20,
+    name: "THE CRYPT", note: "sealed, and somebody is still in there", glyph: "♖", color: 19,
     pool: [["skeleton", "knight"], ["knight", "ghoul"], ["knight", "warden"]],
     size: 0, tierUp: 0, key: true, freeRise: true, gift: "knight", gold: 4, keys: 0,
   },
@@ -344,9 +344,10 @@ export const tierDmgFor = (tier: number) => Math.floor(tier / 2);
 // A room fills up as it gets further out, a step behind the pool it draws from
 export const tierGrow = (tier: number) => (tier >= 5 ? 2 : tier >= 3 ? 1 : 0);
 
-// What a run opens with: three different things, one hand of each path, so the
-// first level-up is a choice rather than a confirmation.
-export const START_POOL: CreatureId[] = ["rat", "hound", "skeleton", "zombie"];
+// What a run opens with: one thing, several of it. The same body three times is
+// a slot, and a slot is what an army is made of now - so the gate hands you a
+// build to deepen rather than a spread to sort out.
+export const START_POOL: CreatureId[] = ["rat", "moth", "skeleton", "zombie"];
 export const START_BAND = 3;
 
 // The sealed rooms are one roll in nine each, so a key is worth carrying and
@@ -367,12 +368,18 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
 };
 
 // What stands on the map is still him, whatever it is made of: he does not
-// fight any more, but the token you move is the necromancer.
+// fight any more, but the token you move is the necromancer. His colour is his
+// alone - a check holds it against every room on the board, because a token that
+// wears a room's colour is a token you lose on the map.
 export const ARMY_GLYPH = "🕱";
-export const ARMY_COLOR = 20;
+export const ARMY_COLOR = 23;
 // A wall is worth marking wherever a body is listed, because it is the one
 // thing that decides who gets hit
 export const TAUNT_GLYPH = "⛨";
+
+// A body that is down. It is the same skull Rattlebones wears, which is the
+// joke: the difference is the colour, and grey is what dead looks like here.
+export const DOWN_GLYPH = "☠";
 
 // A node of the tree, as it stands right now: bought, buyable, or still sealed
 export const TREE_GLYPH = { taken: "•", open: "∘", sealed: "⬚" };

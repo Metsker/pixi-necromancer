@@ -51,7 +51,9 @@ gate. Rooms are `locked` -> `open` (something beside them is cleared) -> `cleare
 
 **A room is a theme, and the theme is the pool.** Every kind is one row of `KINDS` in
 `data.ts` - name, glyph, colour, three tiered pools, size, loot, and the three flags that
-make it interesting (`key`, `freeRise`, `gift`). `sewer` is rats and crows, `village` is
+make it interesting (`key`, `freeRise`, `gift`). No two rooms share a colour or a glyph, and
+none of them may wear `ARMY_COLOR`: the map is nothing but colour and glyph now, and a token
+that reads as a room is a token you lose on it. A check holds all three. `sewer` is rats and crows, `village` is
 living peasants who come back as bones, `wilds` is hounds and moths, `barrow` is elite
 (`tierUp: 1`), `graves` gives up all of its dead for free, `crypt` and `vault` are **sealed**
 and cost a key, `boss` is the Ossuary. The map is coloured by *kind* and nothing else -
@@ -65,8 +67,10 @@ key gates what is worth taking, never whether the run can go on.
 
 **One army, no hero, and the same thing shares a slot.** `g.reserve` is everything you have;
 the token on the map is the necromancer but he is not a combatant and has no hit points.
-Raising a rat when you hold rats deepens that slot: `Unit.n` goes up and `hp`/`maxHp` are the
-whole stack's. Capacity is `commandCap` counted in **slots** (`fielded`) - four at the gate,
+A run opens on **one slot, `START_BAND` deep** - `rollBand` picks one thing out of
+`START_POOL` and hands you three of it, so the gate gives you a build to deepen rather than a
+spread to sort out. Raising a rat when you hold rats deepens that slot: `Unit.n` goes up and
+`hp`/`maxHp` are the whole stack's. Capacity is `commandCap` counted in **slots** (`fielded`) - four at the gate,
 `TUNING.baseCap` plus the root - so what the cap holds is how many *different* things you can
 field. **Depth is free, breadth is the price.** `roomFor` is the one gate on `raise`: a kind
 it already holds never refuses another, which also means `while (raise(...))` never
@@ -97,6 +101,11 @@ does *not* follow `wallAll` - a shield wall changes who is hit, not what a hit i
 card puts the soft cap on every body you own. Breaking the wall is the tactic, not sniping.
 `TUNING.maxRounds` exchanges without a result is a loss - a fight that will not end is a
 fight you lost slowly.
+
+Opening concentrated is worth about twice opening spread - one slot swinging for three
+bodies every turn against three taking turns - so `TUNING.roomBase` carries a body more than
+it used to. That is the whole of the compensation and it is where to look first if the early
+game reads wrong.
 
 **Two families, and everything on a body is one of them.** `CREATURES[c].family` is `beast`,
 `undead` or `living`, and `Template.tier` says how deep it belongs. Nothing under

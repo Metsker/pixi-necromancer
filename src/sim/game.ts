@@ -1075,10 +1075,13 @@ function readLore(g: GameState, n: MapNode) {
 
 // ---------------------------------------------------------------- lifecycle
 
-// Three different things out of the early pool. Different, so no roll ever
-// hands out a band with nothing in it that can kill.
-export const rollBand = (more = 0): CreatureId[] =>
-  shuffle(START_POOL).slice(0, Math.min(START_POOL.length, START_BAND + more));
+// One thing out of the early pool, several times over. A slot is what an army is
+// made of, so the gate hands you one to deepen rather than a spread to sort out -
+// and every entry in the pool is something three of can kill and can take a room.
+export const rollBand = (more = 0): CreatureId[] => {
+  const c = pick(START_POOL);
+  return Array.from({ length: Math.max(1, START_BAND + more) }, () => c);
+};
 
 // `owned` is what the board carries over. Handed in rather than read, so the sim
 // still knows nothing about where a save lives.

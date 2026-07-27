@@ -1,6 +1,7 @@
 import { inset, type Surface } from "../gfx/surface.ts";
 import {
   CREATURES,
+  DOWN_GLYPH,
   KINDS,
   MANA_GLYPH,
   TAUNT_GLYPH,
@@ -253,7 +254,7 @@ function drawArena(
       // fill and the glyph are separate layers, so the beam sits behind it.
       if (look.beam(u)) {
         for (let by = top + 1; by < y; by++) grid.put(x, by, "║", C.violet, C.bg);
-        grid.put(x, y, down ? "☠" : t.glyph, C.shade, C.violet);
+        grid.put(x, y, down ? DOWN_GLYPH : t.glyph, C.shade, C.violet);
         return;
       }
       const put = mended.get(u.id);
@@ -264,7 +265,7 @@ function drawArena(
       grid.put(
         x,
         y,
-        down ? "☠" : t.glyph,
+        down ? DOWN_GLYPH : t.glyph,
         offer === 2 ? C.cyan : down ? C.frame : hurt ? C.ink : put ? C.green : COL(t.color),
         C.bg,
       );
@@ -307,14 +308,28 @@ function side(
   const woken = look.woken(u);
   const down = u.hp <= 0 && !woken;
   const ink = down ? C.frame : C.ink;
-  const glyph = down ? "☠" : t.glyph;
+  const glyph = down ? DOWN_GLYPH : t.glyph;
   const tone =
     offer === 2 ? C.cyan : down ? C.frame : struck ? C.ink : put ? C.green : COL(t.color);
+
+  // What goes against the divider: what the blow was, what it would cost to ask
+  // this one back, what giving it up pays, or what is on it. Unmaking is red -
+  // it reads as a price on the wrong side of the line, because that is what it
+  // is. Worked out before the name, because the name is what yields when the
+  // two cannot both fit, and a slot's depth is the last thing to lose.
+  let mark = "";
+  let marked = C.frame;
+  if (struck) [mark, marked] = [`-${struck.n}`, C.ink];
+  else if (put) [mark, marked] = [`+${put.n}`, C.green];
+  else if (offer && mirrored) [mark, marked] = [`${MANA_GLYPH}${price}`, offer === 2 ? C.cyan : C.frame];
+  else if (offer) [mark, marked] = [`${MANA_GLYPH}+${price}`, C.red];
+  else if (u.withered > 0 && !down) [mark, marked] = ["∿", C.violet];
+  else if (!down && wallish(u, P)) [mark, marked] = [TAUNT_GLYPH, C.blue];
 
   // A slot says how deep it is next to its own name, because that number is
   // both what it hits for and what falls with it
   const full = u.n > 1 ? `${t.short} x${u.n}` : t.short;
-  const name = cut(full, Math.max(1, w - 2));
+  const name = cut(full, Math.max(1, w - 2 - (mark ? cells(mark) + 1 : 0)));
   if (mirrored) {
     grid.text(x + w - cells(name) - 2, y, name, ink);
     grid.put(x + w - 1, y, glyph, tone);
@@ -322,20 +337,7 @@ function side(
     grid.put(x, y, glyph, tone);
     grid.text(x + 2, y, name, ink);
   }
-
-  const edge = (s: string, fg: number) =>
-    grid.text(mirrored ? x : x + w - cells(s), y, s, fg);
-
-  if (struck) edge(`-${struck.n}`, C.ink);
-  else if (put) edge(`+${put.n}`, C.green);
-  else if (offer) {
-    // What it would cost to ask this one back, or what giving it up pays, against
-    // the divider where the fighting used to be. Unmaking is red: it reads as a
-    // price on the wrong side of the line, because that is what it is.
-    if (mirrored) edge(`${MANA_GLYPH}${price}`, offer === 2 ? C.cyan : C.frame);
-    else edge(`${MANA_GLYPH}+${price}`, C.red);
-  } else if (u.withered > 0 && !down) edge("∿", C.violet);
-  else if (!down && wallish(u, P)) edge(TAUNT_GLYPH, C.blue);
+  if (mark) grid.text(mirrored ? x : x + w - cells(mark), y, mark, marked);
 
   // One that has got up is one of yours now, whatever side it fought on
   const ours = u.faction === "player" || woken;

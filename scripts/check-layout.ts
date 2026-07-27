@@ -9,6 +9,7 @@ import {
   commandCap,
   held,
   manaCap,
+  manaCost,
   newGame,
   newMeta,
   offered,
@@ -389,6 +390,47 @@ ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
     .map(([at]) => Number(at.split(",")[0]));
   ok("with the width to spare left spare", Math.min(...drawnAt) >= 4);
   ok("on both sides of it", Math.max(...drawnAt) <= desk.cols - 5);
+}
+
+// A slot's depth and the number against the divider share one row. They used to
+// be written on top of each other, so a slot of four read as "Bones x" with a
+// price where its count should be - the name yields now, and cleanly.
+{
+  const board = (cols: number) => {
+    const r = recorder(cols, 52);
+    const g = newGame(31313);
+    const room = g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!;
+    room.foes = ["warden", "warden", "warden"];
+    g.reserve.length = 0;
+    for (let i = 0; i < 4; i++) raise(g, "warden");
+    orderArmy(g, room.id);
+    advance(g, TUNING.marchTicks + 1);
+    const b = g.battle!;
+    b.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
+    b.done = "win";
+    g.mode = "spoils";
+    g.next = g.time + TUNING.spoilsTicks;
+    g.mana = 99;
+    drawBattle(r.surface, g, new Hits(), 1);
+    return { g, rows: Array.from({ length: 52 }, (_, y) => r.row(y)) };
+  };
+
+  // Narrow enough that they fight for the same cells, which is where it broke
+  const tight = board(26);
+  const sell = tight.rows.find((l) => l.includes(`${MANA_GLYPH}+`))!;
+  ok("a slot of yours is priced", sell !== undefined);
+  ok("and the price never lands on its name", sell[sell.indexOf(`${MANA_GLYPH}+`) - 1] === " ");
+  const cost = `${MANA_GLYPH}${manaCost(tight.g, "warden") * 3}`;
+  const ask = tight.rows.find((l) => l.includes(cost))!;
+  ok("one of theirs is priced too", ask !== undefined);
+  ok("and its name keeps clear of it", ask[ask.indexOf(cost) + cells(cost)] === " ");
+
+  // ...and at a width worth playing on, the depth survives beside the price
+  const room = board(44).rows;
+  const both = (depth: string, price: string) =>
+    room.some((l) => l.includes(depth) && l.includes(price));
+  ok("a slot of yours says how deep it is", both("x4", `${MANA_GLYPH}+`));
+  ok("and one of theirs does too", both("x3", MANA_GLYPH));
 }
 
 // Two horizontal lines is the picture. A full army and a full room both have to
