@@ -34,30 +34,35 @@ export type Act =
   | { t: "none" }
   | { t: "node"; id: number }
   | { t: "close" }
-  | { t: "order" }
+  | { t: "back" }
+  // the map
+  | { t: "move" }
+  | { t: "endturn" }
+  | { t: "muster" } // the sheet of what is standing where you are
+  | { t: "grab"; c: string } // one body out of it
+  | { t: "grabAll" }
+  | { t: "claim" }
+  // the army
+  | { t: "army" }
   | { t: "up"; k: number }
   | { t: "down"; k: number }
-  | { t: "inspect"; id: number }
+  | { t: "inspect"; k: number }
+  // the book. `target` is the second half of a spell that wants a node.
+  | { t: "spells" }
+  | { t: "cast"; id: string }
+  | { t: "read"; id: string }
+  | { t: "target"; id: number }
+  // a fight, and what is left on the floor after one
+  | { t: "watch" }
+  | { t: "leave" }
+  // everything else
   | { t: "menu" }
-  | { t: "army" }
   | { t: "restart" }
   | { t: "confirm" }
-  | { t: "tree" }
-  | { t: "pick"; id: number }
-  | { t: "take"; id: number }
-  | { t: "power"; id: string }
-  | { t: "read"; id: string }
-  | { t: "gifts" }
-  | { t: "reroll" }
-  | { t: "mend" }
-  | { t: "sell"; id: number }
+  | { t: "difficulty" }
   | { t: "ok" }
   | { t: "speed" }
-  | { t: "sound" }
-  | { t: "watch" }
-  | { t: "reap"; id: number }
-  | { t: "leave" }
-  | { t: "back" };
+  | { t: "sound" };
 
 export type Hit = { x: number; y: number; w: number; h: number; act: Act };
 

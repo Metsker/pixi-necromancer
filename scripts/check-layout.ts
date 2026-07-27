@@ -1,42 +1,25 @@
-// Run: node scripts/check-layout.ts
-import { MAX_COLS, MIN_COLS, MIN_ROWS, TARGET_TILE_CSS, computeLayout } from "../src/layout.ts";
-import { HUD_ROWS, clampCam, drawMap, mapSize, viewRows } from "../src/screens/map.ts";
-import { PANELS, SHEET_COLS, panelSpec, type Ui } from "../src/screens/panels.ts";
+// Layout, drawing, sheet widths and glyph coverage. Screens draw through the
+// narrow `Surface` interface, so this hands them a recording stub instead of a
+// renderer and holds the result to the smallest grid the game supports.
+import { readFileSync, readdirSync } from "node:fs";
+import { TILE, TILE_MAP } from "../src/tilemap.ts";
+import { MAX_COLS, MIN_COLS, MIN_ROWS, computeLayout } from "../src/layout.ts";
 import { drawBattle } from "../src/screens/battle.ts";
-import { LORE } from "../src/sim/lore.ts";
-import {
-  advance,
-  commandCap,
-  held,
-  manaCap,
-  manaCost,
-  newGame,
-  newMeta,
-  offered,
-  orderArmy,
-  buyNode,
-  raise,
-  treeOpen,
-} from "../src/sim/game.ts";
-import { BTN_ROWS, C, Hits, cells, tailW } from "../src/ui.ts";
+import { HUD_ROWS, drawMap, mapSize, viewRows } from "../src/screens/map.ts";
+import { PANELS, SHEET_COLS, panelSpec, type Shown, type Ui } from "../src/screens/panels.ts";
 import {
   CREATURES,
+  CREATURE_IDS,
+  FAMILY_COLOR,
+  HERO_COLOR,
   KINDS,
-  MANA_GLYPH,
-  RAISABLE,
-  RESOURCES,
-  TAUNT_GLYPH,
-  TUNING,
-  poolFor,
-  type NodeKind,
+  KIND_IDS,
+  OWNER_COLOR,
+  SPELL_IDS,
+  type GameState,
 } from "../src/sim/data.ts";
-
-const KIND_IDS = Object.keys(KINDS) as NodeKind[];
-import { TREE, rootId } from "../src/sim/tree.ts";
-import { POWERS, powerLines } from "../src/sim/powers.ts";
-import { TREE_TEXT, stateOf, treeLines, treeWidth } from "../src/screens/tree.ts";
-import { TILE, TILE_MAP } from "../src/tilemap.ts";
-import { readFileSync, readdirSync } from "node:fs";
+import { botTurn, endTurn, makeBattle, newGame } from "../src/sim/game.ts";
+import { BTN_ROWS, C, Hits, cells, tailW } from "../src/ui.ts";
 
 let checks = 0;
 function ok(label: string, cond: boolean) {
@@ -47,16 +30,20 @@ function ok(label: string, cond: boolean) {
   }
 }
 
-// A stub that records every cell a screen writes, so the drawing can be held to
-// what the fight is supposed to look like without dragging the renderer in
-type Cell = { ch: string; fg: number; bg: number };
+// Records every cell a screen writes, so drawing can be held to what it is meant
+// to look like without dragging the renderer in
 function recorder(cols: number, rows: number) {
-  const cells = new Map<string, Cell>();
+  const cells = new Map<string, { ch: string; fg: number; bg: number }>();
+  let out = 0;
   const stub = {
     cols,
     rows,
     cssCell: 16,
     put(x: number, y: number, ch: string, fg: number, bg?: number) {
+      if (x < 0 || x >= cols || y < 0 || y >= rows) {
+        out += 1;
+        return;
+      }
       const was = cells.get(`${x},${y}`);
       cells.set(`${x},${y}`, { ch, fg, bg: bg ?? was?.bg ?? C.bg });
     },
@@ -71,11 +58,15 @@ function recorder(cols: number, rows: number) {
       this.text(x + Math.max(0, (w - t.length) >> 1), y, t.join(""), fg, bg);
     },
   };
-  const surface = stub as unknown as Parameters<typeof drawBattle>[0];
-  const row = (n: number) =>
-    Array.from({ length: stub.cols }, (_, x) => cells.get(`${x},${n}`)?.ch ?? " ").join("");
-  return { stub, surface, cells, row, drawn: () => [...cells.values()] };
+  return {
+    surface: stub as unknown as Parameters<typeof drawBattle>[0],
+    grid: stub as unknown as Parameters<typeof drawMap>[0],
+    outside: () => out,
+    written: () => cells.size,
+  };
 }
+
+// ------------------------------------------------------------------ layout
 
 const cases = [
   { name: "iphone portrait", innerWidth: 390, innerHeight: 844, dpr: 3, reserved: 34 },
@@ -93,7 +84,6 @@ for (const c of cases) {
   ok(`${c.name}: fits width`, l.cssW <= c.innerWidth + 0.001);
   ok(`${c.name}: fits height`, l.cssH <= c.innerHeight - c.reserved + 0.001);
   ok(`${c.name}: columns capped`, l.cols <= MAX_COLS);
-  // 240 CSS px at dpr 1 cannot hold MIN_COLS even at scale 1, and must not pretend to
   const possible = Math.floor((c.innerWidth * c.dpr) / TILE);
   ok(`${c.name}: minimum columns when possible`, l.cols >= Math.min(MIN_COLS, possible));
   ok(`${c.name}: at least one row`, l.rows >= 1);
@@ -102,429 +92,146 @@ for (const c of cases) {
     `${c.name}: takes the width it is given`,
     l.cols >= MAX_COLS || l.cssW > c.innerWidth - l.cssCell,
   );
-
-  const view = viewRows(l.rows);
-  ok(`${c.name}: hud has its rows`, view === Math.max(1, l.rows - HUD_ROWS - BTN_ROWS));
-  const size = mapSize();
-  for (const want of [{ x: -999, y: -999 }, { x: 0, y: 0 }, { x: 999, y: 999 }]) {
-    const cam = clampCam(want, l.cols, l.rows);
-    ok(`${c.name}: camera keeps the map in frame`, cam.x <= Math.max(0, size.w - l.cols));
-    ok(`${c.name}: camera keeps the top in frame`, cam.y <= Math.max(0, size.h - view));
-    ok(`${c.name}: camera never runs off the left`, size.w <= l.cols || cam.x >= 0);
-    ok(`${c.name}: camera never runs off the top`, size.h <= view || cam.y >= 0);
-  }
+  ok(`${c.name}: hud has its rows`, viewRows(l.rows) === Math.max(1, l.rows - HUD_ROWS - BTN_ROWS));
 }
+const size = mapSize();
+ok("the whole map is wider than one screen", size.w > MIN_COLS);
+console.log(`layout   ${cases.length} viewports, down to ${MIN_COLS}x${MIN_ROWS}`);
 
-// A desk monitor should be played on, not framed by it
-{
-  const l = computeLayout({ innerWidth: 1920, innerHeight: 1080, dpr: 1, reserved: 0 });
-  ok("a desktop window is filled across", l.cssW > 1920 - l.cssCell);
-  ok("its tiles are bigger than a phone's", l.cssCell > TARGET_TILE_CSS);
-  ok("and it keeps the rows a fight needs", l.rows >= MIN_ROWS);
+// ------------------------------------------------------------------ colour
+
+// Colour is the family and the glyph is the rung. A token that wears a family's
+// colour is a token you lose on the board, so the two heroes may not.
+const famColours = Object.values(FAMILY_COLOR);
+ok("every family has its own colour", new Set(famColours).size === famColours.length);
+for (const f of Object.keys(HERO_COLOR) as (keyof typeof HERO_COLOR)[]) {
+  ok(`the ${f} hero is not the colour of a family`, !famColours.includes(HERO_COLOR[f]));
 }
-
-// A viewport shorter than the chrome must not produce a negative or zero grid
-const tiny = computeLayout({ innerWidth: 200, innerHeight: 40, dpr: 1, reserved: 40 });
-ok("degenerate viewport still yields a grid", tiny.cols >= 1 && tiny.rows >= 1);
-
-// Every sheet has to fit the narrowest grid the layout will ever hand it, or a
-// line is silently clipped and a button reads as half a word
-{
-  const g = newGame(2468);
-  g.unspent = 1;
-  g.over = "won";
-  g.cleared = 12;
-  g.lost = 9;
-  // The widest hand the board can pay for, with the reroll line under it
-  g.offer = POWERS.slice(0, 3 + 4).map((p) => p.id);
-  g.rerolls = 9;
-  // A full roster of the widest names, one of them stacked deep. `raise` never
-  // refuses a kind it already holds, so this fills by kind and then piles on.
-  for (const c of RAISABLE) raise(g, c);
-  for (let i = 0; i < 99; i++) raise(g, g.reserve[0].creature);
-  // Everything the dark has ever handed out, on one sheet, several deep
-  g.powers = POWERS.flatMap((p) => [p.id, p.id]);
-  const ui: Ui = {
-    panel: "",
-    node: 1,
-    speed: 1,
-    watch: false,
-    unit: g.reserve[0]?.id ?? 0,
-    typed: 1e9,
-    loreId: null,
-    tnode: 0,
-    power: POWERS[0].id,
-  };
-
-  const fits = (panel: Parameters<typeof panelSpec>[2], cols: number, label: string) => {
-    const spec = panelSpec(g, ui, panel, cols);
-    if (!spec) return;
-    ok(`${label}/${cols}: the title fits`, cells(spec.title) <= cols - 4);
-    for (const l of spec.lines) {
-      const w = cells(l.text) + tailW(l);
-      ok(`${label}/${cols}: "${l.text}" fits`, w <= cols - 4);
-      // A wide grid must not stretch prose into one long line of it
-      ok(`${label}/${cols}: "${l.text}" stays readable`, w <= SHEET_COLS);
-    }
-  };
-
-  for (const cols of [MIN_COLS, 20, 24, MAX_COLS]) {
-    for (const panel of PANELS) {
-      for (const lore of [0, LORE.length - 1]) {
-        g.loreQueue = [lore];
-        for (const state of ["locked", "open", "cleared"] as const) {
-          g.nodes[1].state = state;
-          // Every kind of room draws the same sheet, and the sealed ones say the
-          // most on it - keys, gifts, and what gets up for free
-          for (const kind of KIND_IDS) {
-            g.nodes[1].kind = kind;
-            g.nodes[1].foes = kind === "gate" ? [] : [...poolFor(kind, g.nodes[1].tier), "guard"];
-            for (const keys of [0, 1]) {
-              g.res.keys = keys;
-              fits(panel, cols, panel);
-            }
-          }
-        }
-      }
-    }
-    // Every card's whole description, at every width, because that sheet is the
-    // one place the rules are actually written down
-    for (const p of POWERS) {
-      ui.power = p.id;
-      fits("power", cols, `power ${p.id}`);
-    }
-    ui.power = POWERS[0].id;
-  }
-
-  // The line is reordered from this sheet, both ways, and the ends of it say so
-  const army = panelSpec(g, ui, "army", MIN_COLS)!;
-  const rows = army.lines.filter((l) => l.act?.t === "inspect");
-  ok("every body in the line is on the sheet", rows.length === g.reserve.length);
-  ok("the front cannot be walked up", !rows[0].tails?.some((t) => t.act.t === "up"));
-  ok("but it can be walked down", rows[0].tails?.some((t) => t.act.t === "down") === true);
-  ok("the back can be walked up", rows.at(-1)!.tails?.some((t) => t.act.t === "up") === true);
-  ok("and not down", !rows.at(-1)!.tails?.some((t) => t.act.t === "down"));
-  ok("the ones between get both", rows.slice(1, -1).every((l) => l.tails?.length === 2));
+ok("the two heroes are not the same colour", HERO_COLOR.player !== HERO_COLOR.enemy);
+const ownColours = Object.values(OWNER_COLOR);
+ok("every owner has its own colour", new Set(ownColours).size === ownColours.length);
+for (const f of Object.keys(HERO_COLOR) as (keyof typeof HERO_COLOR)[]) {
+  ok(`the ${f} hero is not the colour of an owner`, !ownColours.includes(HERO_COLOR[f]));
 }
+console.log(`colour   ${famColours.length} families, ${ownColours.length} owners, 2 heroes, all apart`);
 
-// The board draws itself; every line it writes has to fit the box it asks for
-{
-  for (const s of treeLines()) ok(`"${s}" fits the tree`, cells(s) <= TREE_TEXT);
-  ok("and the box it asks for fits the narrowest grid", treeWidth() <= MIN_COLS);
-  ok("it is one tree, not three", TREE.length >= 16 && TREE.length <= 22);
+// ------------------------------------------------------------------ glyphs
 
-  // Every node reachable from the one you start on, or a run can bank gold for a
-  // node it can never buy
-  const walk = newMeta();
-  ok("the middle comes free", walk.taken.join() === `${rootId}`);
-  walk.gold = 9999;
-  let guard = 200;
-  while (treeOpen(walk).length && guard-- > 0) buyNode(walk, treeOpen(walk)[0]);
-  ok("every node can be reached", walk.taken.length === TREE.length);
-  ok("and nothing is left open", treeOpen(walk).length === 0);
-  for (const n of TREE) ok(`${n.name}: it reads as bought`, stateOf(walk, n.id) === "taken");
-
-  // A card the dark deals is held to the same width as everything else
-  for (const s of powerLines()) ok(`"${s}" fits a card`, cells(s) <= TREE_TEXT);
-}
-
-// A mend has to be as legible on the board as a blow is
-{
-  const r = recorder(24, 52);
-  const g = newGame(8642);
-  orderArmy(g, g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!.id);
-  advance(g, TUNING.marchTicks + 1);
-  const b = g.battle!;
-  const mended = b.units.find((u) => u.faction === "player")!;
-  mended.hp = 1;
-  b.mend = [{ id: mended.id, by: mended.id, n: 7 }];
-  g.next = g.time + TUNING.turnTicks;
-
-  drawBattle(r.surface, g, new Hits(), 1);
-  const drawn = r.drawn();
-  ok("a mend is written on the board", drawn.some((c) => c.ch === "7" && c.fg === C.green));
-  ok("with a plus in front of it", drawn.some((c) => c.ch === "+" && c.fg === C.green));
-  ok(
-    "and the one who got it goes green",
-    drawn.some((c) => c.ch === CREATURES[mended.creature].glyph && c.fg === C.green),
+// Every non-ASCII character anywhere in src/ has to exist on the sheet, or it
+// renders as nothing at all
+function walk(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(`${dir}/${e.name}`) : e.name.endsWith(".ts") ? [`${dir}/${e.name}`] : [],
   );
 }
-
-// Every creature gets its own sheet, and the longest name is what decides
-// whether that sheet fits
-{
-  const g = newGame(606);
-  for (const c of RAISABLE) {
-    g.reserve.length = 0;
-    raise(g, c);
-    const ui: Ui = {
-      panel: "unit",
-      node: 0,
-      speed: 1,
-      watch: false,
-      unit: g.reserve[0].id,
-      typed: 1e9,
-      loreId: null,
-      tnode: 0,
-      power: POWERS[0].id,
-    };
-    for (const cols of [MIN_COLS, 24, MAX_COLS]) {
-      const spec = panelSpec(g, ui, "unit", cols)!;
-      ok(`${c}/${cols}: its name fits`, cells(spec.title) <= cols - 4);
-      for (const l of spec.lines) ok(`${c}/${cols}: "${l.text}" fits`, cells(l.text) <= cols - 4);
-      ok(`${c}/${cols}: it says what it does`, spec.lines.some((l) => l.text.includes("hits for")));
-    }
-    // The one line that decides where a blow goes is said on the sheet
-    const spec = panelSpec(g, ui, "unit", MIN_COLS)!;
-    ok(
-      `${c}: a wall says it is one`,
-      CREATURES[c].taunt === spec.lines.some((l) => l.text.includes(TAUNT_GLYPH)),
-    );
+const missing = new Map<string, string>();
+for (const file of walk("src")) {
+  if (file.endsWith("tilemap.ts")) continue;
+  for (const ch of readFileSync(file, "utf8")) {
+    if (ch.charCodeAt(0) < 128) continue;
+    if (TILE_MAP[ch]) continue;
+    if (!missing.has(ch)) missing.set(ch, file);
   }
 }
+for (const [ch, file] of missing) ok(`${file}: ${ch} (U+${ch.codePointAt(0)!.toString(16)}) is on the sheet`, false);
+ok("every glyph in src is on the sheet", missing.size === 0);
+console.log(`glyphs   ${CREATURE_IDS.length} bodies, ${KIND_IDS.length} node kinds, all on the sheet`);
 
-// The battle view draws through the same Grid surface the renderer does
-{
-  const r = recorder(24, 52);
-  const g = newGame(31313);
-  // Two different things at least: this scans a board with a slot still on the
-  // floor after one has been spoken for, and one kind of thing is one slot
-  const room = g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!;
-  room.foes = ["rat", "hound"];
-  orderArmy(g, room.id);
-  advance(g, TUNING.marchTicks + 1);
-  const b = g.battle!;
-  // Hand it a finished fight with one of theirs already spoken for
-  b.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
-  b.done = "win";
-  const body = b.units.find((u) => u.faction === "enemy")!;
-  // Something with a name nothing already in the line shares, or the scan below
-  // cannot tell which row it is looking at
-  body.creature = "warden";
-  b.taken.push(body.id);
-  g.risen = { creatures: [body.creature], units: [body.id], node: b.node, at: g.time };
-  g.mode = "spoils";
-  g.next = g.time + TUNING.spoilsTicks;
+// ------------------------------------------------------------------ sheets
 
-  drawBattle(r.surface, g, new Hits(), 1);
-  const drawn = r.drawn();
-  const beam = drawn.filter((c) => c.ch === "║" && c.fg === C.violet);
-  ok("the light comes down as a column", beam.length >= 1);
-  const lit = drawn.filter((c) => c.bg === C.violet && c.ch !== " " && c.ch !== "║");
-  ok("and it is behind the body, not over it", lit.length === 1);
-  ok("the body is still legible in it", lit[0].fg === C.shade);
-  // The figure keeps the three beats: it is lit where it fell, on their side of
-  // the arena, and walks across on its own clock
-  const litAt = [...r.cells.entries()].find(
-    ([, c]) => c.bg === C.violet && c.ch !== " " && c.ch !== "║",
-  )!;
-  ok("and it is lit where it fell", Number(litAt[0].split(",")[0]) > ((24 - 1) >> 1));
+const ui: Ui = {
+  panel: "",
+  node: 0,
+  speed: 1,
+  watch: false,
+  unit: 0,
+  typed: 1e9,
+  loreId: null,
+  spell: SPELL_IDS[0],
+  picking: null,
+};
 
-  // ...while its row does not wait for any of that. A body you have paid for is
-  // yours on that frame, so the entry leaves their column at once and stands
-  // where a raise actually puts it: at the end of your line.
-  const names: string[] = [];
-  const column = new Map<string, number>();
-  for (let y = 0; y < 52; y++) {
-    for (const who of [CREATURES[g.reserve[0].creature].short, CREATURES.warden.short]) {
-      const at = r.row(y).indexOf(who);
-      if (at < 0 || names.includes(who)) continue;
-      names.push(who);
-      column.set(who, at);
-    }
-  }
-  ok("the one that got up is on the board", names.includes(CREATURES.warden.short));
-  ok("and it is on your side of the divider", column.get(CREATURES.warden.short)! < ((24 - 1) >> 1));
-  ok("and it stands behind what was already there", names[0] !== CREATURES.warden.short);
-
-  // What you have to hand is on the board too, because they are the numbers you spend
-  ok("the board says how many you have", r.row(0).includes(`${g.reserve.length}/${commandCap(g)}`));
-  ok("and marks it as bodies", r.row(0).includes("†"));
-  ok("and says what is left to ask with", r.row(1).includes(`${g.mana}/${manaCap(g)}`));
-  ok("marked as asking", r.row(1).includes(MANA_GLYPH));
-
-  // Every body still on the floor is something to tap, at a price you can read
-  const hits = new Hits();
-  r.cells.clear();
-  drawBattle(r.surface, g, hits, 1);
-  const spare = offered(g, b);
-  ok("there are bodies left on the floor", spare.length > 0);
-  for (const u of spare) {
-    ok(
-      `${u.creature}: tapping it asks for it`,
-      hits.list.some((h) => h.act.t === "reap" && h.act.id === u.id),
-    );
-  }
-  ok("what it costs is written by it", r.drawn().some((c) => c.ch === MANA_GLYPH && c.fg === C.cyan));
-  ok("and a body you can pay for is lit up", r.drawn().some((c) => c.ch === "☠" && c.fg === C.cyan));
-
-  // ...and every body of yours is one you can give back, while the board is up
-  ok("the room is still held", held(g) !== null);
-  for (const u of g.reserve.slice(0, -1)) {
-    ok(
-      `${u.creature}: tapping it gives it back`,
-      hits.list.some((h) => h.act.t === "sell" && h.act.id === u.id),
-    );
-  }
-
-  // Nothing to ask with, nothing to tap
-  r.cells.clear();
-  const poorHits = new Hits();
-  drawBattle(r.surface, { ...g, mana: 0 }, poorHits, 1);
-  ok("an empty pool still shows the price", r.drawn().some((c) => c.ch === MANA_GLYPH));
-  ok("but nothing on the floor is lit", !r.drawn().some((c) => c.ch === "☠" && c.fg === C.cyan));
-
-  // Both readouts survive the narrowest board there is, rather than the room
-  // name being written over one of them
-  const narrow = recorder(MIN_COLS, 52);
-  drawBattle(narrow.surface, g, new Hits(), 1);
-  ok("a narrow board keeps its bodies", narrow.row(0).includes(`†${g.reserve.length}/${commandCap(g)}`));
-  ok("and keeps its asking", narrow.row(1).includes(`${MANA_GLYPH}${g.mana}/${manaCap(g)}`));
-
-  // A desktop grid is wide and short, and the fight still has to have its arena
-  const desk = computeLayout({ innerWidth: 1920, innerHeight: 1080, dpr: 1, reserved: 0 });
-  const wide = recorder(desk.cols, desk.rows);
-  drawBattle(wide.surface, g, new Hits(), 1);
-  ok("they still fight where you can see it", wide.drawn().some((c) => c.ch === "▔"));
-  const drawnAt = [...wide.cells.entries()]
-    .filter(([at, c]) => c.ch !== " " && Number(at.split(",")[1]) < desk.rows - BTN_ROWS)
-    .map(([at]) => Number(at.split(",")[0]));
-  ok("with the width to spare left spare", Math.min(...drawnAt) >= 4);
-  ok("on both sides of it", Math.max(...drawnAt) <= desk.cols - 5);
-}
-
-// A door that wants a key says so on the map itself, and says it in red until
-// you are carrying one. The panel behind it is a tap away; the map is not.
-{
-  const g = newGame(9191);
-  const shut = g.nodes.find((n) => KINDS[n.kind].key)!;
-  ok("there is a door somebody meant to keep shut", shut !== undefined);
-  for (const n of g.nodes) n.state = "cleared";
-  shut.state = "open";
-  const key = RESOURCES.keys.glyph;
-  const draw = (keys: number) => {
-    const r = recorder(MAX_COLS, 40);
-    g.res.keys = keys;
-    const cam = clampCam({ x: 0, y: 0 }, MAX_COLS, 40);
-    drawMap(r.surface as unknown as Parameters<typeof drawMap>[0], g, cam, new Hits(), 1);
-    return r.drawn();
-  };
-  // The hud carries one of its own, so the map has to add to it
-  const bare = draw(0);
-  ok("the room wears the key it wants", bare.filter((c) => c.ch === key).length >= 2);
-  ok("and wears it red with nothing to open it", bare.some((c) => c.ch === key && c.fg === C.red));
-  const armed = draw(1);
-  ok("it stops being red once you carry one", !armed.some((c) => c.ch === key && c.fg === C.red));
-  ok("but it still says what it wants", armed.filter((c) => c.ch === key).length >= 2);
-}
-
-// A slot's depth and the number against the divider share one row. They used to
-// be written on top of each other, so a slot of four read as "Bones x" with a
-// price where its count should be - the name yields now, and cleanly.
-{
-  const board = (cols: number) => {
-    const r = recorder(cols, 52);
-    const g = newGame(31313);
-    const room = g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!;
-    room.foes = ["warden", "warden", "warden"];
-    g.reserve.length = 0;
-    for (let i = 0; i < 4; i++) raise(g, "warden");
-    orderArmy(g, room.id);
-    advance(g, TUNING.marchTicks + 1);
-    const b = g.battle!;
-    b.units.filter((u) => u.faction === "enemy").forEach((u) => (u.hp = 0));
-    b.done = "win";
-    g.mode = "spoils";
-    g.next = g.time + TUNING.spoilsTicks;
-    g.mana = 99;
-    drawBattle(r.surface, g, new Hits(), 1);
-    return { g, rows: Array.from({ length: 52 }, (_, y) => r.row(y)) };
-  };
-
-  // Narrow enough that they fight for the same cells, which is where it broke
-  const tight = board(26);
-  const sell = tight.rows.find((l) => l.includes(`${MANA_GLYPH}+`))!;
-  ok("a slot of yours is priced", sell !== undefined);
-  ok("and the price never lands on its name", sell[sell.indexOf(`${MANA_GLYPH}+`) - 1] === " ");
-  const cost = `${MANA_GLYPH}${manaCost(tight.g, "warden") * 3}`;
-  const ask = tight.rows.find((l) => l.includes(cost))!;
-  ok("one of theirs is priced too", ask !== undefined);
-  ok("and its name keeps clear of it", ask[ask.indexOf(cost) + cells(cost)] === " ");
-
-  // ...and at a width worth playing on, the depth survives beside the price
-  const room = board(44).rows;
-  const both = (depth: string, price: string) =>
-    room.some((l) => l.includes(depth) && l.includes(price));
-  ok("a slot of yours says how deep it is", both("x4", `${MANA_GLYPH}+`));
-  ok("and one of theirs does too", both("x3", MANA_GLYPH));
-}
-
-// Two horizontal lines is the picture. A full army and a full room both have to
-// stand on one row each at any width worth playing on.
-{
-  const g = newGame(5150);
-  g.reserve.length = 0;
-  // The longest line the cap allows is one slot per kind, because the same thing
-  // shares a slot - so the worst case for the arena is all different things. A
-  // room is not capped, so theirs is the longer of the two.
-  for (const c of RAISABLE) raise(g, c);
-  const room = g.nodes.find((n) => n.state === "open" && !KINDS[n.kind].key)!;
-  room.foes = ["rat", "hound", "moth", "wisp", "knight", "warden"];
-  orderArmy(g, room.id);
-  advance(g, TUNING.marchTicks + 1);
-  const b = g.battle!;
-  ok("a long line is actually long", b.units.filter((u) => u.faction === "enemy").length >= 6);
-  ok("and yours is every slot you have", b.units.filter((u) => u.faction === "player").length === commandCap(g));
-
-  for (const rows of [MIN_ROWS, 32, 40, 52]) {
-    for (const cols of [MIN_COLS, 24, 44, MAX_COLS]) {
-      const r = recorder(cols, rows);
-      drawBattle(r.surface, g, new Hits(), 1);
-      const drawn = r.drawn();
-      ok(`${cols}x${rows}: the arena survives a full line`, drawn.some((c) => c.ch === "▔"));
-      ok(`${cols}x${rows}: and its floor with it`, drawn.some((c) => c.ch === "▁"));
+// Built at the narrowest grid the game supports, because that is the one a sheet
+// actually has to fit inside
+const narrow = MIN_COLS;
+function everyPanel(g: GameState, cols: number) {
+  for (const panel of PANELS as Shown[]) {
+    const spec = panelSpec(g, { ...ui, node: g.you.at }, panel, cols);
+    if (!spec) continue;
+    // The width panelSpec itself builds to, which is the one a line has to fit
+    const room = Math.min(SHEET_COLS, Math.max(4, cols - 6));
+    for (const l of spec.lines) {
       ok(
-        `${cols}x${rows}: the front of the line is still named`,
-        drawn.some((c) => c.ch === CREATURES.rat.short[0]),
+        `${panel} at ${cols}: "${l.text}" fits (${cells(l.text) + tailW(l)} > ${room})`,
+        cells(l.text) + tailW(l) <= room,
       );
-      // At any width the game actually asks for, both sides are one row each
-      if (cols >= 24) {
-        const rowsWith = new Set(
-          [...r.cells.entries()]
-            .filter(([, c]) => c.ch === CREATURES.rat.glyph || c.ch === CREATURES.warden.glyph)
-            .map(([at]) => Number(at.split(",")[1])),
-        );
-        // The roster below writes glyphs too, and it is as long as the longer of
-        // the two lines. What is pinned is the arena: its figures share one row
-        // per side, which is two at most.
-        const roster = Math.max(
-          b.units.filter((u) => u.faction === "player").length,
-          b.units.filter((u) => u.faction === "enemy").length,
-        );
-        ok(`${cols}x${rows}: nobody is stacked in ranks`, rowsWith.size <= 2 + roster);
-      }
     }
-  }
-
-  // The wall is marked wherever a body is drawn, because which of them is
-  // standing is the only thing that decides where the next blow goes
-  const r = recorder(44, 52);
-  drawBattle(r.surface, g, new Hits(), 1);
-  ok("a wall wears its mark", r.drawn().some((c) => c.ch === TAUNT_GLYPH && c.fg === C.blue));
-}
-
-// Anything the code draws has to exist in the sheet, or it renders as nothing at
-// all. Every non-ascii character in src/ is a glyph somebody meant to see.
-const seg = new Intl.Segmenter("en", { granularity: "grapheme" });
-const files = readdirSync("src", { recursive: true, encoding: "utf8" })
-  .filter((f) => f.endsWith(".ts") && !f.endsWith("tilemap.ts"))
-  .map((f) => `src/${f}`);
-ok("there are sources to scan", files.length > 5);
-for (const file of files) {
-  for (const { segment } of seg.segment(readFileSync(file, "utf8"))) {
-    if (/^[\x20-\x7e\r\n\t]*$/.test(segment)) continue;
-    ok(`${file}: the sheet has ${segment}`, segment in TILE_MAP);
+    ok(`${panel} at ${cols}: has a title`, cells(spec.title) > 0);
   }
 }
 
-console.log(`layout: ${checks} checks passed`);
+{
+  const g = newGame(7);
+  // Somewhere with a garrison, a shrine and a fight to look at
+  for (let i = 0; i < 6; i++) {
+    botTurn(g, "player");
+    endTurn(g);
+  }
+  for (const cols of [narrow, 32, SHEET_COLS, MAX_COLS]) everyPanel(g, cols);
+
+  // ...and the same again once it is over, because the last sheet is a sheet too
+  const done = newGame(9);
+  done.over = "won";
+  everyPanel(done, narrow);
+  done.over = "dead";
+  everyPanel(done, narrow);
+}
+console.log(`sheets   ${PANELS.length} panels hold at ${narrow} columns`);
+
+// ------------------------------------------------------------------ drawing
+
+for (const c of cases) {
+  const l = computeLayout(c);
+  const g = newGame(11);
+  for (let i = 0; i < 4; i++) {
+    botTurn(g, "player");
+    endTurn(g);
+  }
+
+  const map = recorder(l.cols, l.rows);
+  drawMap(map.grid, g, { x: 0, y: 0 }, new Hits(), false);
+  ok(`${c.name}: the map stays on the screen`, map.outside() === 0);
+  ok(`${c.name}: the map draws something`, map.written() > 0);
+
+  // ...and again while a spell is asking which node to land on
+  const pick = recorder(l.cols, l.rows);
+  drawMap(pick.grid, g, { x: 0, y: 0 }, new Hits(), true);
+  ok(`${c.name}: picking a node stays on the screen`, pick.outside() === 0);
+
+  // A fight, mid-swing and then held open afterwards
+  const target = g.nodes.find((n) => n.owner !== "player" && n.garrison.length) ?? g.nodes[0];
+  g.battle = makeBattle(g, "player", target.id);
+  for (const phase of ["fight", "spoils"] as const) {
+    g.phase = phase;
+    const fight = recorder(l.cols, l.rows);
+    drawBattle(fight.surface, g, new Hits(), 1);
+    ok(`${c.name}: the fight stays on the screen (${phase})`, fight.outside() === 0);
+    ok(`${c.name}: the fight draws something (${phase})`, fight.written() > 0);
+  }
+}
+console.log(`drawing  map, node-picking and both halves of a fight, at every viewport`);
+
+// ------------------------------------------------------------------ tags
+
+// Anything written next to a body has to fit the column it is written in
+for (const c of CREATURE_IDS) {
+  const t = CREATURES[c];
+  ok(`${c}: short name fits a roster column`, cells(t.short) <= 8);
+  ok(`${c}: has a name and a glyph`, cells(t.name) > 0 && cells(t.glyph) === 1);
+}
+for (const k of KIND_IDS) {
+  ok(`${k}: name fits the narrowest sheet`, cells(KINDS[k].name) <= narrow - 4);
+  ok(`${k}: has a note`, cells(KINDS[k].note) > 0);
+}
+
+console.log(`check-layout ok (${checks} checks)`);

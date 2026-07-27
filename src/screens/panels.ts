@@ -1,40 +1,46 @@
 import type { Grid } from "../gfx/grid.ts";
 import { LORE } from "../sim/lore.ts";
 import {
+  BUFFS,
   CREATURES,
+  FAMILY_COLOR,
   KINDS,
+  MANA_GLYPH,
+  OWNER_COLOR,
   RESOURCES,
   RES_IDS,
+  SPELLS,
   TAUNT_GLYPH,
   TUNING,
-  tierDmgFor,
-  tierHpFor,
+  dmgPerBeat,
+  growthFor,
+  speedWord,
   type GameState,
+  type MapNode,
+  type SpellId,
 } from "../sim/data.ts";
 import {
-  canOrder,
-  needsKey,
-  perks,
-  raiseAs,
-  reserve,
-  stackDmg,
+  armyWorth,
+  buffHere,
+  canCast,
+  canMobilize,
+  canMove,
+  listWorth,
+  offersHere,
+  routeTo,
+  spellCost,
+  spellsOf,
   stackOf,
-  unitDmg,
-  wallish,
-  type Meta,
+  weekOf,
 } from "../sim/game.ts";
 import { sfxMuted } from "../sfx.ts";
-import { TREE } from "../sim/tree.ts";
-import { ARMS, POWERS, POWER_BY_ID } from "../sim/powers.ts";
 import { C, COL, Hits, cells, cut, type Line, sheet, wrap } from "../ui.ts";
-import { drawTree } from "./tree.ts";
-
-const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
 
 // The widest a line of a sheet is allowed to get, however wide the grid is
 export const SHEET_COLS = 40;
 
-export type PanelId = "" | "node" | "army" | "unit" | "menu" | "confirm" | "tree" | "power" | "gifts";
+export type PanelId =
+  | "" | "node" | "army" | "unit" | "spells" | "spell" | "muster" | "menu" | "confirm";
 
 export type Ui = {
   panel: PanelId;
@@ -46,35 +52,49 @@ export type Ui = {
   // How much of the piece being read has arrived, and which piece that is
   typed: number;
   loreId: number | null;
-  // The node of the tree being read, which is not the same as one being bought
-  tnode: number;
-  // The card being read. A card nobody can read is a card nobody drafts on purpose.
-  power: string;
+  // The spell being read. One nobody can read is one nobody casts on purpose.
+  spell: SpellId | null;
+  // A map spell that wants a node puts the board back up to pick one on, and
+  // nothing else may be over it while that is happening
+  picking: SpellId | null;
 };
 
-export type Shown = PanelId | "lore" | "over" | "draft";
+export type Shown = PanelId | "lore" | "over";
 
-// The tree draws itself rather than going through sheet(), so it is not listed
-// here: what this drives is the width check, and a board is not a list of lines.
 export const PANELS: Shown[] = [
-  "node", "army", "unit", "menu", "confirm", "lore", "over", "draft", "power", "gifts",
+  "node", "army", "unit", "spells", "spell", "muster", "menu", "confirm", "lore", "over",
 ];
 
 export type Spec = { title: string; lines: Line[]; minWidth: number };
 
-// Anything the run owes the player is shown before anything the player asked
+// Anything the game owes the player is shown before anything the player asked
 // for. While any of these is up the clock is stopped, so nothing is missed.
 export function shownPanel(g: GameState, ui: Ui): Shown {
   if (g.loreQueue.length) return "lore";
-  // Above the draft, or a card cannot be read before it is taken - which is the
-  // one moment reading it is worth anything
-  if (ui.panel === "power") return "power";
-  if (g.unspent > 0 && g.offer.length) return "draft";
-  // Above the end of a run, because the end of a run is where the board is spent
-  if (ui.panel === "tree") return "tree";
+  // Above the book, or a spell could not be read at the one moment reading it is
+  // worth anything - which is before you spend the mana on it
+  if (ui.panel === "spell") return "spell";
   if (g.over) return "over";
+  // Picking a node for a spell puts the map back up; nothing may sit over it
+  if (ui.picking) return "";
   return ui.panel;
 }
+
+export function drawPanel(grid: Grid, g: GameState, ui: Ui, hits: Hits, panel: Shown) {
+  const spec = panelSpec(g, ui, panel, grid.cols);
+  if (spec) sheet(grid, hits, spec.title, spec.lines, spec.minWidth);
+}
+
+// A name on the left and a number against the right edge, at exactly `wide`.
+// Every list in here is built out of this, so nothing drifts out of its column.
+const rowAt = (wide: number, left: string, right: string, fg: number): Line => {
+  const r = cut(right, Math.max(0, wide - 1));
+  const room = Math.max(0, wide - cells(r) - 1);
+  const l = cut(left, room);
+  return { text: `${l}${" ".repeat(room - cells(l))} ${r}`, fg };
+};
+
+const pct = (n: number) => `${Math.round(n)}%`;
 
 // What a sheet says and what its lines do, built in one place and at a known
 // width, so a check can hold every panel to the narrowest grid there is
@@ -90,298 +110,288 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
       return armySpec(g, wide);
     case "unit":
       return unitSpec(g, ui, wide);
-    case "power":
-      return powerSpec(g, ui, wide);
-    case "gifts":
-      return giftsSpec(g, wide);
+    case "spells":
+      return spellsSpec(g, wide);
+    case "spell":
+      return spellSpec(g, ui, wide);
+    case "muster":
+      return musterSpec(g, wide);
     case "menu":
       return {
-        title: "MENU",
-        minWidth: Math.min(wide, 16),
+        title: "GRAVELIGHT",
+        minWidth: wide,
         lines: [
-          { text: `tree ${g.taken.length}/${TREE.length}`, act: { t: "tree" }, fg: C.gold },
-          { text: `gifts ${g.powers.length}`, act: { t: "gifts" }, fg: C.violet },
-          ...RES_IDS.map((r) => ({
-            text: `${RESOURCES[r].glyph} ${RESOURCES[r].short.padEnd(5)}${g.res[r]}`,
-            fg: C.mid,
-          })),
+          ...say("Take their throne. Lose your own and it is over.", C.dim),
           { text: "" },
-          ...say(`rooms taken ${g.cleared}`, C.dim),
-          ...say(`dead ${g.lost}`, C.dim),
-          { text: `lore ${g.seenLore.length}/${LORE.length}`, fg: C.dim },
+          rowAt(wide, "difficulty", `x${g.difficulty.toFixed(1)}`, C.gold),
+          ...say("what their side is paid every week", C.frame),
+          { text: "change it", act: { t: "difficulty" } },
           { text: "" },
-          { text: sfxMuted() ? "sound off" : "sound on", act: { t: "sound" } },
-          { text: "restart run", act: { t: "restart" } },
+          { text: sfxMuted() ? "sound: off" : "sound: on", act: { t: "sound" } },
+          { text: "begin again", act: { t: "restart" }, fg: C.red },
+          { text: "" },
+          rowAt(wide, `week ${weekOf(g.turn) + 1}`, `turn ${g.turn + 1}`, C.dim),
           { text: "close", act: { t: "close" } },
         ],
       };
     case "confirm":
       return {
-        title: "RESTART?",
-        minWidth: Math.min(wide, 16),
+        title: "BEGIN AGAIN?",
+        minWidth: wide,
         lines: [
-          ...say("this run is lost", C.dim),
-          { text: "yes, restart", act: { t: "confirm" } },
+          ...say("This board and everything standing on it goes.", C.dim),
+          { text: "" },
+          { text: "begin again", act: { t: "confirm" }, fg: C.red },
           { text: "no, keep going", act: { t: "close" } },
         ],
       };
-    case "lore": {
-      const piece = LORE[g.loreQueue[0] ?? 0];
-      // Wrapped whole and then revealed, so the lines do not reflow as it types
-      let leftToShow = ui.typed;
-      const body = wrap(piece.body, wide).map((line) => {
-        const take = clamp(leftToShow, 0, line.length);
-        leftToShow -= line.length;
-        return { text: line.slice(0, take), fg: C.mid };
-      });
+    case "over": {
+      const won = g.over === "won";
       return {
-        title: piece.title.slice(0, wide),
+        title: won ? "THE THRONE IS YOURS" : "YOUR THRONE HAS FALLEN",
         minWidth: wide,
-        lines: [...body, { text: "" }, { text: "continue", act: { t: "ok" } }],
-      };
-    }
-    // The level-up. Three of them, coloured by the arm they belong to, with the
-    // whole of what each one does one tap away behind the `?`.
-    case "draft": {
-      const lines: Line[] = [];
-      for (const id of g.offer) {
-        const p = POWER_BY_ID[id];
-        if (!p) continue;
-        // A gap between the cards, or one card's note reads as the next one's
-        if (lines.length) lines.push({ text: "" });
-        lines.push({
-          text: p.name,
-          act: { t: "power", id },
-          fg: COL(ARMS[p.arm].color),
-          tails: [{ text: "?", act: { t: "read", id } }],
-        });
-        lines.push(...wrap(p.note, wide).map((text) => ({ text, fg: C.dim })));
-      }
-      if (g.rerolls > 0) {
-        lines.push({ text: "" }, { text: `roll again (${g.rerolls})`, act: { t: "reroll" } });
-      }
-      return { title: "THE DARK OFFERS", minWidth: Math.min(wide, 16), lines };
-    }
-    // The end of a run is the only hub there is: what it earned is already
-    // banked, and the board is the thing to spend it on before the next one.
-    case "over":
-      return {
-        title: g.over === "won" ? "IT IS DONE" : "NOTHING STANDS",
-        minWidth: Math.min(wide, 16),
         lines: [
-          ...say(g.over === "won" ? "the ossuary lies still" : "the army is gone", C.dim),
-          ...say(`rooms taken ${g.cleared}`, C.dim),
+          ...say(
+            won
+              ? "The land of the living is shorter one king, and longer a great many of the dead."
+              : "The living hold the ground, and you do not. What you raised lies down again.",
+            won ? C.green : C.red,
+          ),
           { text: "" },
-          { text: "the tree", act: { t: "tree" }, fg: C.gold },
-          { text: "new run", act: { t: "confirm" } },
+          rowAt(wide, "weeks", `${weekOf(g.turn) + 1}`, C.dim),
+          rowAt(wide, "nodes held", `${g.nodes.filter((n) => n.owner === "player").length}`, C.dim),
+          { text: "" },
+          { text: "begin again", act: { t: "confirm" } },
         ],
       };
+    }
+    case "lore": {
+      const piece = LORE[g.loreQueue[0]];
+      if (!piece) return null;
+      const body = piece.body.slice(0, Math.max(0, Math.floor(ui.typed)));
+      return {
+        title: piece.title,
+        minWidth: wide,
+        lines: [...say(body, C.pale), { text: "" }, { text: "ok", act: { t: "ok" } }],
+      };
+    }
     default:
       return null;
   }
 }
 
-export function drawPanel(grid: Grid, g: GameState, m: Meta, ui: Ui, hits: Hits, panel: Shown) {
-  // A board is not a list of lines, so it does not go through sheet()
-  if (panel === "tree") return drawTree(grid, m, hits, ui.tnode, g.over !== "");
-  const spec = panelSpec(g, ui, panel, grid.cols);
-  if (spec) sheet(grid, hits, spec.title, spec.lines, spec.minWidth);
+// ------------------------------------------------------------------ a node
+
+// One line a body, in the colour of the family it fights for, with what it can
+// take and what it lands over a beat. Read a blow any other way and a slow thing
+// looks like twice the threat it is.
+function garrisonLines(n: MapNode, wide: number): Line[] {
+  if (!n.garrison.length) return wrap("nobody is standing here", wide).map((text) => ({ text, fg: C.frame }));
+  return stackOf(n.garrison).map(([c, many]) => {
+    const t = CREATURES[c];
+    const name = `${t.glyph} ${many > 1 ? `${t.short} x${many}` : t.short}`;
+    const stat = `${t.hp}hp ${dmgPerBeat(t.dmg, t.speed)}/beat${t.taunt ? TAUNT_GLYPH : ""}`;
+    return rowAt(wide, name, stat, COL(FAMILY_COLOR[t.family]));
+  });
 }
 
-// A name on the left and a number against the right edge, at exactly `wide`.
-// Every list in here is built out of this, so nothing drifts out of its column.
-const rowAt = (wide: number, left: string, right: string, fg: number): Line => {
-  const r = cut(right, Math.max(0, wide - 1));
-  const room = Math.max(0, wide - cells(r) - 1);
-  const l = cut(left, room);
-  return { text: `${l}${" ".repeat(room - cells(l))} ${r}`, fg };
-};
-
-// What is standing in a room, before you walk into it: one line a slot, in the
-// colour it fights in, with what it can take against what it can give. This is
-// the whole of the decision to take a room or leave it standing.
 function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   const n = g.nodes[ui.node];
   const info = KINDS[n.kind];
+  const say = (s: string, fg: number): Line[] => wrap(s, wide).map((text) => ({ text, fg }));
   const lines: Line[] = [];
-  const say = (s: string, fg: number) => {
-    for (const text of wrap(s, wide)) lines.push({ text, fg });
-  };
 
-  if (n.state === "locked") {
-    say("sealed until a way is opened beside it", C.dim);
-  } else if (n.state === "cleared") {
-    say(info.note, C.dim);
-    say("already quiet", C.dim);
-  } else {
-    say(info.note, C.dim);
-    lines.push({ text: "" });
-
-    let theirHp = 0;
-    let theirDmg = 0;
-    let wall = false;
-    for (const [c, count] of stackOf(n.foes)) {
-      const t = CREATURES[c];
-      const hp = (t.hp + tierHpFor(n.tier)) * count;
-      const dmg = (t.dmg + tierDmgFor(n.tier)) * count;
-      theirHp += hp;
-      theirDmg += dmg;
-      wall = wall || t.taunt;
-      const mark = t.taunt ? TAUNT_GLYPH : "";
-      lines.push(rowAt(wide, `${t.glyph}${t.short}${count > 1 ? ` x${count}` : ""}${mark}`, `♥${hp}`, COL(t.color)));
-    }
-
-    // Yours against theirs, in the two numbers a fight is actually decided by.
-    // A wall on their side means none of that damage reaches anything behind it.
-    const troop = reserve(g);
-    const ourHp = troop.reduce((s, u) => s + u.hp, 0);
-    const ourDmg = troop.reduce((s, u) => s + stackDmg(g, u), 0);
-    lines.push({ text: "" });
-    lines.push(rowAt(wide, `them ✕${theirDmg}`, `♥${theirHp}`, C.red));
-    lines.push(rowAt(wide, `you  ✕${ourDmg}`, `♥${ourHp}`, C.green));
-    if (wall) say(`${TAUNT_GLYPH} a wall stands in front`, C.blue);
-
-    // What the room is worth beyond the fight: what it hands over, what gets up
-    // out of it for nothing, and what a living body comes back as
-    const P = perks(g);
-    const living = n.foes.filter((c) => CREATURES[c].rises);
-    if (living.length) {
-      say(`they rise as ${CREATURES[raiseAs(P, living[0])].short}`, C.violet);
-    }
-    if (info.freeRise) say("the dead here rise free", C.violet);
-    if (info.gift) say(`${CREATURES[info.gift].short} is sealed in here`, C.violet);
-    if (info.keys) say(`${RESOURCES.keys.glyph} it is carrying a key`, C.cyan);
-    if (needsKey(n)) {
-      const have = g.res.keys > 0;
-      say(
-        have ? `${RESOURCES.keys.glyph} a key opens it` : `${RESOURCES.keys.glyph} you have no key`,
-        have ? C.cyan : C.red,
-      );
-    }
+  if (!n.seen) {
+    lines.push(...say("Nobody has been this way. Walk closer and it will say what it is.", C.frame));
+    lines.push({ text: "" }, { text: "close", act: { t: "close" } });
+    return { title: "?", minWidth: wide, lines };
   }
 
-  // A room being fought over can be watched, and a room taken but not left is
-  // the one place there is still something to do
+  const who = n.owner === "player" ? "yours" : n.owner === "enemy" ? "theirs" : "nobody's";
+  lines.push(...say(info.note, C.dim));
+  lines.push(rowAt(wide, who, `tier ${n.tier}`, COL(OWNER_COLOR[n.owner])));
+
+  // What holding it is worth, which is the whole reason to walk there
+  if (info.bodies) lines.push(rowAt(wide, "makes a week", `${growthFor(n.tier)}`, C.cyan));
+  if (info.gold) lines.push(rowAt(wide, "pays a week", `${RESOURCES.gold.glyph}${info.gold}`, C.gold));
+  if (info.keys) lines.push(rowAt(wide, "holds, once taken", RESOURCES.keys.glyph, C.cyan));
+  if (n.buff) {
+    const spent = n.claimed === weekOf(g.turn);
+    lines.push(rowAt(wide, BUFFS[n.buff].note, BUFFS[n.buff].name, spent ? C.frame : C.green));
+  }
+  if (n.sealed) {
+    lines.push(
+      ...say(
+        g.you.res.keys > 0 ? "Sealed, and you are carrying a key." : "Sealed, and you have no key.",
+        g.you.res.keys > 0 ? C.cyan : C.red,
+      ),
+    );
+  }
+
   lines.push({ text: "" });
-  if (g.at === n.id && (g.mode === "fight" || g.mode === "spoils")) {
-    lines.push({
-      text: g.mode === "spoils" ? "take the dead" : "watch the fight",
-      act: { t: "watch" },
-    });
+  lines.push(...garrisonLines(n, wide));
+
+  // The one comparison the sheet exists for: what is standing there against what
+  // you walked in carrying
+  if (n.garrison.length && n.owner !== "player") {
+    const mine = armyWorth(g.you);
+    const wall = listWorth(n.garrison);
+    const share = pct((100 * wall) / Math.max(1, mine));
+    lines.push(
+      rowAt(wide, "against your line", share, wall > mine ? C.red : wall * 2 > mine ? C.gold : C.green),
+    );
   }
 
-  if (canOrder(g, n.id) && g.at !== n.id) {
-    lines.push({ text: n.state === "open" ? "take it" : "go there", act: { t: "order" } });
+  lines.push({ text: "" });
+  const route = routeTo(g, "player", n.id);
+  if (n.id === g.you.at) {
+    if (offersHere(g, "player").length) lines.push({ text: "muster", act: { t: "muster" } });
+    if (buffHere(g, "player")) lines.push({ text: "claim it", act: { t: "claim" } });
+  } else if (route === null) {
+    lines.push(...say("no way there from here", C.red));
+  } else if (route.length > g.you.moves) {
+    lines.push(rowAt(wide, "too far this turn", `${route.length}/${g.you.moves}`, C.red));
+  } else if (canMove(g, n.id)) {
+    lines.push(rowAt(wide, n.garrison.length && n.owner !== "player" ? "take it" : "go there", `${route.length}`, C.ink));
+    lines[lines.length - 1].act = { t: "move" };
   }
   lines.push({ text: "close", act: { t: "close" } });
-
-  return {
-    title: (n.state === "locked" ? "SEALED" : `${info.glyph} ${info.name}`).slice(0, wide),
-    minWidth: Math.min(wide, 16),
-    lines,
-  };
+  return { title: info.name, minWidth: wide, lines };
 }
 
-// The whole of what a card does, in plain words. Reachable from the hand it is
-// offered in and from the list of what has already been taken.
-function powerSpec(g: GameState, ui: Ui, wide: number): Spec {
-  const p = POWER_BY_ID[ui.power] ?? POWERS[0];
-  const held = g.powers.filter((id) => id === p.id).length;
-  const offered = g.offer.includes(p.id) && g.unspent > 0;
-  return {
-    title: p.name.slice(0, wide),
-    minWidth: Math.min(wide, 16),
-    lines: [
-      { text: ARMS[p.arm].name, fg: COL(ARMS[p.arm].color) },
-      ...wrap(
-        p.rare ? "a rule, taken once" : `a number, up to ${TUNING.powerStack} deep`,
-        wide,
-      ).map((text) => ({ text, fg: C.dim })),
-      { text: "" },
-      ...wrap(p.desc, wide).map((text) => ({ text, fg: C.mid })),
-      ...(held ? [{ text: "" }, { text: `you hold ${held}`, fg: C.gold }] : []),
-      { text: "" },
-      ...(offered ? [{ text: "take it", act: { t: "power" as const, id: p.id }, fg: C.ink }] : []),
-      // Back where it was read from, or reading a card you already hold throws
-      // you out to the map
-      { text: "back", act: offered ? { t: "close" } : { t: "gifts" } },
-    ],
-  };
+// ------------------------------------------------------------------ mustering
+
+function musterSpec(g: GameState, wide: number): Spec {
+  const offers = offersHere(g, "player");
+  const say = (s: string, fg: number): Line[] => wrap(s, wide).map((text) => ({ text, fg }));
+  const lines: Line[] = [
+    ...say("What stands here holds the ground for nothing. Marching with it is what costs.", C.dim),
+    { text: "" },
+  ];
+  for (const o of offers) {
+    const t = CREATURES[o.creature];
+    const can = canMobilize(g, "player", o.creature);
+    const row = rowAt(
+      wide,
+      `${t.glyph} ${t.short} x${o.n}`,
+      `${RESOURCES.gold.glyph}${o.cost}`,
+      can ? COL(FAMILY_COLOR[t.family]) : C.frame,
+    );
+    if (can) row.act = { t: "grab", c: o.creature };
+    lines.push(row);
+  }
+  if (!offers.length) lines.push(...say("nothing is standing here", C.frame));
+  lines.push({ text: "" });
+  lines.push(rowAt(wide, "in the purse", `${RESOURCES.gold.glyph}${g.you.res.gold}`, C.gold));
+  lines.push(rowAt(wide, "slots", `${g.you.reserve.length}/${TUNING.slots}`, C.violet));
+  if (offers.some((o) => canMobilize(g, "player", o.creature))) {
+    lines.push({ text: "take all", act: { t: "grabAll" } });
+  }
+  lines.push({ text: "close", act: { t: "close" } });
+  return { title: "MUSTER", minWidth: wide, lines };
 }
 
-// Everything the dark has already given, stacked, and every one of them one tap
-// from what it actually does
-function giftsSpec(g: GameState, wide: number): Spec {
-  const held = stackOf(g.powers);
-  const lines: Line[] = held.length
-    ? held.map(([id, n]) => {
-        const p = POWER_BY_ID[id];
-        return {
-          ...rowAt(wide, p ? p.name : id, n > 1 ? `x${n}` : "", p ? COL(ARMS[p.arm].color) : C.dim),
-          act: { t: "read" as const, id },
-        };
-      })
-    : [{ text: "nothing yet", fg: C.dim }];
-  lines.push({ text: "" }, { text: "close", act: { t: "close" } });
-  return { title: "THE DARK GAVE", minWidth: Math.min(wide, 16), lines };
-}
+// ------------------------------------------------------------------ the army
 
-// What a slot is, on its own sheet, so the line in the list stays a line
-function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
-  const u = reserve(g).find((o) => o.id === ui.unit);
-  if (!u) return { title: "GONE", minWidth: 0, lines: [{ text: "back", act: { t: "army" } }] };
-  const t = CREATURES[u.creature];
-  const P = perks(g);
-  const each = unitDmg(g, u);
-  return {
-    title: t.name.slice(0, wide),
-    minWidth: Math.min(wide, 16),
-    lines: [
-      // Nothing caps how deep a slot goes, so every line of this sheet is cut to
-      // the box rather than trusted to be short
-      { text: cut(`${t.glyph} ${u.hp}/${u.maxHp}`, wide), fg: C.ink },
-      { text: `${t.role} - ${t.family}`, fg: C.gold },
-      ...(u.n > 1 ? [{ text: cut(`${u.n} of them`, wide), fg: C.mid }] : []),
-      { text: cut(`hits for ${each * u.n}`, wide), fg: C.mid },
-      ...(u.n > 1 ? [{ text: cut(`${each} each`, wide), fg: C.dim }] : []),
-      // The one line that changes where a blow goes, so it is said plainly
-      ...(wallish(u, P) ? [{ text: `${TAUNT_GLYPH} a wall`, fg: C.blue }] : []),
-      // Only worth saying to somebody who has bought a reason to care
-      ...(u.rooms > 0 && (P.vetDmg || P.vetHp)
-        ? [{ text: `${u.rooms} rooms lived`, fg: C.gold }]
-        : []),
-      ...(t.tag ? [{ text: "" }, ...wrap(t.tag, wide).map((text) => ({ text, fg: C.dim }))] : []),
-      { text: "" },
-      { text: "back", act: { t: "army" } },
-    ],
-  };
-}
-
-
-// The line as it will stand, which is also the order it swings in. The arrows
-// are the whole of the tactics you get outside a fight.
 function armySpec(g: GameState, wide: number): Spec {
-  const troop = reserve(g);
-  // Room for the arrows at the end of the line, which is what a tap moves
-  const room = Math.max(4, wide - 3);
-  const lines: Line[] = troop.length
-    ? troop.map((u, k) => {
-        const t = CREATURES[u.creature];
-        return {
-          ...rowAt(room, `${k + 1}.${t.glyph}${t.short}${u.n > 1 ? ` x${u.n}` : ""}`, `${u.hp}`, C.mid),
-          act: { t: "inspect" as const, id: u.id },
-          tails: [
-            ...(k > 0 ? [{ text: "▲", act: { t: "up" as const, k } }] : []),
-            ...(k < troop.length - 1 ? [{ text: "▼", act: { t: "down" as const, k } }] : []),
-          ],
-        };
-      })
-    : [{ text: "nothing standing", fg: C.dim }];
+  const lines: Line[] = g.you.reserve.map((u, k) => {
+    const t = CREATURES[u.creature];
+    const row = rowAt(
+      wide - 3,
+      `${t.glyph} ${t.short} x${u.n}`,
+      `${u.hp}/${u.maxHp}`,
+      COL(FAMILY_COLOR[t.family]),
+    );
+    row.act = { t: "inspect", k };
+    row.tails = [
+      { text: "▲", act: { t: "up", k } },
+      { text: "▼", act: { t: "down", k } },
+    ];
+    return row;
+  });
+  if (!lines.length) lines.push(...wrap("nothing is standing", wide).map((text) => ({ text, fg: C.red })));
+  lines.push({ text: "" });
+  lines.push(rowAt(wide, "slots", `${g.you.reserve.length}/${TUNING.slots}`, C.violet));
+  // The order is what breaks a tie when two of yours come due on the same tick,
+  // so it is worth saying that the arrows do something
+  lines.push(...wrap("the front of the line swings first", wide).map((text) => ({ text, fg: C.frame })));
+  lines.push({ text: "close", act: { t: "close" } });
+  return { title: "THE ARMY", minWidth: wide, lines };
+}
 
-  lines.push({ text: "" }, { text: "close", act: { t: "close" } });
+function unitSpec(g: GameState, ui: Ui, wide: number): Spec {
+  const u = g.you.reserve[ui.unit];
+  if (!u) return armySpec(g, wide);
+  const t = CREATURES[u.creature];
+  const say = (s: string, fg: number): Line[] => wrap(s, wide).map((text) => ({ text, fg }));
+  const lines: Line[] = [
+    rowAt(wide, `tier ${t.tier} ${t.family}`, t.role, C.dim),
+    { text: "" },
+    rowAt(wide, "standing", `${u.n}`, C.ink),
+    rowAt(wide, "holding", `${u.hp}/${u.maxHp}`, C.ink),
+    rowAt(wide, "a body hits for", `${t.dmg}`, C.ink),
+    rowAt(wide, "and swings", speedWord(t.speed), C.ink),
+    rowAt(wide, "all of them, a beat", `${dmgPerBeat(t.dmg * u.n, t.speed)}`, C.gold),
+  ];
+  if (t.taunt) lines.push(...say(`${TAUNT_GLYPH} A wall. Blows land here while it stands.`, C.blue));
+  if (t.tag) lines.push(...say(t.tag, C.violet));
+  lines.push({ text: "" });
+  lines.push({ text: "back", act: { t: "army" } });
+  lines.push({ text: "close", act: { t: "close" } });
+  return { title: t.name.toUpperCase(), minWidth: wide, lines };
+}
+
+// ------------------------------------------------------------------ the book
+
+const WINDOW_WORD: Record<string, string> = {
+  map: "on the map",
+  pre: "before a fight",
+  post: "after a fight",
+};
+
+function spellsSpec(g: GameState, wide: number): Spec {
+  const lines: Line[] = [];
+  for (const id of spellsOf(g.you.family)) {
+    const s = SPELLS[id];
+    const can = canCast(g, "player", id);
+    const cost = spellCost(g, id);
+    const row = rowAt(
+      wide - 2,
+      `${s.glyph} ${s.name}`,
+      cost > 0 ? `${MANA_GLYPH}${cost}` : id === "raise" ? "-" : `${MANA_GLYPH}${s.mana}`,
+      can ? C.cyan : C.frame,
+    );
+    if (can) row.act = { t: "cast", id };
+    row.tails = [{ text: "?", act: { t: "read", id } }];
+    lines.push(row);
+    lines.push({ text: cut(`  ${s.note}, ${WINDOW_WORD[s.window]}`, wide), fg: C.frame });
+  }
+  lines.push({ text: "" });
+  lines.push(rowAt(wide, "mana", `${MANA_GLYPH}${g.you.mana}/${TUNING.manaCap}`, C.cyan));
+  lines.push(...wrap(`+${TUNING.manaTurn} a turn; your own city fills it`, wide).map((text) => ({ text, fg: C.frame })));
+  lines.push({ text: "close", act: { t: "close" } });
+  return { title: "THE BOOK", minWidth: wide, lines };
+}
+
+function spellSpec(g: GameState, ui: Ui, wide: number): Spec {
+  const id = ui.spell;
+  if (!id) return spellsSpec(g, wide);
+  const s = SPELLS[id];
+  const say = (str: string, fg: number): Line[] => wrap(str, wide).map((text) => ({ text, fg }));
+  const cost = spellCost(g, id);
   return {
-    title: g.mode === "fight" ? "IN A FIGHT" : "THE ARMY",
-    minWidth: Math.min(wide, 16),
-    lines,
+    title: s.name,
+    minWidth: wide,
+    lines: [
+      rowAt(wide, WINDOW_WORD[s.window], id === "raise" ? "per body" : `${MANA_GLYPH}${cost || s.mana}`, C.cyan),
+      { text: "" },
+      ...say(s.desc, C.ink),
+      { text: "" },
+      { text: "back", act: { t: "spells" } },
+      { text: "close", act: { t: "close" } },
+    ],
   };
 }
+
+// Read by the hud so the resource row does not have to know the ids
+export { RES_IDS };

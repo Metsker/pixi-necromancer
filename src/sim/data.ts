@@ -1,34 +1,40 @@
 // Numbers and templates only - behaviour lives in game.ts
-import type { Perks } from "./tree.ts";
 
 export type Point = { x: number; y: number };
-// Gold is banked into the tree at the end of a run; a key opens a sealed room
+// Gold mobilizes a garrison into the marching army; a key opens a sealed node
 export type Resource = "gold" | "keys";
+// Which line of a fight a body stands in. Node ownership is `Owner`, and the
+// two are not the same thing: a side is where you stand today.
 export type Faction = "player" | "enemy";
-export type AbilityId = "swarm" | "bulwark" | "wither" | "siphon" | "rend" | "toll" | "split";
-// The two things a card can be about, plus the one thing that is neither: what
-// is still breathing when you find it. Living bodies never join you as they are.
-export type Family = "beast" | "undead" | "living";
-export type CreatureId =
-  | "crow" | "rat" | "hound" | "moth" | "boar"
-  | "skeleton" | "zombie" | "ghoul" | "wisp" | "knight" | "warden"
-  | "peasant" | "guard"
-  | "ossuary";
-export type NodeKind =
-  | "gate" | "sewer" | "village" | "wilds" | "barrow" | "graves" | "crypt" | "vault" | "boss";
-export type NodeState = "locked" | "open" | "cleared";
-export type ArmyMode = "idle" | "march" | "fight" | "spoils";
+export type Owner = "none" | "player" | "enemy";
+export type AbilityId = "bulwark" | "wither" | "siphon" | "rend" | "toll";
+// Two armies and the ground between them. `wild` belongs to nobody and never
+// produces - it is what stands in a node until somebody takes it.
+export type Family = "undead" | "human" | "wild";
 
-// One slot of the army: `n` of the same thing, standing together. `hp`/`maxHp`
+export type CreatureId =
+  | "skeleton" | "shambler" | "wraith" | "vampire" | "lich" | "dreadknight" | "bonewyrm"
+  | "levy" | "archer" | "footman" | "swordsman" | "priest" | "knight" | "seraph"
+  | "rat" | "bandit" | "wolf" | "brigand" | "ogre";
+
+export type NodeKind = "throne" | "city" | "hamlet" | "barracks" | "keep" | "mine" | "shrine";
+
+// What a shrine hands over for a week when its owner walks in and claims it
+export type BuffId = "vigor" | "ward" | "haste";
+
+// A hero acts on the map, before a fight, or after one. Every spell belongs to
+// exactly one of them, which is what keeps a spellbook three buttons wide.
+export type SpellWindow = "map" | "pre" | "post";
+export type SpellId = "shadowstep" | "terror" | "raise" | "forcedmarch" | "bless" | "mend";
+
+// One slot of an army: `n` of the same thing, standing together. `hp`/`maxHp`
 // are the whole stack's, so a stack is one body with everything combined.
-// `rooms` is how many it has lived through; only veterancy reads it.
 export type Unit = {
   id: number;
   creature: CreatureId;
   n: number;
   hp: number;
   maxHp: number;
-  rooms: number;
 };
 
 // The last time the dead got up, so the map can make a moment of it
@@ -46,14 +52,16 @@ export type BattleUnit = {
   faction: Faction;
   // Bodies still standing in this slot. It is *derived*: `hp` is the slot's pool
   // and `each` is what one body holds, so damage kills bodies out of it and
-  // `n` falls with them. Five rats at 10 taking 30 leaves two rats.
+  // `n` falls with them. Five skeletons at 10 taking 30 leaves two skeletons.
   n: number;
   each: number; // what one body of this slot holds
   hp: number; // the pool, all of them together
   maxHp: number; // what the slot walked in with, so the bar shows what it lost
   dmg: number; // what ONE body hits for; the blow is this times `n`
-  slot: number; // place in its own line, front first, and the order it swings in
-  tier: number;
+  slot: number; // place in its own line, front first, and how ties are broken
+  // The battle-clock tick it swings on next. Every body keeps its own, so how
+  // often a slot acts is its speed and nothing else.
+  ready: number;
   withered: number;
 };
 
@@ -65,20 +73,24 @@ export type Battle = {
   units: BattleUnit[];
   hit: Hit[];
   mend: Hit[]; // who got put back together this turn, and by how much
-  // Whose line swings first this fight, decided on the way in by who brought
-  // more bodies. The two sides then alternate, one blow a side.
-  lead: Faction;
-  next: Faction;
-  cursor: Record<Faction, number>;
-  round: number; // one exchange: a blow from each side
+  // The fight's own clock, in ticks. Nobody takes turns: the next blow is
+  // whoever is due soonest, and a body is due by its own speed.
+  clock: number;
+  at: number; // the view tick the last blow landed on, so it can flash it
+  round: number; // beats elapsed - `clock` over `beatTicks`, for the cap and the header
   log: string[];
   done: "" | "win" | "loss";
-  healed: number; // what the room gave the army back, for the board to show
-  taken: number[]; // stacks out of this room that are yours now, however they got up
+  // Who walked in. The engine always puts the mover in the "player" line, so
+  // everything read from outside the fight has to come back through this.
+  mover: Faction;
+  // Whether the other line has a hero behind it. A garrison does not, and losing
+  // to a hero costs him his whole army rather than a node.
+  foeHero: boolean;
+  // Set once a spell has been cast into this fight's window, so the sheet knows
+  // what is still open
+  castPre: boolean;
+  castPost: boolean;
   nextId: number;
-  // What you had bought when this fight started. Carried on the battle because a
-  // blow is resolved without the game state to hand.
-  perks: Perks;
 };
 
 export type MapNode = {
@@ -86,124 +98,145 @@ export type MapNode = {
   col: number;
   row: number;
   kind: NodeKind;
-  tier: number;
-  foes: CreatureId[];
+  tier: number; // authored by the map, not derived from where it sits
+  owner: Owner;
+  garrison: CreatureId[]; // what stands here, whoever it belongs to
+  buff: BuffId | null; // a shrine's own, rolled once at generation
+  claimed: number; // the week its buff was last taken, so it cannot be taken twice
+  sealed: boolean; // a key opens it, once, for whoever spends one
   links: number[]; // orthogonal only
-  state: NodeState;
+  // Terrain sticks once seen; owner and garrison are only live inside sight, so
+  // what is drawn outside it is what was true the last time anyone looked.
+  seen: boolean;
+  knownOwner: Owner;
+  knownGarrison: number; // how many bodies were standing when last seen
   lore: number | null;
 };
 
-// One army, one token. Everything that used to belong to a force is here now:
-// there is only ever the one, and you lose when it is gone.
+// A hero: a token, a line of bodies, a purse and a spellbook. Both sides are
+// this same shape - the only asymmetry is the family it fields and the three
+// spells that come with it.
+export type Hero = {
+  faction: Faction;
+  family: Family;
+  at: number; // the node it stands in
+  moves: number; // movement points left this turn
+  reserve: Unit[];
+  mana: number;
+  res: Record<Resource, number>;
+  buffs: Partial<Record<BuffId, number>>; // the week each was claimed on
+  route: number[]; // what it still has to walk, drawn while it walks
+};
+
+export type Phase = "player" | "enemy" | "fight" | "spoils" | "over";
+
 export type GameState = {
   seed: number;
   rng: number;
-  time: number;
   nodes: MapNode[];
-  reserve: Unit[];
-  at: number; // the room it stands in
-  route: number[]; // the rooms it still has to walk through
-  mode: ArmyMode;
-  next: number; // the tick the current step finishes on
+  you: Hero;
+  foe: Hero;
+  turn: number; // turns taken; a week is TUNING.weekTurns of them
+  phase: Phase;
   battle: Battle | null;
-  rooms: number;
+  view: number; // a tick counter the view animates off; the rules are turns
+  next: number; // the view tick the current step or blow lands on
   nextUnit: number;
-  xp: number;
-  level: number;
-  unspent: number;
-  mana: number; // what asking costs; the ceiling is what you have built up to
-  taken: number[]; // the nodes of the tree that are bought
-  powers: string[]; // what has been drafted this run, in the order it was taken
-  // What is on the table right now. It lives here rather than on the ui, or a
-  // reload in the middle of a level-up would deal a fresh hand.
-  offer: string[];
-  rerolls: number;
-  res: Record<Resource, number>;
+  difficulty: number; // what the enemy's income is multiplied by; 1 is fair
   risen: Risen | null;
   seenLore: number[];
   loreQueue: number[];
-  cleared: number;
-  lost: number;
   log: string[];
   over: "" | "dead" | "won";
 };
 
 export const TUNING = {
-  // One army walks this now, so it is sized to be chosen from rather than
-  // covered: centre to the furthest corner is six steps against six tiers
+  // Two thrones at opposite corners, and the contested ground is the middle
   mapCols: 7,
   mapRows: 7,
-  holeChance: 0.16,
-  tiers: 6,
+  holeChance: 0.14,
+  tiers: 7,
 
-  // Ticks. The clock runs at TICK_MS a tick, multiplied by the speed control.
-  marchTicks: 5,
-  turnTicks: 5,
-  spoilsTicks: 45,
-  idlePoll: 10,
-  // An exchange is a blow from each side, so this is a real ceiling on a fight
-  // however many bodies are standing in it
-  maxRounds: 150,
+  // A turn is a hero's whole move. Every this many of them, everything anybody
+  // holds makes what it makes.
+  weekTurns: 7,
+  // Steps a hero gets per turn. Flat: what you carry never slows you down, so
+  // the roster is a fight decision and never a map tax.
+  movePoints: 4,
 
-  // What a room you take gives every body that lived through it back, as a share
-  // of what it can hold. Nothing else heals without a node of the tree.
-  restFrac: 0.25,
+  // How far a hero sees. Terrain outside it stays whatever it was; owners and
+  // garrisons out there are memories, and memories go stale.
+  sight: 2,
 
-  // Slots, not bodies. The root of the tree is worth one, so a run opens on four
-  // and the opening band already fills three of them.
-  baseCap: 3,
-  xpPerLevel: 22,
+  // A city is this many nodes around its throne, and the throne is reachable
+  // only through them - so taking one is a campaign rather than a sprint.
+  cityRing: 1,
 
-  // What a level-up puts on the table, and how deep one of them can be stacked
-  // before it leaves the pool. A common drawn against a rare, so a rule stays
-  // something you remember getting.
-  offerCount: 3,
-  powerStack: 3,
-  commonWeight: 4,
+  // Ticks inside a fight. Nothing on the map runs on these any more.
+  beatTicks: 30,
+  speedBase: 10,
+  maxRounds: 40,
 
-  // A node of the tree, priced by how far out it stands. Distance is the whole
-  // of the gate now that the board is neutral.
-  nodeBase: 3,
-  nodeStep: 3,
+  // Slots, not bodies. Depth in a slot is free; breadth is what this counts.
+  slots: 7,
+  // Bodies each hero opens holding, at the second rung of its own ladder. Enough
+  // to take the soft ground next to home and not enough to take anything else.
+  openBand: 8,
 
-  // What you can spend on the dead, and what a room you take gives back of it
-  manaBase: 12,
-  manaRegen: 0.4,
-  // What unmaking a body pays back. Always less than the cheapest thing there
-  // is, so selling is a slot you wanted, never a profit.
-  sellMana: 1,
+  // What one body costs in gold to pull out of a garrison and into the marching
+  // line, per tier. The only thing gold is for, so it is what stops a hero
+  // hoovering every node it walks past - a week's income buys roughly a third of
+  // a week's growth, and choosing which third is the whole of the decision.
+  mobilizeGold: 8,
+  // What a mine pays, and what the AI prices one at when it is deciding
+  mineGold: 45,
 
-  raiseChance: 0.12,
-  riseTicks: 24,
-  // What a sealed room hands over outright, on top of whatever fell in it
-  giftBodies: 2,
+  // Hero spell points. A cap, a trickle every turn, and a full pour at your own
+  // city - so mana is a rhythm rather than a hoard.
+  manaCap: 30,
+  manaTurn: 3,
+  // What the three cost. Raise is per body; the rest are flat. Set against each
+  // other on purpose: one turn's mana must not comfortably cover a pre-fight
+  // buff *and* the raise afterwards, or the buff is never a decision.
+  raiseMana: 1,
+  hexMana: 9,
+  mendMana: 16,
+  stepMana: 12,
 
-  swarmPerAlly: 2,
-  swarmCap: 10,
+  // What one mending puts back, as a share of what each surviving slot can hold.
+  // A full heal for one flat cost is worth several times what a raise is, and
+  // the probe read it straight off: 34.5% against a fair mirror of 55.9%.
+  mendFrac: 0.25,
+
+  // What a pre-fight spell is worth, and for how long a shrine's is
+  blessPct: 25,
+  terrorPct: 35,
+  vigorPct: 15,
+  wardPct: 15,
+  hastePoints: 2,
+  // The most any percentage is allowed to be worth, so no stack of them ever
+  // makes a thing untouchable
+  softCap: 45,
+
   bulwarkCut: 0.5,
   witherCut: 0.85,
   witherTurns: 3,
-  // The most any percentage perk is allowed to be worth, so no stack of them
-  // ever makes a thing untouchable
-  softCap: 45,
   siphonHeal: 5,
-  // What a wisp will not spend of itself. It gives until it is nearly out and
-  // then stops, so it burns down rather than going out mid-fight.
   siphonFloor: 8,
   rendBonus: 6,
   tollDamage: 14,
-  // What the dark takes out of a withered thing every time it swings anyway
-  rotDamage: 6,
-  splitTiers: 1,
 
-  // The most rooms a body is ever paid for living through. Uncapped - or capped
-  // too high - a long run turns veterancy into a number nothing else on the
-  // board can answer, and the arm holding it is simply the answer.
-  vetCap: 6,
+  // How much better than theirs a hero wants to be before it walks into a fight
+  // it could avoid
+  aiMargin: 1.15,
+  // Bodies a bot will never march out of its own throne carrying. The rules let
+  // anyone strip a capital bare; only a player should ever actually do it.
+  throneKeep: 2,
+  // Weeks of its own production a node will hold before the rest is lost. This
+  // is the answer to the stalemate the probe found: without it a capital grows a
+  // garrison faster than any army can grow to break it.
+  stockWeeks: 4,
 
-  // Bodies in a room before depth starts adding to them
-  roomBase: 3,
-  tierHp: 5,
   logLines: 40,
 };
 
@@ -212,157 +245,270 @@ export type Template = {
   short: string;
   role: string; // what it is for, in one word
   family: Family;
-  // Roughly how deep it belongs. Nothing under `abilityTier` carries an
-  // ability at all: the shallow end of the map is bodies, not rules.
-  tier: number;
+  tier: number; // 1..7, and the whole of how strong it is
   glyph: string;
-  color: number;
   hp: number;
   dmg: number;
-  xp: number;
-  mana: number; // what asking this one back costs; 0 is one that never answers
+  // How often it swings, against `TUNING.speedBase` for one blow a beat. Tier
+  // sets the budget; speed only spreads it, so a quicker body of a tier hits
+  // softer and the ladder still climbs.
+  speed: number;
   // A wall. Every blow against its side lands on one of these while any is
   // standing, which is the only thing that decides who gets hit.
   taunt: boolean;
   ability: AbilityId | null;
-  // What it is when it gets up, if it is not itself. Nothing living joins you
-  // as it was; it comes back as whatever the dark makes of it.
+  // What this comes back as. Nothing joins the dead as it was: a human rises as
+  // the undead of its own tier, and so does anything wild.
   rises?: CreatureId;
   tag: string;
 };
 
-// Nothing shallower than this carries an ability. A check holds the table to it.
-export const ABILITY_TIER = 1;
+// Nothing shallower than this carries an ability at all: the bottom of the
+// ladder is bodies and the top is rules. A check holds the table to it.
+export const ABILITY_TIER = 4;
 
-// color is an index into PALETTE, and no two of them share one
+// Colour is the faction and nothing else - nobody was ever going to learn
+// nineteen of them, and on a two-army map what you need to read first is whose
+// it is. The glyph carries the tier.
+export const FAMILY_COLOR: Record<Family, number> = { undead: 22, human: 16, wild: 11 };
+
+// Both ladders climb the same budget - hp times what a body lands over a beat -
+// and the two families spend it differently: the dead are slower and hold more,
+// the living are quicker and hold less.
+// One rung, one set of numbers. A tier's hp/dmg/speed is the *same* for both
+// ladders, and a check holds it that way - two families whose stats differ at
+// all cannot be balanced by tuning, because in a fight of many slots a small
+// edge compounds into every blow after it. Three separate calibrations chased
+// that and every one of them came back lopsided.
+//
+// What actually makes the two sides different is the ability on a rung and the
+// three spells behind the hero. Those are one number each to tune, and neither
+// of them compounds.
+export const TIER_STATS: Record<number, { hp: number; dmg: number; speed: number }> = {
+  1: { hp: 11,  dmg: 2,  speed: 10 },
+  2: { hp: 19,  dmg: 3,  speed: 11 },
+  3: { hp: 28,  dmg: 5,  speed: 12 },
+  4: { hp: 42,  dmg: 8,  speed: 11 },
+  5: { hp: 60,  dmg: 12, speed: 10 },
+  6: { hp: 92,  dmg: 17, speed: 11 },
+  7: { hp: 136, dmg: 26, speed: 12 },
+};
+
 export const CREATURES: Record<CreatureId, Template> = {
-  // beasts: cheap, many, and they hit before they think
-  crow:     { name: "Carrion Crow", short: "Crow",   role: "flock",  family: "beast",  tier: 0, glyph: "⸙", color: 9,  hp: 18,  dmg: 7,  xp: 6,  mana: 2, taunt: false, ability: null,      tag: "" },
-  rat:      { name: "Plague Rat",   short: "Rat",    role: "swarm",  family: "beast",  tier: 1, glyph: "⚇", color: 15, hp: 22,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: "swarm",   tag: "+2 dmg per ally" },
-  hound:    { name: "Grave Hound",  short: "Hound",  role: "hunter", family: "beast",  tier: 1, glyph: "⋒", color: 14, hp: 30,  dmg: 13, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
-  moth:     { name: "Grave Moth",   short: "Moth",   role: "hex",    family: "beast",  tier: 2, glyph: "⫙", color: 16, hp: 26,  dmg: 6,  xp: 10, mana: 3, taunt: false, ability: "wither",  tag: "blunts their blows" },
-  boar:     { name: "Tomb Boar",    short: "Boar",   role: "wall",   family: "beast",  tier: 3, glyph: "⟁", color: 13, hp: 60,  dmg: 9,  xp: 18, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
+  // undead: what you field. Every one of them was theirs once.
+  skeleton:    { name: "Rattlebones",  short: "Bones",  role: "rank",   family: "undead", tier: 1, glyph: "☠", ...TIER_STATS[1], taunt: false, ability: null,      tag: "" },
+  shambler:    { name: "Shambler",     short: "Shambr", role: "meat",   family: "undead", tier: 2, glyph: "⩌", ...TIER_STATS[2], taunt: false, ability: null,      tag: "" },
+  wraith:      { name: "Barrow Wraith",short: "Wraith", role: "hunter", family: "undead", tier: 3, glyph: "⸙", ...TIER_STATS[3], taunt: false, ability: null,      tag: "" },
+  vampire:     { name: "Vampire",      short: "Vampir", role: "eater",  family: "undead", tier: 4, glyph: "♠", ...TIER_STATS[4], taunt: false, ability: "siphon",  tag: "moves its life into the worst hurt" },
+  lich:        { name: "Lich",         short: "Lich",   role: "hex",    family: "undead", tier: 5, glyph: "◉", ...TIER_STATS[5], taunt: false, ability: "wither",  tag: "blunts their blows" },
+  dreadknight: { name: "Dread Knight", short: "Dread",  role: "wall",   family: "undead", tier: 6, glyph: "⟁", ...TIER_STATS[6], taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
+  bonewyrm:    { name: "Bone Wyrm",    short: "Wyrm",   role: "the end",family: "undead", tier: 7, glyph: "⫙", ...TIER_STATS[7], taunt: false, ability: "toll",    tag: "hurts all of them when it falls" },
 
-  // undead: slower, harder to put down, and they were already yours once
-  skeleton: { name: "Rattlebones",  short: "Bones",  role: "rank",   family: "undead", tier: 0, glyph: "☠", color: 17, hp: 24,  dmg: 5,  xp: 6,  mana: 2, taunt: false, ability: null,      tag: "" },
-  zombie:   { name: "Shambler",     short: "Shambr", role: "meat",   family: "undead", tier: 0, glyph: "⩌", color: 21, hp: 34,  dmg: 4,  xp: 7,  mana: 2, taunt: false, ability: null,      tag: "" },
-  ghoul:    { name: "Ghoul",        short: "Ghoul",  role: "eater",  family: "undead", tier: 1, glyph: "♠", color: 11, hp: 34,  dmg: 10, xp: 12, mana: 3, taunt: false, ability: "rend",    tag: "+6 vs wounded" },
-  wisp:     { name: "Corpse Wisp",  short: "Wisp",   role: "mender", family: "undead", tier: 2, glyph: "◉", color: 23, hp: 28,  dmg: 4,  xp: 12, mana: 3, taunt: false, ability: "siphon",  tag: "gives itself to the worst hurt" },
-  knight:   { name: "Bone Knight",  short: "Knight", role: "wall",   family: "undead", tier: 3, glyph: "⌤", color: 22, hp: 55,  dmg: 6,  xp: 16, mana: 4, taunt: true,  ability: "bulwark", tag: "a wall, and halves what it takes" },
-  warden:   { name: "Tomb Warden",  short: "Warden", role: "guard",  family: "undead", tier: 4, glyph: "⛨", color: 19, hp: 80,  dmg: 8,  xp: 20, mana: 5, taunt: true,  ability: "toll",    tag: "a wall, and hurts all when it falls" },
+  // living: theirs, and every rung of it has its counterpart above. Same
+  // numbers, different rules - a swordsman bites the wounded where a vampire
+  // drinks, and a priest gives itself where a lich hexes.
+  levy:        { name: "Levy",         short: "Levy",   role: "fodder", family: "human",  tier: 1, glyph: "⛑", ...TIER_STATS[1], taunt: false, ability: null,      rises: "skeleton",    tag: "" },
+  archer:      { name: "Archer",       short: "Archer", role: "shot",   family: "human",  tier: 2, glyph: "⭦", ...TIER_STATS[2], taunt: false, ability: null,      rises: "shambler",    tag: "" },
+  footman:     { name: "Footman",      short: "Footmn", role: "rank",   family: "human",  tier: 3, glyph: "⟎", ...TIER_STATS[3], taunt: false, ability: null,      rises: "wraith",      tag: "" },
+  swordsman:   { name: "Swordsman",    short: "Sword",  role: "blade",  family: "human",  tier: 4, glyph: "†", ...TIER_STATS[4], taunt: false, ability: "rend",    rises: "vampire",     tag: "+6 vs wounded" },
+  priest:      { name: "Priest",       short: "Priest", role: "mender", family: "human",  tier: 5, glyph: "☥", ...TIER_STATS[5], taunt: false, ability: "siphon",  rises: "lich",        tag: "gives itself to the worst hurt" },
+  knight:      { name: "Knight",       short: "Knight", role: "wall",   family: "human",  tier: 6, glyph: "⌤", ...TIER_STATS[6], taunt: true,  ability: "bulwark", rises: "dreadknight", tag: "a wall, and halves what it takes" },
+  seraph:      { name: "Seraph",       short: "Seraph", role: "the end",family: "human",  tier: 7, glyph: "★", ...TIER_STATS[7], taunt: false, ability: "toll",    rises: "bonewyrm",    tag: "hurts all of them when it falls" },
 
-  // living: they are somebody else's until they are yours, and then they are bones
-  peasant:  { name: "Villager",     short: "Villgr", role: "fodder", family: "living", tier: 0, glyph: "⛑", color: 10, hp: 16,  dmg: 3,  xp: 4,  mana: 2, taunt: false, ability: null,      rises: "skeleton", tag: "" },
-  guard:    { name: "Vault Guard",  short: "Guard",  role: "wall",   family: "living", tier: 2, glyph: "⟎", color: 12, hp: 45,  dmg: 9,  xp: 16, mana: 4, taunt: true,  ability: null,      rises: "skeleton", tag: "a wall" },
-
-  ossuary:  { name: "The Ossuary",  short: "Ossuar", role: "the end",family: "undead", tier: 5, glyph: "⚱", color: 20, hp: 130, dmg: 15, xp: 60, mana: 0, taunt: false, ability: "split",   tag: "splits when broken" },
+  // wild: bandits and beasts. Nobody's, never produced, and they do not come
+  // back once a node has been taken off them - so the map is a finite thing to
+  // clear rather than a field to farm. Softer than a rung of either ladder,
+  // because they are the ground you cross and not an army.
+  rat:         { name: "Plague Rat",   short: "Rat",    role: "swarm",  family: "wild",   tier: 1, glyph: "⚇", hp: 9,   dmg: 2,  speed: 10, taunt: false, ability: null,      rises: "skeleton",    tag: "" },
+  bandit:      { name: "Bandit",       short: "Bandit", role: "cutter", family: "wild",   tier: 2, glyph: "⟏", hp: 16,  dmg: 3,  speed: 11, taunt: false, ability: null,      rises: "shambler",    tag: "" },
+  wolf:        { name: "Grave Wolf",   short: "Wolf",   role: "hunter", family: "wild",   tier: 3, glyph: "⋒", hp: 24,  dmg: 5,  speed: 12, taunt: false, ability: null,      rises: "wraith",      tag: "" },
+  brigand:     { name: "Brigand",      short: "Brignd", role: "blade",  family: "wild",   tier: 4, glyph: "⬓", hp: 36,  dmg: 8,  speed: 11, taunt: false, ability: "rend",    rises: "vampire",     tag: "+6 vs wounded" },
+  ogre:        { name: "Ogre",         short: "Ogre",   role: "wall",   family: "wild",   tier: 5, glyph: "⩀", hp: 51,  dmg: 12, speed: 10, taunt: true,  ability: "bulwark", rises: "lich",        tag: "a wall, and halves what it takes" },
 };
 
 export const CREATURE_IDS = Object.keys(CREATURES) as CreatureId[];
 
-// Anything that can end up standing in your line. The Ossuary never answers, and
-// nothing living joins you as it was - it joins you as what it rises into.
-export const RAISABLE: CreatureId[] = CREATURE_IDS.filter(
-  (c) => CREATURES[c].mana > 0 && CREATURES[c].family !== "living",
-);
+// The one thing a family is: its ladder, shallowest first. `raiseAs` and every
+// producer read a body out of here by tier, so the 1:1 pairing is one lookup.
+export const LADDER: Record<Family, CreatureId[]> = {
+  undead: CREATURE_IDS.filter((c) => CREATURES[c].family === "undead").sort((a, z) => CREATURES[a].tier - CREATURES[z].tier),
+  human: CREATURE_IDS.filter((c) => CREATURES[c].family === "human").sort((a, z) => CREATURES[a].tier - CREATURES[z].tier),
+  wild: CREATURE_IDS.filter((c) => CREATURES[c].family === "wild").sort((a, z) => CREATURES[a].tier - CREATURES[z].tier),
+};
 
-// Three bands of depth. Every step out from the gate changes what is in the
-// room, how many of them, or how big they are - which is what makes distance
-// readable without a colour for it.
-export const bandFor = (tier: number) => (tier < 2 ? 0 : tier < 4 ? 1 : 2);
+// What a family fields at a depth. Clamped, because the wild ladder is short and
+// a deep node still has to put somebody in it.
+export const atTier = (f: Family, tier: number): CreatureId => {
+  const line = LADDER[f];
+  return line[Math.min(line.length, Math.max(1, tier)) - 1];
+};
+
+// Bodies a producer of this depth hands its owner each week. Straight off the
+// HoMM curve: the bottom of the ladder arrives by the fistful and the top
+// arrives one at a time, which is the whole of why a high tier is worth holding.
+export const GROWTH = [0, 8, 5, 4, 3, 2, 1, 1];
+export const growthFor = (tier: number) => GROWTH[Math.min(GROWTH.length - 1, Math.max(1, tier))];
 
 export type KindInfo = {
   name: string;
   note: string;
   glyph: string;
-  // The one thing the map is coloured by now. A room says what it is, not how
-  // frightened of it to be - that is what the sheet you open is for.
-  color: number;
-  // What stands in it, by band. An empty pool is a room with nobody in it.
-  pool: [CreatureId[], CreatureId[], CreatureId[]];
-  size: number; // bodies on top of TUNING.roomBase, before depth adds more
-  tierUp: number; // deeper than where it stands
-  key: boolean; // sealed, and a key is what opens it
-  freeRise: boolean; // everything that falls here gets up for nothing
-  gift: CreatureId | null; // what opening it hands you outright
-  gold: number;
+  // What it is chiefly known for, which is what the map and the sheet say it is
+  makes: "bodies" | "gold" | "buff";
+  // The band its own depth is rolled in. A node's tier is written down at
+  // generation and never derived from where it sits.
+  tiers: [number, number];
+  bodies: boolean; // stands `growthFor(tier)` of the owner's family each week
+  gold: number; // and pays this, each week, on top
+  guard: number; // bodies of wild standing in it before anyone takes it
+  seal: boolean; // rolled sealed, and a key is what opens it
+  // Keys handed over the first time it is taken off the wild, and never again -
+  // or a node could be flipped back and forth to farm them. This is the only
+  // source there is, so what a key gates is what taking ground has already paid for.
   keys: number;
 };
 
-const NOBODY: [CreatureId[], CreatureId[], CreatureId[]] = [[], [], []];
-
+// A capital is the economy: a throne and its city pay for the bodies they make,
+// which is the only reason a hero who holds nothing else can still act. Without
+// it the opening is a deadlock - no gold, so no mobilizing, so no army, so no
+// mine, so no gold.
 export const KINDS: Record<NodeKind, KindInfo> = {
-  gate: {
-    name: "THE GATE", note: "where you came in", glyph: "⌂", color: 11,
-    pool: NOBODY, size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 0, keys: 0,
+  throne: {
+    name: "THE THRONE", note: "lose it and it is over", glyph: "♖",
+    makes: "bodies", tiers: [4, 5], bodies: true, gold: 80, guard: 2, seal: false, keys: 0,
   },
-  sewer: {
-    name: "THE SEWERS", note: "it moves in the water", glyph: "≈", color: 21,
-    pool: [["rat", "rat", "crow"], ["rat", "rat", "hound", "crow"], ["rat", "hound", "ghoul"]],
-    size: 1, tierUp: 0, key: false, freeRise: false, gift: null, gold: 2, keys: 0,
+  city: {
+    name: "THE CITY", note: "what stands around the throne", glyph: "⌂",
+    makes: "bodies", tiers: [2, 3], bodies: true, gold: 25, guard: 1, seal: false, keys: 1,
   },
-  village: {
-    name: "THE VILLAGE", note: "they were alive this morning", glyph: "▤", color: 10,
-    pool: [["peasant", "peasant"], ["peasant", "peasant", "guard"], ["peasant", "guard", "guard"]],
-    size: 1, tierUp: 0, key: false, freeRise: false, gift: null, gold: 3, keys: 1,
+  hamlet: {
+    name: "THE HAMLET", note: "they were alive this morning", glyph: "▤",
+    makes: "bodies", tiers: [1, 2], bodies: true, gold: 0, guard: 0, seal: false, keys: 0,
   },
-  wilds: {
-    name: "THE WILDS", note: "something keeps it fed", glyph: "♣", color: 14,
-    pool: [["crow", "hound"], ["hound", "moth", "crow"], ["hound", "moth", "boar"]],
-    size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 2, keys: 0,
+  barracks: {
+    name: "THE BARRACKS", note: "somebody drilled here", glyph: "▥",
+    makes: "bodies", tiers: [3, 4], bodies: true, gold: 0, guard: 1, seal: false, keys: 1,
   },
-  barrow: {
-    name: "THE BARROW", note: "they were expecting us", glyph: "⚉", color: 15,
-    pool: [["skeleton", "ghoul"], ["ghoul", "zombie", "knight"], ["knight", "warden", "ghoul"]],
-    size: 1, tierUp: 1, key: false, freeRise: false, gift: null, gold: 4, keys: 1,
+  keep: {
+    name: "THE KEEP", note: "sealed, and well looked after", glyph: "⛶",
+    makes: "bodies", tiers: [5, 7], bodies: true, gold: 0, guard: 1, seal: true, keys: 0,
   },
-  graves: {
-    name: "THE GRAVEYARD", note: "the dead here rise easily", glyph: "⛼", color: 22,
-    pool: [["skeleton", "ghoul"], ["skeleton", "zombie", "ghoul"], ["zombie", "ghoul", "knight"]],
-    size: 0, tierUp: 0, key: false, freeRise: true, gift: null, gold: 2, keys: 0,
+  mine: {
+    name: "THE MINE", note: "it pays every week", glyph: "⧇",
+    makes: "gold", tiers: [1, 3], bodies: false, gold: 45, guard: 0, seal: false, keys: 0,
   },
-  crypt: {
-    name: "THE CRYPT", note: "sealed, and somebody is still in there", glyph: "♖", color: 19,
-    pool: [["skeleton", "knight"], ["knight", "ghoul"], ["knight", "warden"]],
-    size: 0, tierUp: 0, key: true, freeRise: true, gift: "knight", gold: 4, keys: 0,
-  },
-  vault: {
-    name: "THE VAULT", note: "sealed, and well looked after", glyph: "⧇", color: 16,
-    pool: [["guard", "guard"], ["guard", "guard", "knight"], ["guard", "warden", "knight"]],
-    size: 1, tierUp: 1, key: true, freeRise: false, gift: null, gold: 12, keys: 0,
-  },
-  boss: {
-    name: "THE OSSUARY", note: "everything you dismissed", glyph: "⚱", color: 20,
-    pool: [["ossuary", "warden"], ["ossuary", "warden"], ["ossuary", "warden"]],
-    size: 0, tierUp: 0, key: false, freeRise: false, gift: null, gold: 20, keys: 0,
+  shrine: {
+    name: "THE SHRINE", note: "come back for it", glyph: "⊡",
+    makes: "buff", tiers: [1, 2], bodies: false, gold: 0, guard: 0, seal: false, keys: 0,
   },
 };
 
-// What a room draws from at the depth it stands at
-export const poolFor = (kind: NodeKind, tier: number) => KINDS[kind].pool[bandFor(tier)];
+export const KIND_IDS = Object.keys(KINDS) as NodeKind[];
 
-// What depth is worth to a body standing in the room, and to its blow. Read by
-// the board that builds the fight and by the sheet you open before walking in.
-export const tierHpFor = (tier: number) => tier * TUNING.tierHp;
-export const tierDmgFor = (tier: number) => Math.floor(tier / 2);
-// A room fills up as it gets further out, a step behind the pool it draws from
-export const tierGrow = (tier: number) => (tier >= 5 ? 2 : tier >= 3 ? 1 : 0);
+// Everything a cell that is not a throne or a city can turn out to be. `keep` is
+// one roll in seven, so the deep end of the ladder is worth walking to.
+export const KIND_ROLL: NodeKind[] = ["hamlet", "hamlet", "barracks", "barracks", "mine", "shrine", "keep"];
+// What the mirrored skeleton is made of. Topology, the thrones, the deep
+// producers and the mines - the things whose imbalance compounds every week.
+export const MIRRORED: NodeKind[] = ["keep", "mine"];
 
-// What a run opens with: one thing, several of it. The same body three times is
-// a slot, and a slot is what an army is made of now - so the gate hands you a
-// build to deepen rather than a spread to sort out.
-export const START_POOL: CreatureId[] = ["rat", "moth", "skeleton", "zombie"];
-export const START_BAND = 3;
+export type BuffInfo = { name: string; note: string; glyph: string };
 
-// The sealed rooms are one roll in nine each, so a key is worth carrying and
-// worth spending on the right door
-export const KIND_ROLL: NodeKind[] = [
-  "sewer", "sewer", "village", "wilds", "wilds", "barrow", "graves", "crypt", "vault",
-];
+export const BUFFS: Record<BuffId, BuffInfo> = {
+  vigor: { name: "VIGOR", note: "your blows land harder", glyph: "▲" },
+  ward: { name: "WARD", note: "their blows land softer", glyph: "⛨" },
+  haste: { name: "HASTE", note: "you cover more ground", glyph: "►" },
+};
 
-// What the first ring out from the gate is allowed to be. A run that opens
-// surrounded by doors it has no key for is a run with nowhere to go.
-export const OPEN_ROLL: NodeKind[] = KIND_ROLL.filter((k) => !KINDS[k].key);
+export const BUFF_IDS = Object.keys(BUFFS) as BuffId[];
+
+export type SpellInfo = {
+  name: string;
+  note: string; // the card face, at a card's width
+  desc: string; // the whole rule, in plain words
+  glyph: string;
+  family: Family;
+  window: SpellWindow;
+  mana: number; // 0 means it is priced per body instead
+};
+
+// Three windows, three roles, one spell each per family - so neither side is
+// structurally short of an answer in any phase of a turn. Mana is the only
+// limit on any of them.
+export const SPELLS: Record<SpellId, SpellInfo> = {
+  shadowstep: {
+    name: "SHADOW STEP", note: "step to your own ground", glyph: "⭦",
+    desc: "Move at once to any node you hold. The dead walk their own country unseen.",
+    family: "undead", window: "map", mana: TUNING.stepMana,
+  },
+  terror: {
+    name: "TERROR", note: "blunt their blows", glyph: "⸬",
+    desc: "Everything standing against you swings softer for the whole of the fight to come.",
+    family: "undead", window: "pre", mana: TUNING.hexMana,
+  },
+  raise: {
+    name: "RAISE", note: "the fallen, at their own tier", glyph: "☠",
+    desc: "What fell here gets up as the undead of its own depth. Priced per body, and the corpses are gone at the end of your turn.",
+    family: "undead", window: "post", mana: 0,
+  },
+  forcedmarch: {
+    name: "FORCED MARCH", note: "further, this turn", glyph: "►",
+    desc: "More ground this turn than the day has in it. The living can be made to hurry.",
+    family: "human", window: "map", mana: TUNING.stepMana,
+  },
+  bless: {
+    name: "BLESS", note: "sharpen your own", glyph: "☥",
+    desc: "Everything of yours swings harder for the whole of the fight to come.",
+    family: "human", window: "pre", mana: TUNING.hexMana,
+  },
+  mend: {
+    name: "MEND", note: "put them back together", glyph: "♡",
+    desc: "What lived through the fight is made whole again, as far as the mana goes.",
+    family: "human", window: "post", mana: TUNING.mendMana,
+  },
+};
+
+export const SPELL_IDS = Object.keys(SPELLS) as SpellId[];
+
+// A family's three, in window order, so a spellbook is always drawn the same way
+export const spellsOf = (f: Family): SpellId[] =>
+  SPELL_IDS.filter((s) => SPELLS[s].family === f).sort(
+    (a, z) => WINDOW_ORDER.indexOf(SPELLS[a].window) - WINDOW_ORDER.indexOf(SPELLS[z].window),
+  );
+
+export const WINDOW_ORDER: SpellWindow[] = ["map", "pre", "post"];
+
+// Ticks a body waits between its own blows. Speed is the whole of it: at
+// `speedBase` that is one beat, and at double it is half a beat.
+export const coolFor = (speed: number) =>
+  Math.max(1, Math.round((TUNING.beatTicks * TUNING.speedBase) / speed));
+// What a body is actually worth over a beat, which is the only honest way to
+// read a blow now that a slow one lands a third as often
+export const dmgPerBeat = (dmg: number, speed: number) =>
+  Math.round((dmg * speed) / TUNING.speedBase);
+// What a speed reads as where a sheet has room for a word and not a number
+export const speedWord = (speed: number) =>
+  speed * 10 >= TUNING.speedBase * 13 ? "quick" : speed * 10 <= TUNING.speedBase * 7 ? "slow" : "steady";
+
+// What one body of a creature is worth, as one number. Both AIs sort by it, the
+// pre-fight sheet ranks a garrison against your line with it, and the mirror
+// probe uses it to decide whether a map handed one side the better half.
+export const worthOf = (c: CreatureId) => {
+  const t = CREATURES[c];
+  // A wall is worth twice what its sheet says, because nothing behind it can be
+  // touched until it is down
+  const soak = t.hp * (t.ability === "bulwark" ? 2 : 1);
+  // What it can take *times* what it deals, never the two added. Added
+  // underprices speed - and speed is the one axis the two families differ on, so
+  // an additive price quietly told the slow army it was 11% stronger than it was
+  // and it spent the whole game picking fights it could not win.
+  return Math.max(1, Math.round((soak * t.dmg * t.speed) / TUNING.speedBase));
+};
+
+// What pulling one body out of a garrison costs, by what it is
+export const mobilizeCost = (c: CreatureId) => TUNING.mobilizeGold * CREATURES[c].tier;
+// What asking one body back off the floor costs
+export const raiseCost = (c: CreatureId) => TUNING.raiseMana * CREATURES[c].tier;
 
 export const RES_IDS: Resource[] = ["gold", "keys"];
 
@@ -371,22 +517,21 @@ export const RESOURCES: Record<Resource, { short: string; glyph: string; color: 
   keys: { short: "keys", glyph: "⚷", color: 22 },
 };
 
-// What stands on the map is still him, whatever it is made of: he does not
-// fight any more, but the token you move is the necromancer. His colour is his
-// alone - a check holds it against every room on the board, because a token that
-// wears a room's colour is a token you lose on the map.
-export const ARMY_GLYPH = "🕱";
-export const ARMY_COLOR = 23;
+// The two tokens on the board. Neither of them fights - a hero is the line
+// behind him - and neither may wear a family's colour, or a token reads as a
+// node you lose it on. A check holds all of it.
+export const HERO_GLYPH: Record<Faction, string> = { player: "🕱", enemy: "♦" };
+export const HERO_COLOR: Record<Faction, number> = { player: 23, enemy: 15 };
+
+// Whose a node is, wherever a node is drawn. Colour is the whole of it.
+export const OWNER_COLOR: Record<Owner, number> = { none: 11, player: 22, enemy: 16 };
+
 // A wall is worth marking wherever a body is listed, because it is the one
 // thing that decides who gets hit
 export const TAUNT_GLYPH = "⛨";
 
-// A body that is down. It is the same skull Rattlebones wears, which is the
-// joke: the difference is the colour, and grey is what dead looks like here.
+// A body that is down. The same skull Rattlebones wears, which is the joke.
 export const DOWN_GLYPH = "☠";
-
-// A node of the tree, as it stands right now: bought, buyable, or still sealed
-export const TREE_GLYPH = { taken: "•", open: "∘", sealed: "⬚" };
 
 // What it costs to ask, wherever that number is shown
 export const MANA_GLYPH = "◇";

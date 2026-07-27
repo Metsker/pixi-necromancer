@@ -1,9 +1,10 @@
 import type { Grid } from "../gfx/grid.ts";
 import {
-  ARMY_COLOR,
-  ARMY_GLYPH,
+  HERO_COLOR,
+  HERO_GLYPH,
   KINDS,
   MANA_GLYPH,
+  OWNER_COLOR,
   RESOURCES,
   RES_IDS,
   TUNING,
@@ -11,22 +12,16 @@ import {
   type MapNode,
   type Point,
 } from "../sim/data.ts";
-import {
-  canOrder,
-  commandCap,
-  bodies,
-  fielded,
-  manaCap,
-  needsKey,
-  reserve,
-  xpNeeded,
-} from "../sim/game.ts";
-import { BTN_ROWS, C, COL, Hits, buttons } from "../ui.ts";
+import { bodies, canMove, foeVisible, inSight, movesFor, untilWeek, weekOf } from "../sim/game.ts";
+import { BTN_ROWS, C, COL, Hits, buttons, cells } from "../ui.ts";
 
-// log, status, asking, resources; the button strip sits below it
+// The week's mark. A quarter-filled square, because that is what it is.
+const WEEK_GLYPH = "◲";
+
+// log, army + moves, mana + week, resources; the button strip sits below it
 export const HUD_ROWS = 4;
 
-// One room step in character cells
+// One node step in character cells
 export const ROOM_W = 6;
 export const ROOM_H = 4;
 
@@ -52,11 +47,11 @@ export function clampCam(cam: Point, cols: number, rows: number): Point {
 }
 
 export function centerOn(g: GameState, cols: number, rows: number): Point {
-  const at = nodeAt(g.nodes[g.at]);
+  const at = nodeAt(g.nodes[g.you.at]);
   return clampCam({ x: at.x - (cols >> 1), y: at.y - (viewRows(rows) >> 1) }, cols, rows);
 }
 
-export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed: number) {
+export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, picking: boolean) {
   const { cols, rows } = grid;
   const view = viewRows(rows);
   const on = (x: number, y: number) => y >= 0 && y < view && x >= 0 && x < cols;
@@ -66,9 +61,8 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     const a = nodeAt(n);
     for (const id of n.links) {
       if (id < n.id) continue;
-      const other = g.nodes[id];
-      const b = nodeAt(other);
-      const color = n.state !== "locked" || other.state !== "locked" ? C.dim : C.frame;
+      const b = nodeAt(g.nodes[id]);
+      const color = n.seen || g.nodes[id].seen ? C.dim : C.frame;
       if (a.y === b.y) {
         for (let x = a.x + 2; x < b.x - 1; x++) {
           if (on(x - cam.x, a.y - cam.y)) grid.put(x - cam.x, a.y - cam.y, "─", color);
@@ -87,48 +81,71 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, speed:
     const y = p.y - cam.y;
     if (y < -1 || y > view || x < -2 || x > cols + 1) continue;
 
-    const here = g.at === n.id;
-    const busy = here && g.mode === "fight";
-    const locked = n.state === "locked";
-    const cleared = n.state === "cleared";
-    // The brackets say whether you can act on it. A sealed room wears the key it
-    // wants in place of one of them, and wears the whole thing red until you are
-    // carrying one - a door you cannot open is not a door you tap by mistake.
-    const sealed = needsKey(n) && n.state !== "locked";
-    const shut = sealed && g.res.keys < 1;
-    const frame = busy
-      ? C.hot
-      : locked
-        ? C.frame
-        : shut
-          ? C.red
-          : canOrder(g, n.id)
+    const here = g.you.at === n.id;
+    // Terrain sticks once seen. Who holds it and what stands in it are only live
+    // inside sight - outside it the board shows what was true when you last
+    // looked, which is why walking somewhere to check is worth a turn.
+    const live = inSight(g, n.id);
+    const owner = live ? n.owner : n.knownOwner;
+    const reach = canMove(g, n.id);
+    // The brackets say whether you can act on it, and the seal says whether a key
+    // is what is in the way. A door you cannot open is not a door you tap by
+    // mistake, so the whole frame goes red until you are carrying one.
+    // A seal is a thing you have to have looked at. Reading it off a node nobody
+    // has been near tells you what is out there for free.
+    const sealed = n.seen && n.sealed;
+    const shut = sealed && g.you.res.keys < 1;
+    const frame = !n.seen
+      ? C.frame
+      : shut
+        ? C.red
+        : picking
+          ? owner === "player"
+            ? C.gold
+            : C.frame
+          : reach
             ? C.cyan
-            : cleared
-              ? C.dim
-              : C.mid;
+            : C.mid;
     if (on(x - 1, y)) grid.put(x - 1, y, sealed ? "[" : "(", frame, C.bg);
-    if (on(x + 1, y)) grid.put(x + 1, y, sealed ? RESOURCES.keys.glyph : ")", frame, C.bg);
-    if (on(x, y)) {
-      // A room is coloured by what kind of room it is, and by nothing else. How
-      // frightened to be of it is what the sheet you open is for.
-      const ink = locked ? C.frame : busy ? C.hot : cleared ? C.dim : COL(KINDS[n.kind].color);
-      grid.put(x, y, locked ? "?" : KINDS[n.kind].glyph, ink, C.bg);
+    if (on(x + 1, y)) {
+      grid.put(x + 1, y, sealed ? RESOURCES.keys.glyph : ")", frame, C.bg);
     }
-    // He stands under the room he is in. How the army is holding up is the
-    // heart in the hud; this is only where you are.
-    if (here && on(x, y + 1)) grid.put(x, y + 1, ARMY_GLYPH, COL(ARMY_COLOR), C.bg);
+    if (on(x, y)) {
+      // Colour is whose it is and the glyph is what it is. On a board with two
+      // armies on it, whose is the thing you have to read first.
+      const ink = !n.seen ? C.frame : COL(OWNER_COLOR[owner]);
+      grid.put(x, y, n.seen ? KINDS[n.kind].glyph : "?", ink, C.bg);
+    }
+    // What is standing in it, under it. A remembered count is dim; one you can
+    // actually see right now is not.
+    const held = live ? n.garrison.length : n.knownGarrison;
+    if (n.seen && held > 0 && !here && on(x, y + 1)) {
+      grid.text(x, y + 1, `${held}`.slice(0, 2), live ? C.mid : C.frame, C.bg);
+    }
+    // The two tokens. Neither of them fights - a hero is the line behind him.
+    if (here && on(x, y + 1)) {
+      grid.put(x, y + 1, HERO_GLYPH.player, COL(HERO_COLOR.player), C.bg);
+    } else if (g.foe.at === n.id && foeVisible(g) && on(x, y + 1)) {
+      grid.put(x, y + 1, HERO_GLYPH.enemy, COL(HERO_COLOR.enemy), C.bg);
+    }
 
-    // Clipped to the map area, so a room just off the bottom cannot eat a hud tap
+    // Clipped to the map area, so a node just off the bottom cannot eat a hud tap
     const top = Math.max(0, y - 1);
     const tall = Math.min(view, y + 2) - top;
-    if (tall > 0) hits.add(x - 1, top, 3, tall, { t: "node", id: n.id });
+    if (tall > 0) {
+      hits.add(x - 1, top, 3, tall, picking ? { t: "target", id: n.id } : { t: "node", id: n.id });
+    }
   }
 
   drawHud(grid, g, view);
+  if (picking) {
+    buttons(grid, hits, [{ label: "CANCEL", act: { t: "close" }, color: C.btnAlt }]);
+    return;
+  }
   buttons(grid, hits, [
-    { label: speed === 0 ? "║" : `x${speed}`, act: { t: "speed" } },
-    { label: `ARMY ${bodies(g)}`, act: { t: "army" } },
+    { label: `ARMY ${bodies(g.you)}`, act: { t: "army" } },
+    { label: `BOOK ${g.you.mana}`, act: { t: "spells" } },
+    { label: `END ${g.you.moves}`, act: { t: "endturn" }, color: g.you.moves > 0 ? C.btnAlt : C.btn },
     { label: "MENU", act: { t: "menu" } },
   ]);
 }
@@ -138,33 +155,41 @@ function drawHud(grid: Grid, g: GameState, y: number) {
   grid.text(0, y, (g.log[g.log.length - 1] ?? "").slice(0, cols), C.dim);
 
   // What the army has left, as one number, because it is the health bar now
-  const troop = reserve(g);
+  const troop = g.you.reserve;
   const hp = `${troop.reduce((s, u) => s + u.hp, 0)}/${troop.reduce((s, u) => s + u.maxHp, 0)}`;
   let x = 0;
   grid.put(x, y + 1, "♥", C.hot);
   grid.text(x + 1, y + 1, hp, C.ink);
-  x += hp.length + 2;
-  grid.put(x, y + 1, "★", C.gold);
-  const lvl = `${g.level + 1}`;
-  grid.text(x + 1, y + 1, lvl, C.ink);
-  x += lvl.length + 2;
+  x += cells(hp) + 2;
   grid.put(x, y + 1, "†", C.violet);
-  grid.text(x + 1, y + 1, `${fielded(g)}/${commandCap(g)}`, C.ink);
+  grid.text(x + 1, y + 1, `${troop.length}/${TUNING.slots}`, C.ink);
 
-  // What is left to ask with, on its own line: it is the number that decides
-  // whether a body on the floor is worth anything
-  const pool = `${g.mana}/${manaCap(g)}`;
+  // Ground left this turn, at the end of its own row - it is the number every
+  // decision on the map is actually against
+  const legs = `►${g.you.moves}/${movesFor(g.you)}`;
+  grid.text(Math.max(x + 6, cols - cells(legs)), y + 1, legs, g.you.moves > 0 ? C.green : C.red);
+
+  const pool = `${g.you.mana}/${TUNING.manaCap}`;
   grid.put(0, y + 2, MANA_GLYPH, C.cyan);
   grid.text(1, y + 2, pool, C.ink);
-  const xp = `xp${g.xp}/${xpNeeded(g)}`;
-  grid.text(Math.max(pool.length + 2, cols - xp.length), y + 2, xp, C.dim);
+
+  // The week rides the end of the mana row rather than taking a line of its own,
+  // and goes gold on the turn before everything anybody holds pays out
+  const due = untilWeek(g);
+  const week = `${WEEK_GLYPH}${weekOf(g.turn) + 1}:${TUNING.weekTurns - due + 1}/${TUNING.weekTurns}`;
+  grid.text(Math.max(cells(pool) + 2, cols - cells(week)), y + 2, week, due > 1 ? C.dim : C.gold);
 
   x = 0;
   for (const r of RES_IDS) {
     const info = RESOURCES[r];
     grid.put(x, y + 3, info.glyph, COL(info.color));
-    const n = `${g.res[r]}`;
+    const n = `${g.you.res[r]}`;
     grid.text(x + 1, y + 3, n, C.mid);
-    x += n.length + 2;
+    x += cells(n) + 2;
   }
+  // What either side holds, so the race is readable without counting the board
+  const mine = g.nodes.filter((n) => n.owner === "player").length;
+  const theirs = g.nodes.filter((n) => n.owner === "enemy").length;
+  const score = `${mine}v${theirs}`;
+  grid.text(Math.max(x, cols - cells(score)), y + 3, score, mine >= theirs ? C.cyan : C.gold);
 }

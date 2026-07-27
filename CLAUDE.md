@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 repository. There is no README - this is the source of truth. When behaviour changes, update
 the matching section here in the same change.
 
-**Gravelight** - a real-time necromancer roguelite drawn as a character grid over PixiJS v8,
+**Gravelight** - a turn-based necromancer conquest game drawn as a character grid over PixiJS v8,
 using the [Dungeon Mode](https://datagoblin.itch.io/dungeonmode) tileset (`dungeonmode/`,
 CC-BY). Mobile first, no build-time assets, deployed to GitHub Pages on push to `main`:
 https://metsker.github.io/pixi-necromancer/
@@ -26,13 +26,17 @@ node scripts/check-layout.ts   # drawing, layout, sheet widths, glyph coverage
 node scripts/check-sim.ts      # rules assertions, then a balance probe bot
 ```
 
-Both `exit 1` on the first failed assertion. `check-sim` ends by autoplaying 60 seeded runs
-per draft arm (plus a greedy arm-agnostic set) and asserting each arm can win, can lose,
-clears >= 10 rooms, is not a walkover, and that no arm wins more than twice as often as the
-worst - all of it on a *fresh board*, which is the run a new player gets. A fifth `whole` probe
-holds every node and only asks that it still terminates and can still be lost. A balance
-regression fails the build, not just a type error. Every `balance` line prints *before* those
-assertions, so a regression shows you the numbers rather than one FAIL.
+Both `exit 1` on the first failed assertion, and every measured line prints *before* it is
+asserted on, so a regression shows you the numbers rather than one FAIL.
+
+`check-sim` runs three probes, all driving **the same greedy brain on both sides** - a bot
+playing a different game from its opponent measures nothing. Probe 1 is balance: 120 seeded
+games, undead against human at difficulty 1.0, asserting the game can be won, can be lost,
+sits inside a 30-70% band, and that no more than a quarter of games fail to finish. Probe 2 is
+the *mirror*: the same family on both sides, which measures the map generator alone - a
+lopsided mirror is a lopsided map, and it is the one thing that could make probe 1 mean
+nothing. Probe 3 sweeps the difficulty slider and asserts it only ever gets harder and spans
+more than 30 points. A balance regression fails the build, not just a type error.
 
 `src/tilemap.ts` and `public/dungeon-mode.png` are generated and gitignored. Nothing compiles
 until `npm run gen` has run at least once.
@@ -42,165 +46,124 @@ until `npm run gen` has run at least once.
 Design intent, verified against the code. Read this before changing rules - most of it is
 load-bearing on some check in `scripts/`.
 
-**The map** is a 7x7 grid of rooms joined N/S/E/W (`TUNING.mapCols/mapRows`), with holes
-punched at `holeChance`, one at a time, and only where the remaining rooms stay connected -
-no repair pass, because that is where a generator quietly starts producing corridors. You
-enter at the centre; tier rises with distance out (`tierForDist`, 6 bands), so difficulty
-radiates rather than descends. The Ossuary sits at whatever room survives furthest from the
-gate. Rooms are `locked` -> `open` (something beside them is cleared) -> `cleared`.
+**It is turn-based, and a week is seven turns.** You spend `TUNING.movePoints` of movement,
+end your turn, the other hero spends its own, and every `TUNING.weekTurns` turns everything
+anybody holds makes what it makes. Movement is **flat** - what you are carrying never slows
+you down, so the roster is a fight decision and never a map tax. `advance(g, ticks)` still
+exists but it is no longer the rules: it is only how a turn is *drawn*, a token crossing a
+cell and blows landing, and there is nothing for it to run while the board is waiting on you.
 
-**A room is a theme, and the theme is the pool.** Every kind is one row of `KINDS` in
-`data.ts` - name, glyph, colour, three tiered pools, size, loot, and the three flags that
-make it interesting (`key`, `freeRise`, `gift`). No two rooms share a colour or a glyph, and
-none of them may wear `ARMY_COLOR`: the map is nothing but colour and glyph now, and a token
-that reads as a room is a token you lose on it. A check holds all three. `sewer` is rats and crows, `village` is
-living peasants who come back as bones, `wilds` is hounds and moths, `barrow` is elite
-(`tierUp: 1`), `graves` gives up all of its dead for free, `crypt` and `vault` are **sealed**
-and cost a key, `boss` is the Ossuary. The map is coloured by *kind* and nothing else -
-`powerOf` still exists, but it prices a room on the sheet you open, it does not paint it.
-Adding a room = one row in `KINDS` plus one entry in `KIND_ROLL`.
+**The map is 7x7, and it is point-symmetric on purpose.** Rotate it 180 degrees and both
+halves match. The **skeleton** is mirrored - the holes and therefore the whole topology, both
+thrones, the deep producers and the mines - because those are the things whose imbalance
+compounds every single week. Everything else is rolled again on the other side, so a map still
+has a character of its own. Fairness stops being emergent the moment node types are authored
+rather than derived, so it has to be *constructed*: that is what makes the mirror probe honest
+rather than a number to tune toward.
 
-**A key is a choice, never a wall.** `needsKey` blocks `canOrder` and `arrive` spends the key
-on the door, not on the room. A sealed room says so on the map itself - it wears `⚷` in
-place of its right bracket, and the whole frame goes red until you are carrying one, because
-the panel behind it is a tap away and the map is not. Nothing sealed is rolled in the first ring (`OPEN_ROLL`), and
-`keepOpen` hands one over if every remaining way on is sealed and the purse is empty - so a
-key gates what is worth taking, never whether the run can go on.
+**A city is a cluster, and its throne is enclosed by it.** Every cell orthogonally around a
+throne is a city node, and neither a throne nor its ring is ever punched out. So a throne is
+reachable *only* through its own city, and "you must fight through the city" is geometry
+rather than a rule anybody has to be told. Take their throne to win; lose yours and it is
+over. A check holds the enclosure over eight seeds.
 
-**One army, no hero, and the same thing shares a slot.** `g.reserve` is everything you have;
-the token on the map is the necromancer but he is not a combatant and has no hit points.
-A run opens on **one slot, `START_BAND` deep** - `rollBand` picks one thing out of
-`START_POOL` and hands you three of it, so the gate gives you a build to deepen rather than a
-spread to sort out. Raising a rat when you hold rats deepens that slot: `Unit.n` goes up and
-`hp`/`maxHp` are the whole stack's. A body joins **at the slot's own size** (`eachHp`), never
-at the template's, so every body in a slot holds the same - that uniformity is what makes
-`maxHp` exactly `n` bodies, and what lets damage kill them one at a time.
-Capacity is `commandCap` counted in **slots** (`fielded`) - four at the gate,
-`TUNING.baseCap` plus the root - so what the cap holds is how many *different* things you can
-field. **Depth is free, breadth is the price.** `roomFor` is the one gate on `raise`: a kind
-it already holds never refuses another, which also means `while (raise(...))` never
-terminates. `bodies()` is the other count, and it is what leads a fight and what crowds a
-blow. A slot is one body on the board with everything summed, so a narrow army hits harder
-than a broad one - concentration is the tactic the arrows used to be. There is exactly one
-army and one order at a time.
+**A node is owned, and what it makes it makes in the owner's family.** `owner` is
+`none | player | enemy`; `garrison` is what stands there, whoever it belongs to. A producer
+stands `growthFor(tier)` bodies **in its own node** each week, at `atTier(family, tier)` - so
+the same barracks gives them footmen and gives you wraiths. That single rule is what makes the
+1:1 ladder load-bearing on the whole economy rather than only on necromancy. Nothing
+accumulates forever: a node holds `TUNING.stockWeeks` of itself and the rest is lost, which is
+the answer to a stalemate probe 1 actually found - uncapped, a capital nobody visits grows a
+garrison faster than any army can grow to break it, and the game simply stops.
 
-Nothing caps how deep one slot goes, and that is **not solved** - but it stopped being
-urgent. A slot cap on its own flattened the arms (42/41/40 against an arm-agnostic 41, free
-bodies outweighing the cards); once bodies started falling out of a slot as it takes damage,
-depth stopped being free at the point it matters and the arms came back to 34/34/35/28. The
-levers, if it goes flat again: a depth cap on `Unit.n`, or free rises (`raiseChance`, `glut`,
-`freeRise`, `gift`) only handing over kinds you do not already hold.
+**The garrison holds the ground for free; marching with it is what costs.** `mobilize` is the
+only thing gold is for, priced by tier, and it is what stops a hero hoovering every node it
+walks past. A week's income buys roughly a third of a week's growth, and choosing *which*
+third is the decision. A throne and its city also pay gold - a capital is the economy, and
+without that the opening is a deadlock: no gold, so no mustering, so no army, so no mine, so
+no gold. The probe found that one on the first run.
 
-**The clock never stops for you** unless a sheet is up. `advance(g, ticks)` drives march,
-fight and spoils off `g.time` vs `g.next`; the speed control is x1/x2/x4/hold. Anything
-`shownPanel()` returns halts the ticker, so nothing you must answer can be missed.
+**Neutrals are the ground you cross, and they never come back.** Bandits and beasts guard
+every node until somebody takes it, and once they are gone they are gone - so the map is a
+finite thing to clear rather than a field to farm. Depth is carried by *what* stands there far
+more than by how many, because the ladder is already exponential.
 
-**A slot is a row of health bars, not one long one.** `BattleUnit.each` is what one body
-holds and `hp` is the pool; `n` is *derived* from the two and falls as the pool drains
-(`standing`). Five rats at ten taking thirty leaves two rats, and `dmg` is what **one** body
-hits for, so the blow is `dmg * n` and two rats hit for two rats. Every ability pays per body
-for the same reason. A wiped slot has `n === 0`, so anything counting the *dead* - xp, what
-rises, what a reap costs - asks `fell` instead, which is what the slot walked in with.
-`settle` writes the survivors back to the roster, shrinking `n` and `maxHp` with them, or a
-slot would heal its dead back at the next room.
+**Two ladders, seven rungs each, and they share one set of numbers.** `TIER_STATS[t]` is the
+hp/dmg/speed of tier `t` for *both* families, and a check holds it there. This is the single
+invariant every balance number rests on, and it was learned the hard way: two ladders whose
+stats differ at all cannot be balanced by tuning, because in a fight of many slots a small
+edge compounds into every blow after it. A uniform 25% speed advantage read as a 20-point
+faction gap, and three separate calibrations - per-tier HP, a shared speed multiset,
+coordinate descent on mixed-ladder duels - every one of them came back lopsided. With the
+stats shared, all four matchups measured fair with every spell switched off.
 
-**A fight** is one blow at a time and the two lines alternate: bringing six against three
-does not buy six blows to three, it buys a deeper bench and (because the bigger line leads on
-*bodies*, ties tossed for) the opening blow. Both lines stack the same way - `stackOf` folds a
-room of four rats into one body of four rats - or a room would get four blows to your one and
-the whole point of a slot would be on your side only. Each side cycles its own line by `slot`, so line order is
-*swing* order - the arrows on the army sheet are how you decide who acts first. Targeting is
-separate: a blow lands on a random living wall (`taunt`, plus everything of yours once
-`wallAll` is drafted) if any is standing, otherwise on a random survivor. `wallCut` deliberately
-does *not* follow `wallAll` - a shield wall changes who is hit, not what a hit is worth, or one
-card puts the soft cap on every body you own. Breaking the wall is the tactic, not sniping.
-`TUNING.maxRounds` exchanges without a result is a loss - a fight that will not end is a
-fight you lost slowly.
+What makes the two sides different is therefore **the ability on a rung and the three spells
+behind the hero**, and neither of those compounds. Nothing under `ABILITY_TIER` carries an
+ability at all, so the bottom of the ladder is bodies and the top is rules.
 
-Opening concentrated is worth about twice opening spread - one slot swinging for three
-bodies every turn against three taking turns - so `TUNING.roomBase` carries a body more than
-it used to. That is the whole of the compensation and it is where to look first if the early
-game reads wrong.
+**Everything living has an undead counterpart at its own depth.** `Template.rises` points at
+it, a check holds the pairing, and `raiseAs` is one lookup because of it. A human tier 6
+Knight comes back as a tier 6 Dread Knight; so does anything wild.
 
-**Two families, and everything on a body is one of them.** `CREATURES[c].family` is `beast`,
-`undead` or `living`, and `Template.tier` says how deep it belongs. Nothing under
-`ABILITY_TIER` carries an ability at all (a check holds the table to it), so the shallow end
-of the map is bodies and the deep end is rules. Nothing `living` ever joins you as it was:
-`raiseAs` turns it into what `Template.rises` says - bones, or a shambler once `zombify` is
-drafted - and `manaCost` prices it by what it becomes.
+**Colour is the family, and the glyph is the rung.** Nineteen bodies against roughly fifteen
+usable palette entries is a wall, not a tuning problem - and nobody was ever going to learn
+nineteen colours anyway. On a board with two armies on it, *whose* is what you have to read
+first, so the same rule runs on the map: colour is the owner, glyph is the kind. Neither hero
+token may wear a family's or an owner's colour, and a check holds all of it.
 
-**Abilities** hang off `CREATURES[c].ability` and resolve through the four hooks in
-`ABILITIES` (`bonus`, `taken`, `onAttack`, `onDeath`): `swarm` (per living *body* on its side,
-paid per body in the slot), `bulwark` (halves what it takes), `wither` (blunts their next
-blows), `siphon` (a wisp moves its *own* life into whoever is worst off and stops at
-`siphonFloor`, so it burns down rather than healing for free), `rend` (bonus vs wounded),
-`toll` (hurts everyone when it falls), `split` (the Ossuary, once). Everything a slot throws
-or takes scales by `n`. Five drafted rules bolt onto the same loop without an ability of their
-own: `swarmAll` (everything of yours crowds), `rendAll` (everything of yours bites the
-wounded), `swarmDead` (the fallen still count toward the crowd), `rot` (a withered enemy pays
-to swing anyway), `spite` (one of theirs falling is felt by the rest).
+**The spellbook is three windows and three roles.** Every spell belongs to exactly one of
+`map`, `pre` and `post`, and each family holds exactly one in each - so neither side is
+structurally short of an answer in any phase of a turn, which is the whole point of designing
+both sides playable. The necromancer steps to his own ground, blunts their blows, and raises
+what fell at its own tier; the human hurries, blesses, and mends. **Mana is the only limit**:
+there is no cast cap, so the balance rests entirely on one turn's mana not comfortably
+covering a pre-fight buff *and* the raise afterwards. Costs are set against each other rather
+than independently. Corpses last only until the end of your turn, so a raise is now-or-never.
 
-**The spoils are the decision.** A won room holds the board open forever (`g.next = HELD`)
-until you leave it. A slot of what fell gets up free (one roll a slot, `raiseChance` +
-`riseLuck`; a `graves` room, a `freeRise` kind, or a drafted `glut`, gives up all of it), and
-a `gift` kind hands over `TUNING.giftBodies` outright - that is what the key bought.
-Everything else must be `reap`ed, a **whole slot at a time**, at `manaCost` x n - and all of
-it lands in one slot, so the only thing that ever refuses it is having no room for its *kind*. Mana is the only real currency - it regenerates a share of its cap per room cleared
-(`manaRegen` + `manaRise`), and `mend` (a dark card) and `reap` come out of the same pool, so
-mending is a body you will not raise. `sell` unmakes **one body off a slot** for `sellMana`,
-always less than the cheapest thing there is: it is a slot you wanted, never a profit, and
-never the last body. What a body has when it gets up is what it has for the run - only a
-cleared room heals (`restFrac` + `restMore`), and only what lived through it.
+Mana is a rhythm, not a hoard: it regenerates `manaTurn` a turn and fills completely in your
+own city, which is what gives the capital a job beyond being a win condition.
 
-**A level-up is a hand of three.** `unspent > 0` with something on the table forces the draft
-sheet up and stops the clock, which is what makes a level a decision instead of a number. The
-hand is rolled in the sim (`rollOffer`) and lives on `g.offer`, **not** on the ui - a reload
-mid-level-up must not deal a fresh hand. `TUNING.offerCount` cards, plus one per `offers` node
-of the board; a `rerolls` node buys the right to throw a hand back. The probe averages level
-~8 over a full run, so a run drafts about eight of them.
+**Nobody takes turns inside a fight.** The battle engine is unchanged and still the best part
+of the game: `Template.speed` is how often a body swings against `TUNING.speedBase`, `nextUp`
+only ever moves the clock forward to whoever is due, and a slot is a row of health bars rather
+than one long one - `BattleUnit.each` is what one body holds, `n` is derived from the pool and
+falls as it drains. A blow is `dmg * n`, so two rats hit for two rats, and every ability pays
+per body for the same reason. Targeting is a random living wall if any is standing
+(`taunt`), otherwise a random survivor: breaking the wall is the tactic, not sniping.
 
-**Every card says exactly what it does.** `Power.note` is the card face at a card's width;
-`Power.desc` is the whole rule in plain words, and the `?` at the end of a card on the draft
-sheet opens the `power` panel on it. The same panel is reachable from `menu -> gifts`, which
-lists what you already hold, stacked. `shownPanel` puts `power` **above** `draft`, or a card
-could not be read at the one moment reading it is worth anything. A check holds every
-description to the narrowest grid, and asserts it is longer than the face.
+**A fight is the mover's line against whatever is standing where he stepped** - another
+hero's army, or a garrison with nobody behind it. The engine always puts the mover in the
+"player" line, so `Battle.mover` is how anything read from *outside* the fight gets back to
+the right hero. Getting that wrong meant the enemy's own blessing landed on you.
 
-**The cards** are `POWERS` in `src/sim/powers.ts`, eight per arm - six commons and two rares,
-held level by a check, because an arm that is a shallower walk than another is an arm the probe
-cannot compare. A common is a number and stacks to `TUNING.powerStack`; a rare is a rule and
-leaves the pool once taken. The three arms are `beast`, `undead` and `dark`: the first two are
-the build - **a card names a family, never one creature**, or it reads as a trap the moment you
-are running anything else - and `dark` is neither, because what it does to the other side helps
-whichever of them you are running. Each arm's engine sits on a **common**, not a rare -
-`swarmAll` for beasts, `zombify` for the dead, `witherAll` for the dark - and they are written
-`{ engine: 1, number: 1 }` so a repeat draw is not a dud. Capacity is the *tree's* to sell and
-no arm's: a card that buys bodies buys health, damage and crowding at once, and the other arms
-have no answer to it.
+**Losing costs the army and nothing else.** The whole line is gone, you reappear at your
+throne, and you keep every node you hold - the army *was* the price. Symmetric: their hero
+breaks the same way. A bot never marches out of its own throne carrying the last of what was
+standing in it (`throneKeep`); stripping a capital bare is a move the rules allow and a player
+may take, but a bot that takes it every time hands the game away on turn three.
 
-**The tree** is 19 *neutral* nodes on a 5x5 board and carries no arm: it buys access, the cards
-buy power. Nothing on it may touch a fight (a check asserts this). It sells capacity, mana,
-healing, levelling speed, and the draft itself - a fourth card, a reroll, a body at the gate.
-A node opens when it is beside one you own, and `nodeCost` prices it by `depthOf`, so distance
-out is the whole of the gate.
+**Fog: terrain sticks, ownership goes stale.** Once you have been near a node you always see
+what kind it is. Its owner and its garrison are live only inside `TUNING.sight`; outside it
+the board shows what was true the last time anyone looked, so the map can lie and walking
+somewhere to check is worth a turn. A seal is only drawn on a node you have actually seen. The
+AI plays with full knowledge, the way HoMM's does.
 
-**The tree is the meta, and it is the only thing that survives a run.** It lives on `Meta`
-(`{ gold, taken }`), not on `GameState`, under its own key and its own version - a
-`SAVE_VERSION` bump changes the shape of a run and must never cost him a board he spent runs
-buying. Gold is what a room has always dropped and nothing ever spent; `bank()` pays the run's
-purse into the board on the edge `g.over` is set and **empties the purse as it does**, which is
-the whole of what stops a reload paying twice. The run save is written on that same frame, or a
-tab closed there comes back to a run still holding gold already paid in.
+**The other hero is one score over all 49 nodes.** Value, distance, can-I-beat-it, collect
+from my own, flip theirs, hunt the hero, rush the throne, claim a shrine - every behaviour is
+a weight in `scoreNode`, and there is no state machine. It commits to a route and re-decides
+on arrival, so it does not dither and you can bait it. It attacks only above an army-value
+margin, so a fleeing hero tells you you are ahead. `botTurn` is faction-generic because the
+balance probe runs the same brain on the player side.
 
-The end of a run is the hub - there is no title screen. `over` offers the board, the board says
-`begin` instead of `close`, and `newGame(seed, owned)` takes what is bought as an argument, so
-`src/sim/` still knows nothing about where a save lives. During a run the board is a thing to
-read: what it hands out it hands out at the gate.
+`worthOf` is what every one of those decisions is made on, and it is **multiplicative** - what
+a body can take times what it deals, never the two added. Additive underprices speed, which
+quietly told the slow army it was 11% stronger than it was and had it picking fights it could
+not win for the whole game.
 
-Nothing caps how much of the board one player ends up owning, and that is **deliberately not
-solved**. The check's `whole` probe is the tripwire: 60 runs holding every node, asserting only
-that it still terminates and can still be lost. It sits close to its limit already. When it goes
-red, that is the day the cap has to be designed, not before.
+**Difficulty is one multiplier on the enemy's income** - production, gold, and nothing else -
+and it is neutral at 1.0. It is not a balance crutch: the game has to be fair at 1.0, and
+probe 2 is what proves it. Probe 3 measures the slider itself, which currently spans roughly
+86% down to 0%.
 
 ## Architecture
 
@@ -208,31 +171,22 @@ red, that is the day the cap has to be designed, not before.
 it runs headless under `node` and balance can be measured apart from whether the game looks
 right. Keep it that way - a Pixi import in `src/sim/` breaks both check scripts.
 
-- `src/sim/game.ts` - all behaviour. `advance(g, ticks)` is the only clock. `HELD`
-  (MAX_SAFE_INTEGER) is how a won room waits for the player instead of timing out.
-- `src/sim/data.ts` - types plus `TUNING`, the single bag of balance numbers, the `CREATURES`
-  templates (family, tier, glyph, colour, ability, what it `rises` as) and the `KINDS` table
-  that makes a room a theme. Numbers and templates only; no behaviour. Adding a creature = one
-  row in `CREATURES` with a colour nothing else wears; adding a room = one row in `KINDS`.
-- `src/sim/tree.ts` - the neutral board as data, plus `Perk`/`Perks`/`PERK_IDS`, which both
-  halves share. `LAID` is written out cell by cell because the board shape *is* the data:
-  `linksOf` derives edges from adjacency, `depthOf` from distance to root. Adding a node = one
-  row in `LAID`. Adding a *perk* = a key in `Perk`, a string in `PERK_IDS`, and exactly one read
-  site in `game.ts`.
-- `src/sim/powers.ts` - the draft pool and the three arms (`ArmId`/`ARMS`/`ARM_IDS` live here,
-  not on the tree). Adding a card = one row in `POWERS` with both a `note` and a `desc`, keeping
-  the six-and-two-per-arm shape the check holds it to.
-- `src/sim/lore.ts` - the story pieces, spread over the map at generation and queued when he
-  walks into the room himself.
-- `src/sim/rng.ts` - mulberry32 with **module-global state**, mirrored into `g.rng` every step
+- `src/sim/game.ts` - all behaviour. The rules are turns (`endTurn`, `botTurn`); `advance(g,
+  ticks)` only drives what a turn *looks* like. `HELD` is how a won fight waits for the player.
+- `src/sim/data.ts` - types plus `TUNING`, the single bag of balance numbers, `TIER_STATS` and
+  the `CREATURES` templates built on it, the `KINDS` table, and `SPELLS`. Numbers and templates
+  only; no behaviour. Adding a creature = one row reading `...TIER_STATS[t]` with a glyph
+  nothing else wears; adding a node = one row in `KINDS`; adding a spell = one row in `SPELLS`,
+  keeping the one-per-window-per-family shape a check holds it to.
+- `src/sim/lore.ts` - the story pieces, spread over the map at generation.
+- `src/sim/rng.ts` - mulberry32 with **module-global state**, mirrored into `g.rng` every tick
   and restored by `load()`. Two `GameState`s in one process share the stream, which is why the
-  probe bot in `check-sim.ts` runs its runs sequentially.
+  probes run their games sequentially.
 
 `GameState` is plain JSON, saved to `localStorage`. When its shape changes, bump
 `SAVE_VERSION` **and** add the field to `REQUIRED` in `game.ts` - a save that half-loads
-crashes the first frame. `Meta` is the other save and versions separately on purpose; a bad
-one falls back to `newMeta()` rather than refusing to load, because a board is not worth
-crashing over.
+crashes the first frame. There is no second save any more: the tree and its `Meta` are gone,
+and a game is one board from the first turn to the last.
 
 **Rendering is a character grid, not a scene.** `src/gfx/grid.ts` keeps two sprite pools (cell
 background, glyph) and a char/fg/bg array; screens only ever call `put/fill/text/center`, then
@@ -242,7 +196,8 @@ hit-testing of display objects.
 - `src/gfx/glyphs.ts` rewrites the 1-bit sheet's luminance into alpha at load, otherwise
   tinting paints solid squares.
 - `src/gfx/surface.ts` is the narrow `Surface` interface the screens draw through, so
-  `check-layout.ts` can hand them a recording stub instead of a renderer.
+  `check-layout.ts` can hand them a recording stub instead of a renderer - which is also what
+  lets it assert that nothing is ever drawn off the edge of the grid.
 - `src/gfx/crt.ts` is the whole-stage barrel/scanline filter. `bend()` duplicates the shader's
   warp in JS; every pointer release goes through it before `cellAt`, or fingers land off the
   glyph they aimed at. Change the shader's curve math and `bend()` with it.
@@ -251,14 +206,14 @@ hit-testing of display objects.
 collector, `sheet()`/`buttons()`/`box()`/`bar()` and the palette `C`; a zone is added by the
 code that drew the thing, so it cannot drift. `src/screens/panels.ts` builds every sheet's
 text as a `Spec` at a known width, which is what lets `check-layout.ts` hold all panels to the
-narrowest supported grid. `src/screens/tree.ts` draws the board itself rather than going
-through `sheet()`.
+narrowest supported grid - every line of prose goes through `wrap()` for exactly that reason.
 
 **`src/main.ts` is the only place the two halves meet.** Taps become an `Act` union
 (`src/ui.ts`), the switch in `onAct` calls one sim function per act, and the ticker owes
-`TICK_MS` ticks scaled by the speed control. Sound is driven off a snapshot diff of the
-*visible* state (`hear()`), not from the sim, so a frame that ran ten ticks still makes one
-noise. `src/sfx.ts` synthesizes every sound at runtime through WebAudio - nothing to load.
+`TICK_MS` ticks scaled by the speed control - but only while there is something to animate.
+Sound is driven off a snapshot diff of the *visible* state (`hear()`), not from the sim, so a
+frame that ran ten ticks still makes one noise. `src/sfx.ts` synthesizes every sound at
+runtime through WebAudio - nothing to load.
 
 ## Conventions that will bite
 
@@ -271,5 +226,11 @@ noise. `src/sfx.ts` synthesizes every sound at runtime through WebAudio - nothin
 - Layout is derived, never assumed: `computeLayout()` picks a scale for legibility in device
   pixels and steps down until `MIN_COLS` fits. Nothing may hardcode a grid size.
 - Balance numbers live in `TUNING` and nowhere else; a literal in `game.ts` is a bug.
+- **The two ladders share `TIER_STATS` and a check holds them to it.** Giving one family
+  better numbers at any rung cannot be corrected by tuning the other - it compounds through
+  every blow of a multi-slot fight. Differentiate with abilities and spells instead.
+- Anything read from *outside* a fight must go through `Battle.mover`, never an absolute
+  faction: the engine always puts whoever moved in the `player` line, so the enemy hero
+  attacking you is the `player` line of its own battle.
 - In dev, `window.app/grid/run()/ui/hits/tap/crt` are exposed for Playwright - read the live
   run with `browser_evaluate` rather than squinting at screenshots.
