@@ -145,8 +145,6 @@ const ui: Ui = {
   speed: 1,
   watch: false,
   unit: 0,
-  typed: 1e9,
-  loreId: null,
   spell: SPELL_IDS[0],
   picking: null,
 };
@@ -231,7 +229,6 @@ for (const c of CREATURE_IDS) {
 }
 for (const k of KIND_IDS) {
   ok(`${k}: name fits the narrowest sheet`, cells(KINDS[k].name) <= narrow - 4);
-  ok(`${k}: has a note`, cells(KINDS[k].note) > 0);
 }
 
 console.log(`check-layout ok (${checks} checks)`);

@@ -116,10 +116,10 @@ export function drawMap(grid: Grid, g: GameState, cam: Point, hits: Hits, pickin
       const ink = !n.seen ? C.frame : COL(OWNER_COLOR[owner]);
       grid.put(x, y, n.seen ? KINDS[n.kind].glyph : "?", ink, C.bg);
     }
-    // What is standing in it, under it. A remembered count is dim; one you can
-    // actually see right now is not.
+    // What is standing in it, under it - only on ground you already hold. What
+    // guards a node you have not taken is a thing you find out by going.
     const held = live ? n.garrison.length : n.knownGarrison;
-    if (n.seen && held > 0 && !here && on(x, y + 1)) {
+    if (owner === "player" && held > 0 && !here && on(x, y + 1)) {
       grid.text(x, y + 1, `${held}`.slice(0, 2), live ? C.mid : C.frame, C.bg);
     }
     // The two tokens. Neither of them fights - a hero is the line behind him.

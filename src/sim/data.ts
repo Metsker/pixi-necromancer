@@ -17,7 +17,8 @@ export type CreatureId =
   | "levy" | "archer" | "footman" | "swordsman" | "priest" | "knight" | "seraph"
   | "rat" | "bandit" | "wolf" | "brigand" | "ogre";
 
-export type NodeKind = "throne" | "city" | "hamlet" | "barracks" | "keep" | "mine" | "shrine";
+export type NodeKind =
+  | "throne" | "city" | "hamlet" | "barracks" | "keep" | "mine" | "shrine" | "tower" | "vault";
 
 // What a shrine hands over for a week when its owner walks in and claims it
 export type BuffId = "vigor" | "ward" | "haste";
@@ -103,14 +104,16 @@ export type MapNode = {
   garrison: CreatureId[]; // what stands here, whoever it belongs to
   buff: BuffId | null; // a shrine's own, rolled once at generation
   claimed: number; // the week its buff was last taken, so it cannot be taken twice
-  sealed: boolean; // a key opens it, once, for whoever spends one
+  sealed: boolean; // a vault; a key opens it, once, for whoever spends one
+  // A key nobody can see until they take this node off the wild. Two on a board,
+  // on hard ground a long way from either throne, and never drawn.
+  key: boolean;
   links: number[]; // orthogonal only
   // Terrain sticks once seen; owner and garrison are only live inside sight, so
   // what is drawn outside it is what was true the last time anyone looked.
   seen: boolean;
   knownOwner: Owner;
   knownGarrison: number; // how many bodies were standing when last seen
-  lore: number | null;
 };
 
 // A hero: a token, a line of bodies, a purse and a spellbook. Both sides are
@@ -144,16 +147,14 @@ export type GameState = {
   nextUnit: number;
   difficulty: number; // what the enemy's income is multiplied by; 1 is fair
   risen: Risen | null;
-  seenLore: number[];
-  loreQueue: number[];
   log: string[];
   over: "" | "dead" | "won";
 };
 
 export const TUNING = {
   // Two thrones at opposite corners, and the contested ground is the middle
-  mapCols: 7,
-  mapRows: 7,
+  mapCols: 9,
+  mapRows: 8,
   holeChance: 0.14,
   tiers: 7,
 
@@ -162,7 +163,7 @@ export const TUNING = {
   weekTurns: 7,
   // Steps a hero gets per turn. Flat: what you carry never slows you down, so
   // the roster is a fight decision and never a map tax.
-  movePoints: 4,
+  movePoints: 2,
 
   // How far a hero sees. Terrain outside it stays whatever it was; owners and
   // garrisons out there are memories, and memories go stale.
@@ -190,6 +191,10 @@ export const TUNING = {
   mobilizeGold: 8,
   // What a mine pays, and what the AI prices one at when it is deciding
   mineGold: 45,
+  // What a vault pays. Two on a board, behind the only two locks there are, in
+  // corners nobody has to cross - so it has to be worth going out of your way and
+  // spending a key you found by taking hard ground.
+  vaultGold: 160,
 
   // Hero spell points. A cap, a trickle every turn, and a full pour at your own
   // city - so mana is a rhythm rather than a hoard.
@@ -198,7 +203,7 @@ export const TUNING = {
   // What the three cost. Raise is per body; the rest are flat. Set against each
   // other on purpose: one turn's mana must not comfortably cover a pre-fight
   // buff *and* the raise afterwards, or the buff is never a decision.
-  raiseMana: 1,
+  raiseMana: 3,
   hexMana: 9,
   mendMana: 16,
   stepMana: 12,
@@ -229,6 +234,9 @@ export const TUNING = {
   // How much better than theirs a hero wants to be before it walks into a fight
   // it could avoid
   aiMargin: 1.15,
+  // What a bot prices a tower at. It sees the whole board already, so the number
+  // is not about vision: a node nobody ever takes is a wall across a small map.
+  aiTower: 80,
   // Bodies a bot will never march out of its own throne carrying. The rules let
   // anyone strip a capital bare; only a player should ever actually do it.
   throneKeep: 2,
@@ -351,21 +359,18 @@ export const growthFor = (tier: number) => GROWTH[Math.min(GROWTH.length - 1, Ma
 
 export type KindInfo = {
   name: string;
-  note: string;
   glyph: string;
   // What it is chiefly known for, which is what the map and the sheet say it is
-  makes: "bodies" | "gold" | "buff";
+  makes: "bodies" | "gold" | "buff" | "sight";
   // The band its own depth is rolled in. A node's tier is written down at
   // generation and never derived from where it sits.
   tiers: [number, number];
   bodies: boolean; // stands `growthFor(tier)` of the owner's family each week
   gold: number; // and pays this, each week, on top
   guard: number; // bodies of wild standing in it before anyone takes it
-  seal: boolean; // rolled sealed, and a key is what opens it
-  // Keys handed over the first time it is taken off the wild, and never again -
-  // or a node could be flipped back and forth to farm them. This is the only
-  // source there is, so what a key gates is what taking ground has already paid for.
-  keys: number;
+  // How far it watches once it is yours. Ground you hold sees a step on its own;
+  // a tower sees far and makes nothing at all, so it is worth taking for that.
+  sight: number;
 };
 
 // A capital is the economy: a throne and its city pay for the bodies they make,
@@ -374,32 +379,43 @@ export type KindInfo = {
 // mine, so no gold.
 export const KINDS: Record<NodeKind, KindInfo> = {
   throne: {
-    name: "THE THRONE", note: "lose it and it is over", glyph: "♖",
-    makes: "bodies", tiers: [4, 5], bodies: true, gold: 80, guard: 2, seal: false, keys: 0,
+    name: "THE THRONE", glyph: "♖",
+    makes: "bodies", tiers: [4, 5], bodies: true, gold: 80, guard: 2, sight: 1,
   },
   city: {
-    name: "THE CITY", note: "what stands around the throne", glyph: "⌂",
-    makes: "bodies", tiers: [2, 3], bodies: true, gold: 25, guard: 1, seal: false, keys: 1,
+    name: "THE CITY", glyph: "⌂",
+    makes: "bodies", tiers: [2, 3], bodies: true, gold: 25, guard: 1, sight: 1,
   },
   hamlet: {
-    name: "THE HAMLET", note: "they were alive this morning", glyph: "▤",
-    makes: "bodies", tiers: [1, 2], bodies: true, gold: 0, guard: 0, seal: false, keys: 0,
+    name: "THE HAMLET", glyph: "▤",
+    makes: "bodies", tiers: [1, 2], bodies: true, gold: 0, guard: 0, sight: 1,
   },
   barracks: {
-    name: "THE BARRACKS", note: "somebody drilled here", glyph: "▥",
-    makes: "bodies", tiers: [3, 4], bodies: true, gold: 0, guard: 1, seal: false, keys: 1,
+    name: "THE BARRACKS", glyph: "▥",
+    makes: "bodies", tiers: [3, 4], bodies: true, gold: 0, guard: 1, sight: 1,
   },
   keep: {
-    name: "THE KEEP", note: "sealed, and well looked after", glyph: "⛶",
-    makes: "bodies", tiers: [5, 7], bodies: true, gold: 0, guard: 1, seal: true, keys: 0,
+    name: "THE KEEP", glyph: "⛶",
+    makes: "bodies", tiers: [5, 7], bodies: true, gold: 0, guard: 1, sight: 1,
   },
   mine: {
-    name: "THE MINE", note: "it pays every week", glyph: "⧇",
-    makes: "gold", tiers: [1, 3], bodies: false, gold: 45, guard: 0, seal: false, keys: 0,
+    name: "THE MINE", glyph: "⧇",
+    makes: "gold", tiers: [1, 3], bodies: false, gold: 45, guard: 0, sight: 1,
   },
   shrine: {
-    name: "THE SHRINE", note: "come back for it", glyph: "⊡",
-    makes: "buff", tiers: [1, 2], bodies: false, gold: 0, guard: 0, seal: false, keys: 0,
+    name: "THE SHRINE", glyph: "⊡",
+    makes: "buff", tiers: [1, 2], bodies: false, gold: 0, guard: 0, sight: 1,
+  },
+  tower: {
+    name: "THE TOWER", glyph: "⊤",
+    makes: "sight", tiers: [1, 2], bodies: false, gold: 0, guard: 0, sight: 4,
+  },
+  // The only sealed kind, and the only one placed rather than rolled: one in each
+  // free corner, so it is a pocket off the side of the map and never a door
+  // anybody has to walk through. Nothing stands in it - the lock is the guard.
+  vault: {
+    name: "THE VAULT", glyph: "⛼",
+    makes: "gold", tiers: [1, 1], bodies: false, gold: TUNING.vaultGold, guard: 0, sight: 1,
   },
 };
 
@@ -407,7 +423,9 @@ export const KIND_IDS = Object.keys(KINDS) as NodeKind[];
 
 // Everything a cell that is not a throne or a city can turn out to be. `keep` is
 // one roll in seven, so the deep end of the ladder is worth walking to.
-export const KIND_ROLL: NodeKind[] = ["hamlet", "hamlet", "barracks", "barracks", "mine", "shrine", "keep"];
+export const KIND_ROLL: NodeKind[] = [
+  "hamlet", "hamlet", "barracks", "barracks", "mine", "shrine", "keep", "tower",
+];
 // What the mirrored skeleton is made of. Topology, the thrones, the deep
 // producers and the mines - the things whose imbalance compounds every week.
 export const MIRRORED: NodeKind[] = ["keep", "mine"];

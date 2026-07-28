@@ -31,7 +31,7 @@ const MEND_TICKS = 3;
 
 // Ticks the three beats of getting up take: the light finds it, its colour comes
 // back, and then it walks to the end of your line.
-const RISE_TICKS = 24;
+export const RISE_TICKS = 24;
 const BEAM_UNTIL = 0.3;
 const WAKE_UNTIL = 0.6;
 

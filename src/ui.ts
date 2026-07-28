@@ -60,7 +60,6 @@ export type Act =
   | { t: "restart" }
   | { t: "confirm" }
   | { t: "difficulty" }
-  | { t: "ok" }
   | { t: "speed" }
   | { t: "sound" };
 

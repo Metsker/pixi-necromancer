@@ -49,11 +49,15 @@ load-bearing on some check in `scripts/`.
 **It is turn-based, and a week is seven turns.** You spend `TUNING.movePoints` of movement,
 end your turn, the other hero spends its own, and every `TUNING.weekTurns` turns everything
 anybody holds makes what it makes. Movement is **flat** - what you are carrying never slows
-you down, so the roster is a fight decision and never a map tax. `advance(g, ticks)` still
-exists but it is no longer the rules: it is only how a turn is *drawn*, a token crossing a
-cell and blows landing, and there is nothing for it to run while the board is waiting on you.
+you down, so the roster is a fight decision and never a map tax. **A turn with no movement
+left passes by itself** - END is for giving up ground you still had, not for confirming you
+have none. The ticker in `main.ts` is what does it, once everything has stopped moving and no
+sheet or fight is up, because a turn you are still reading is a turn that has not finished
+happening. `advance(g, ticks)` still exists but it is no longer the rules: it is only how a
+turn is *drawn*, a token crossing a cell and blows landing, and there is nothing for it to run
+while the board is waiting on you.
 
-**The map is 7x7, and it is point-symmetric on purpose.** Rotate it 180 degrees and both
+**The map is 9x8, and it is point-symmetric on purpose.** Rotate it 180 degrees and both
 halves match. The **skeleton** is mirrored - the holes and therefore the whole topology, both
 thrones, the deep producers and the mines - because those are the things whose imbalance
 compounds every single week. Everything else is rolled again on the other side, so a map still
@@ -82,6 +86,23 @@ walks past. A week's income buys roughly a third of a week's growth, and choosin
 third is the decision. A throne and its city also pay gold - a capital is the economy, and
 without that the opening is a deadlock: no gold, so no mustering, so no army, so no mine, so
 no gold. The probe found that one on the first run.
+
+**Two locks and two keys, and neither is on the way to anything.** The only sealed kind is the
+**vault**, and there are exactly two: one in each corner the thrones do not stand in, placed
+rather than rolled. A corner is a pocket, so a lock is never a door somebody has to walk
+through - the hole-punching pass holds the board whole *without* the vaults as well as with
+them, and `routeTo` will walk you to a lock but never across one. Nothing stands in a vault:
+the lock is the guard, and what is behind it is `TUNING.vaultGold` a week, more than a throne
+pays. A key is spent in `capture`, not after a fight, because an empty vault is usually walked
+straight into and there is no fight to spend it in.
+
+**A key is on a body, and nothing on the map says which.** Two keys, on a mirrored pair of
+wild nodes: never drawn, never listed, handed over the first time that node is taken *off the
+wild* and never again. The pair has to be one the generator mirrored **exactly** - same kind
+and same tier - because outside the skeleton a twin is rolled again, and the first cut of this
+put a t7 ogre nest in front of one key and a t4 barracks in front of the other. A check holds
+kind, tier and garrison size equal on both. Losing to another hero hands him every key you are
+carrying; losing to a garrison drops nothing, because there is nobody there to pick it up.
 
 **Neutrals are the ground you cross, and they never come back.** Bandits and beasts guard
 every node until somebody takes it, and once they are gone they are gone - so the map is a
@@ -136,19 +157,33 @@ hero's army, or a garrison with nobody behind it. The engine always puts the mov
 "player" line, so `Battle.mover` is how anything read from *outside* the fight gets back to
 the right hero. Getting that wrong meant the enemy's own blessing landed on you.
 
-**Losing costs the army and nothing else.** The whole line is gone, you reappear at your
-throne, and you keep every node you hold - the army *was* the price. Symmetric: their hero
-breaks the same way. A bot never marches out of its own throne carrying the last of what was
+**Losing costs the army, and to another hero it costs your keys.** The whole line is gone, you
+reappear at your throne, and you keep every node you hold - the army *was* the price. Keys are
+the one thing that changes hands, and only when a *hero* broke you: `routed(g, f, to)` moves
+them, and `to` is null when a garrison did it, because there is nobody standing there to take
+them. Symmetric: their hero breaks the same way. A bot never marches out of its own throne carrying the last of what was
 standing in it (`throneKeep`); stripping a capital bare is a move the rules allow and a player
 may take, but a bot that takes it every time hands the game away on turn three.
 
 **Fog: terrain sticks, ownership goes stale.** Once you have been near a node you always see
-what kind it is. Its owner and its garrison are live only inside `TUNING.sight`; outside it
-the board shows what was true the last time anyone looked, so the map can lie and walking
-somewhere to check is worth a turn. A seal is only drawn on a node you have actually seen. The
-AI plays with full knowledge, the way HoMM's does.
+what kind it is. Its owner and its garrison are live only inside sight; outside it the board
+shows what was true the last time anyone looked, so the map can lie and walking somewhere to
+check is worth a turn. A seal is only drawn on a node you have actually seen. **A garrison
+count is only drawn on ground you already hold** - what stands in a node you have not taken is
+a thing you find out by going, so the size of a fight is a risk rather than a sum you read off
+the board. The AI plays with full knowledge, the way HoMM's does.
 
-**The other hero is one score over all 49 nodes.** Value, distance, can-I-beat-it, collect
+**Sight is not just the hero.** `sightSet` is one relaxing walk out of every source at once:
+the hero at `TUNING.sight`, and every node you hold at its own `KINDS[kind].sight`. Holding
+ground is therefore holding a picture of it, and a **tower** is the node that makes nothing at
+all and watches four deep - the only kind whose whole worth is what it shows you. `see()` and
+`inSight()` are both that one set, so what the board draws and what it remembers can never
+disagree. The bot prices a tower at `TUNING.aiTower` even though it already sees everything,
+and that is not a fudge: a node no bot ever takes is a wild garrison sitting across the map
+forever. Left at zero it stretched the average game from 39 turns to 130 and pushed a quarter
+of them past the cap.
+
+**The other hero is one score over all 72 nodes.** Value, distance, can-I-beat-it, collect
 from my own, flip theirs, hunt the hero, rush the throne, claim a shrine - every behaviour is
 a weight in `scoreNode`, and there is no state machine. It commits to a route and re-decides
 on arrival, so it does not dither and you can bait it. It attacks only above an army-value
@@ -178,7 +213,6 @@ right. Keep it that way - a Pixi import in `src/sim/` breaks both check scripts.
   only; no behaviour. Adding a creature = one row reading `...TIER_STATS[t]` with a glyph
   nothing else wears; adding a node = one row in `KINDS`; adding a spell = one row in `SPELLS`,
   keeping the one-per-window-per-family shape a check holds it to.
-- `src/sim/lore.ts` - the story pieces, spread over the map at generation.
 - `src/sim/rng.ts` - mulberry32 with **module-global state**, mirrored into `g.rng` every tick
   and restored by `load()`. Two `GameState`s in one process share the stream, which is why the
   probes run their games sequentially.

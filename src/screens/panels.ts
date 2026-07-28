@@ -1,5 +1,4 @@
 import type { Grid } from "../gfx/grid.ts";
-import { LORE } from "../sim/lore.ts";
 import {
   BUFFS,
   CREATURES,
@@ -49,9 +48,6 @@ export type Ui = {
   // Whether the board is up rather than the map. There is only one fight.
   watch: boolean;
   unit: number;
-  // How much of the piece being read has arrived, and which piece that is
-  typed: number;
-  loreId: number | null;
   // The spell being read. One nobody can read is one nobody casts on purpose.
   spell: SpellId | null;
   // A map spell that wants a node puts the board back up to pick one on, and
@@ -59,10 +55,10 @@ export type Ui = {
   picking: SpellId | null;
 };
 
-export type Shown = PanelId | "lore" | "over";
+export type Shown = PanelId | "over";
 
 export const PANELS: Shown[] = [
-  "node", "army", "unit", "spells", "spell", "muster", "menu", "confirm", "lore", "over",
+  "node", "army", "unit", "spells", "spell", "muster", "menu", "confirm", "over",
 ];
 
 export type Spec = { title: string; lines: Line[]; minWidth: number };
@@ -70,7 +66,6 @@ export type Spec = { title: string; lines: Line[]; minWidth: number };
 // Anything the game owes the player is shown before anything the player asked
 // for. While any of these is up the clock is stopped, so nothing is missed.
 export function shownPanel(g: GameState, ui: Ui): Shown {
-  if (g.loreQueue.length) return "lore";
   // Above the book, or a spell could not be read at the one moment reading it is
   // worth anything - which is before you spend the mana on it
   if (ui.panel === "spell") return "spell";
@@ -121,8 +116,6 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         title: "GRAVELIGHT",
         minWidth: wide,
         lines: [
-          ...say("Take their throne. Lose your own and it is over.", C.dim),
-          { text: "" },
           rowAt(wide, "difficulty", `x${g.difficulty.toFixed(1)}`, C.gold),
           ...say("what their side is paid every week", C.frame),
           { text: "change it", act: { t: "difficulty" } },
@@ -139,8 +132,6 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
         title: "BEGIN AGAIN?",
         minWidth: wide,
         lines: [
-          ...say("This board and everything standing on it goes.", C.dim),
-          { text: "" },
           { text: "begin again", act: { t: "confirm" }, fg: C.red },
           { text: "no, keep going", act: { t: "close" } },
         ],
@@ -163,16 +154,6 @@ export function panelSpec(g: GameState, ui: Ui, panel: Shown, cols: number): Spe
           { text: "" },
           { text: "begin again", act: { t: "confirm" } },
         ],
-      };
-    }
-    case "lore": {
-      const piece = LORE[g.loreQueue[0]];
-      if (!piece) return null;
-      const body = piece.body.slice(0, Math.max(0, Math.floor(ui.typed)));
-      return {
-        title: piece.title,
-        minWidth: wide,
-        lines: [...say(body, C.pale), { text: "" }, { text: "ok", act: { t: "ok" } }],
       };
     }
     default:
@@ -208,13 +189,13 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
   }
 
   const who = n.owner === "player" ? "yours" : n.owner === "enemy" ? "theirs" : "nobody's";
-  lines.push(...say(info.note, C.dim));
   lines.push(rowAt(wide, who, `tier ${n.tier}`, COL(OWNER_COLOR[n.owner])));
 
   // What holding it is worth, which is the whole reason to walk there
   if (info.bodies) lines.push(rowAt(wide, "makes a week", `${growthFor(n.tier)}`, C.cyan));
   if (info.gold) lines.push(rowAt(wide, "pays a week", `${RESOURCES.gold.glyph}${info.gold}`, C.gold));
-  if (info.keys) lines.push(rowAt(wide, "holds, once taken", RESOURCES.keys.glyph, C.cyan));
+  // The only thing a tower is worth, so it is the only thing worth saying
+  if (info.sight > 1) lines.push(rowAt(wide, "watches, once yours", `${info.sight}`, C.cyan));
   if (n.buff) {
     const spent = n.claimed === weekOf(g.turn);
     lines.push(rowAt(wide, BUFFS[n.buff].note, BUFFS[n.buff].name, spent ? C.frame : C.green));
@@ -264,10 +245,7 @@ function nodeSpec(g: GameState, ui: Ui, wide: number): Spec {
 function musterSpec(g: GameState, wide: number): Spec {
   const offers = offersHere(g, "player");
   const say = (s: string, fg: number): Line[] => wrap(s, wide).map((text) => ({ text, fg }));
-  const lines: Line[] = [
-    ...say("What stands here holds the ground for nothing. Marching with it is what costs.", C.dim),
-    { text: "" },
-  ];
+  const lines: Line[] = [];
   for (const o of offers) {
     const t = CREATURES[o.creature];
     const can = canMobilize(g, "player", o.creature);
@@ -312,9 +290,6 @@ function armySpec(g: GameState, wide: number): Spec {
   if (!lines.length) lines.push(...wrap("nothing is standing", wide).map((text) => ({ text, fg: C.red })));
   lines.push({ text: "" });
   lines.push(rowAt(wide, "slots", `${g.you.reserve.length}/${TUNING.slots}`, C.violet));
-  // The order is what breaks a tie when two of yours come due on the same tick,
-  // so it is worth saying that the arrows do something
-  lines.push(...wrap("the front of the line swings first", wide).map((text) => ({ text, fg: C.frame })));
   lines.push({ text: "close", act: { t: "close" } });
   return { title: "THE ARMY", minWidth: wide, lines };
 }

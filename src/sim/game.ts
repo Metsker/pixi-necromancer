@@ -1,5 +1,4 @@
 import { pick, rnd, rngState, seed as seedRng, setRngState, shuffle } from "./rng.ts";
-import { LORE } from "./lore.ts";
 import {
   ABILITY_TIER,
   BUFF_IDS,
@@ -179,18 +178,24 @@ function buildMap(g: GameState) {
 
   const yours = key(0, mapRows - 1);
   const theirs = flip(yours);
+  // The two corners the thrones do not stand in. A corner is a pocket, so a lock
+  // on one is never a door across the board, and the two are each other's mirror.
+  const vaults = [key(0, 0), key(mapCols - 1, mapRows - 1)];
 
   const solid = new Set<number>();
   for (let row = 0; row < mapRows; row++) {
     for (let col = 0; col < mapCols; col++) solid.add(key(col, row));
   }
   // Thrones and the ring that encloses them are never punched out, or a throne
-  // could end up reachable without walking through its own city
-  const safe = new Set<number>([yours, theirs]);
+  // could end up reachable without walking through its own city. The vaults are
+  // never punched out either - there are exactly two of them and they are placed.
+  const safe = new Set<number>([yours, theirs, ...vaults]);
   for (const t of [yours, theirs]) {
     for (const r of ringOf(t, mapCols, mapRows)) safe.add(r);
   }
-  // Holes come in mirrored pairs, so both sides get the same country to cross
+  // Holes come in mirrored pairs, so both sides get the same country to cross.
+  // The board has to stay whole *without* the vaults as well: a locked corner is
+  // only a pocket if nothing behind it needs walking through.
   for (const k of shuffle([...solid])) {
     if (safe.has(k) || !solid.has(k)) continue;
     if (rnd() >= TUNING.holeChance) continue;
@@ -198,7 +203,9 @@ function buildMap(g: GameState) {
     if (safe.has(twin)) continue;
     solid.delete(k);
     solid.delete(twin);
-    if (!whole(solid, yours, mapCols)) {
+    const open = new Set(solid);
+    for (const v of vaults) open.delete(v);
+    if (!whole(solid, yours, mapCols) || !whole(open, yours, mapCols)) {
       solid.add(k);
       solid.add(twin);
     }
@@ -220,6 +227,7 @@ function buildMap(g: GameState) {
 
   setKind(yours, "throne", rollTier("throne"));
   setKind(theirs, "throne", rollTier("throne"));
+  for (const v of vaults) setKind(v, "vault", rollTier("vault"));
   for (const t of [yours, theirs]) {
     for (const r of ringOf(t, mapCols, mapRows)) {
       if (solid.has(r)) setKind(r, "city", rollTier("city"));
@@ -261,16 +269,17 @@ function buildMap(g: GameState) {
         kind,
         tier,
         owner,
-        // What somebody already holds opens empty: the week is what stocks it.
-        garrison: owner === "none" ? rollGuard(kind, tier) : [],
+        // What somebody already holds opens empty: the week is what stocks it. A
+        // vault opens empty too - the lock is the whole of what guards it.
+        garrison: owner === "none" && kind !== "vault" ? rollGuard(kind, tier) : [],
         buff: kind === "shrine" ? pick(BUFF_IDS) : null,
         claimed: -1,
-        sealed: KINDS[kind].seal && owner === "none",
+        sealed: kind === "vault",
+        key: false,
         links: [],
         seen: false,
         knownOwner: owner === "none" ? "none" : owner,
         knownGarrison: 0,
-        lore: null,
       });
     }
   }
@@ -287,7 +296,40 @@ function buildMap(g: GameState) {
 
   g.you.at = id.get(yours)!;
   g.foe.at = id.get(theirs)!;
-  assignLore(g);
+
+  // The two keys. Nothing on the board says where they are, so they have to be
+  // worth stumbling into: the hardest wild ground furthest from either throne,
+  // and a mirrored pair, so what one hero has to walk and fight for is exactly
+  // what the other does.
+  const stepsFrom = (from: number) => {
+    const far = new Map([[from, 0]]);
+    for (const queue = [from]; queue.length; ) {
+      const cur = queue.shift()!;
+      for (const o of g.nodes[cur].links) {
+        if (far.has(o)) continue;
+        far.set(o, far.get(cur)! + 1);
+        queue.push(o);
+      }
+    }
+    return far;
+  };
+  const walk = stepsFrom(g.you.at);
+  const pairs = g.nodes
+    .filter((n) => n.owner === "none" && !n.sealed && id.has(flip(key(n.col, n.row))))
+    .map((n) => ({ n, twin: g.nodes[id.get(flip(key(n.col, n.row)))!] }))
+    .filter(({ n, twin }) => twin.id !== n.id && twin.owner === "none" && !twin.sealed);
+  // Only ground the generator mirrored *exactly*. A cell and its opposite are the
+  // same shape but not the same kind - everything outside the skeleton is rolled
+  // again - so a pair that does not match hands one hero a t7 ogre nest and the
+  // other a t4 barracks for the same key. That is a faction gap, not a map.
+  const same = pairs.filter(({ n, twin }) => twin.kind === n.kind && twin.tier === n.tier);
+  const hard = (same.length ? same : pairs).sort(
+    (a, z) => z.n.tier - a.n.tier || (walk.get(z.n.id) ?? 0) - (walk.get(a.n.id) ?? 0),
+  );
+  if (hard.length) {
+    hard[0].n.key = true;
+    hard[0].twin.key = true;
+  }
 }
 
 // The cells orthogonally around one, clipped to the board. A throne's ring is
@@ -306,16 +348,6 @@ function ringOf(k: number, cols: number, rows: number): number[] {
   return out;
 }
 
-function assignLore(g: GameState) {
-  const path = g.nodes
-    .filter((n) => n.kind !== "throne")
-    .sort((a, z) => a.row - z.row || a.col - z.col);
-  const last = LORE.length - 1;
-  path.forEach((n, i) => {
-    n.lore = Math.floor((i * last) / Math.max(1, path.length - 1));
-  });
-}
-
 export const throneOf = (g: GameState, f: Faction) =>
   g.nodes.find((n) => n.kind === "throne" && (f === "player" ? n.col === 0 : n.col !== 0))!;
 
@@ -324,21 +356,29 @@ export const throneOf = (g: GameState, f: Faction) =>
 // Terrain sticks once seen. An owner and a garrison are only live inside sight -
 // outside it the board shows what was true the last time anybody looked, which
 // is what makes walking somewhere to check worth a turn.
-export function see(g: GameState) {
-  const h = g.you;
-  const seen = new Map<number, number>([[h.at, 0]]);
-  const queue = [h.at];
-  while (queue.length) {
-    const cur = queue.shift()!;
-    const d = seen.get(cur)!;
-    if (d >= TUNING.sight) continue;
-    for (const o of g.nodes[cur].links) {
-      if (seen.has(o)) continue;
-      seen.set(o, d + 1);
-      queue.push(o);
-    }
+// Everything the player can see this instant. The hero carries his own reach,
+// and every node he holds watches a little way on its own - a tower is the one
+// that watches far, which is the whole of what a tower is for. One relaxing
+// walk over all the sources, so the longest reach onto a node is the one it keeps.
+function sightSet(g: GameState): Set<number> {
+  const left = new Map<number, number>();
+  const queue: number[] = [];
+  const seed = (at: number, d: number) => {
+    if ((left.get(at) ?? -1) >= d) return;
+    left.set(at, d);
+    queue.push(at);
+  };
+  seed(g.you.at, TUNING.sight);
+  for (const n of g.nodes) if (n.owner === "player") seed(n.id, KINDS[n.kind].sight);
+  for (let i = 0; i < queue.length; i++) {
+    const d = left.get(queue[i])!;
+    if (d > 0) for (const o of g.nodes[queue[i]].links) seed(o, d - 1);
   }
-  for (const k of seen.keys()) {
+  return new Set(left.keys());
+}
+
+export function see(g: GameState) {
+  for (const k of sightSet(g)) {
     const n = g.nodes[k];
     n.seen = true;
     n.knownOwner = n.owner;
@@ -346,24 +386,7 @@ export function see(g: GameState) {
   }
 }
 
-export const inSight = (g: GameState, id: number) => {
-  const from = g.you.at;
-  if (from === id) return true;
-  const seen = new Set([from]);
-  let edge = [from];
-  for (let d = 0; d < TUNING.sight; d++) {
-    const next: number[] = [];
-    for (const cur of edge) {
-      for (const o of g.nodes[cur].links) {
-        if (seen.has(o)) continue;
-        seen.add(o);
-        next.push(o);
-      }
-    }
-    edge = next;
-  }
-  return seen.has(id);
-};
+export const inSight = (g: GameState, id: number) => sightSet(g).has(id);
 
 // Whether the other hero can be drawn at all. Outside sight he is a rumour.
 export const foeVisible = (g: GameState) => inSight(g, g.foe.at);
@@ -405,7 +428,10 @@ export function routeTo(g: GameState, f: Faction, target: number): number[] | nu
         for (let n: number = id; n !== from; n = back.get(n)!) path.unshift(n);
         return path;
       }
-      if (!hostile(g, f, id)) queue.push(id);
+      // A lock may be walked *to* - the branch above already took it as a target
+      // and the key is spent on arrival - but never walked *through*. A vault is
+      // empty, so without this a route would stroll across one for free.
+      if (!hostile(g, f, id) && !needsKey(g.nodes[id])) queue.push(id);
     }
   }
   return null;
@@ -443,9 +469,20 @@ function capture(g: GameState, f: Faction, n: MapNode) {
   if (n.owner === f) return;
   const was = n.owner;
   n.owner = f;
-  // Whoever lived here was carrying it. Only ever on the first taking, so a node
-  // cannot be flipped back and forth for keys.
-  if (was === "none") heroOf(g, f).res.keys += KINDS[n.kind].keys;
+  // The key is spent here rather than after a fight, because a vault has nothing
+  // standing in it - walking straight in is the usual way one is ever opened.
+  if (n.sealed) {
+    n.sealed = false;
+    heroOf(g, f).res.keys -= 1;
+    if (f === "player") log(g, "The seal gives.");
+  }
+  // Whoever lived here was carrying it, and nothing on the board said so. Only
+  // ever on the first taking, so a node cannot be flipped back and forth for keys.
+  if (was === "none" && n.key) {
+    n.key = false;
+    heroOf(g, f).res.keys += 1;
+    if (f === "player") log(g, "There is a key on the body.");
+  }
   if (n.kind === "throne" && was !== "none") {
     g.over = f === "player" ? "won" : "dead";
     g.phase = "over";
@@ -932,13 +969,20 @@ function writeBack(g: GameState, h: Hero, b: Battle) {
 
 // A hero who loses loses everything he was carrying and walks back into his own
 // throne with nothing. He keeps every node he holds: the army was the price.
-function routed(g: GameState, f: Faction) {
+// `to` is the other hero if one broke him, and keys are the one thing that
+// changes hands - a hero beaten by a garrison drops nothing to nobody.
+function routed(g: GameState, f: Faction, to: Faction | null = null) {
   const h = heroOf(g, f);
   h.reserve = [];
   h.route = [];
   h.at = throneOf(g, f).id;
   h.moves = 0;
   log(g, f === "player" ? "You are broken, and wake at your throne." : "Their hero is broken.");
+  if (to && h.res.keys > 0) {
+    heroOf(g, to).res.keys += h.res.keys;
+    log(g, to === "player" ? "Their keys are yours." : "Your keys go with them.");
+    h.res.keys = 0;
+  }
   if (f === "player") see(g);
 }
 
@@ -946,12 +990,12 @@ function routed(g: GameState, f: Faction) {
 function settle(g: GameState, mover: Faction, b: Battle) {
   const h = heroOf(g, mover);
   if (b.done === "loss") {
-    routed(g, mover);
+    routed(g, mover, b.foeHero ? other(mover) : null);
     return;
   }
   writeBack(g, h, b);
   const n = g.nodes[b.node];
-  if (b.foeHero) routed(g, other(mover));
+  if (b.foeHero) routed(g, other(mover), mover);
   else n.garrison = [];
   if (h.reserve.length === 0) {
     // A node can be won with nothing left standing, and a won node is still a
@@ -960,22 +1004,8 @@ function settle(g: GameState, mover: Faction, b: Battle) {
     return;
   }
   h.at = b.node;
-  if (n.sealed) {
-    n.sealed = false;
-    h.res.keys -= 1;
-    if (mover === "player") log(g, "The seal gives.");
-  }
   capture(g, mover, n);
-  if (mover === "player") {
-    see(g);
-    readLore(g, n);
-  }
-}
-
-function readLore(g: GameState, n: MapNode) {
-  if (n.lore === null || g.seenLore.includes(n.lore)) return;
-  g.seenLore.push(n.lore);
-  g.loreQueue.push(n.lore);
+  if (mover === "player") see(g);
 }
 
 // ---------------------------------------------------------------- the clock
@@ -1017,7 +1047,6 @@ function walk(g: GameState) {
   see(g);
   const n = g.nodes[id];
   if (n.owner !== "player") capture(g, "player", n);
-  readLore(g, n);
   g.next = g.view + STEP_TICKS;
   if (!h.route.length || h.moves <= 0) h.route = [];
 }
@@ -1105,6 +1134,9 @@ function scoreNode(g: GameState, f: Faction, n: MapNode): number {
     value += info.gold * 3;
     if (info.bodies) value += worthOf(atTier(h.family, n.tier)) * growthFor(n.tier);
     if (info.makes === "buff") value += 120;
+    // A tower is worth nothing to a bot that already sees everything, but ground
+    // it walks past and never takes is a wall across the map for both of us.
+    if (info.makes === "sight") value += TUNING.aiTower;
     // Taking it off them is worth what it stops making for them as well
     if (n.owner === other(f)) value *= 1.6;
   } else if (n.garrison.length) {
@@ -1260,8 +1292,6 @@ export function newGame(seedValue: number, difficulty = 1, foeFamily: Family = "
     nextUnit: 1,
     difficulty,
     risen: null,
-    seenLore: [],
-    loreQueue: [],
     log: [],
     over: "",
   };
@@ -1283,10 +1313,10 @@ export function newGame(seedValue: number, difficulty = 1, foeFamily: Family = "
 const KEY = "gravelight.save";
 // Bump whenever GameState changes shape. A save from an older shape is thrown
 // away rather than half-read: a missing field crashes the first frame.
-const SAVE_VERSION = 14;
+const SAVE_VERSION = 16;
 const REQUIRED: (keyof GameState)[] = [
   "seed", "rng", "nodes", "you", "foe", "turn", "phase", "battle", "view", "next",
-  "nextUnit", "difficulty", "risen", "seenLore", "loreQueue", "log", "over",
+  "nextUnit", "difficulty", "risen", "log", "over",
 ];
 
 export function save(g: GameState) {

@@ -21,7 +21,7 @@ import {
   worthOf,
   type Family,
 } from "../src/sim/data.ts";
-import { botTurn, endTurn, newGame, throneOf } from "../src/sim/game.ts";
+import { botTurn, endTurn, inSight, newGame, throneOf } from "../src/sim/game.ts";
 
 function ok(cond: boolean, what: string) {
   if (cond) return;
@@ -166,13 +166,93 @@ for (const seed of [1, 2, 3, 7, 11, 23, 99, 1234]) {
     ok(at.has(twin), `seed ${seed}: node ${n.id} has its opposite - holes come in pairs`);
   }
 
-  // Nothing may be sealed on a board that has no key in it anywhere
-  const sealed = g.nodes.filter((n) => n.sealed).length;
-  const sources = g.nodes.filter((n) => KINDS[n.kind].keys > 0).length;
-  ok(sealed === 0 || sources > 0, `seed ${seed}: ${sealed} sealed nodes but ${sources} key sources`);
+  // Two locks and two keys, and never one more of either. A vault stands in a
+  // corner with nothing in it, because the lock is the guard.
+  const locks = g.nodes.filter((n) => n.sealed);
+  const keys = g.nodes.filter((n) => n.key);
+  ok(locks.length === 2, `seed ${seed}: two locked nodes, not ${locks.length}`);
+  ok(keys.length === 2, `seed ${seed}: two keys on the board, not ${keys.length}`);
+  for (const v of locks) {
+    ok(v.kind === "vault", `seed ${seed}: node ${v.id} is locked because it is a vault`);
+    ok(!v.garrison.length, `seed ${seed}: vault ${v.id} has nothing standing in it`);
+    ok(
+      (v.col === 0 || v.col === TUNING.mapCols - 1) && (v.row === 0 || v.row === TUNING.mapRows - 1),
+      `seed ${seed}: vault ${v.id} sits in a corner`,
+    );
+    ok(!v.key, `seed ${seed}: a key is never behind the lock it opens`);
+  }
+  // A lock may never be a door. Everything but the vaults has to stay reachable
+  // from either throne without walking through one.
+  for (const [who, from] of [
+    ["you", g.you.at],
+    ["foe", g.foe.at],
+  ] as const) {
+    const seen = new Set([from]);
+    const queue = [from];
+    while (queue.length) {
+      for (const o of g.nodes[queue.shift()!].links) {
+        if (seen.has(o) || g.nodes[o].sealed) continue;
+        seen.add(o);
+        queue.push(o);
+      }
+    }
+    ok(
+      seen.size === g.nodes.length - locks.length,
+      `seed ${seed}: ${who} reaches all ${g.nodes.length - locks.length} open nodes past no lock`,
+    );
+  }
+  // Keys are a mirrored pair on wild ground, so what one hero walks and fights
+  // for is exactly what the other does
+  ok(
+    keys.every((n) => n.owner === "none"),
+    `seed ${seed}: both keys are on ground nobody holds`,
+  );
+  ok(
+    keys.length === 2 &&
+      keys[0].col === TUNING.mapCols - 1 - keys[1].col &&
+      keys[0].row === TUNING.mapRows - 1 - keys[1].row,
+    `seed ${seed}: the two keys are each other's opposite`,
+  );
+  // Opposite is not enough: outside the mirrored skeleton a twin is rolled again,
+  // so the same square can hold a t7 ogre nest on one side and a t4 barracks on
+  // the other. What is standing over a key has to be the same both ways round.
+  ok(
+    keys.length === 2 &&
+      keys[0].kind === keys[1].kind &&
+      keys[0].tier === keys[1].tier &&
+      keys[0].garrison.length === keys[1].garrison.length,
+    `seed ${seed}: both keys cost the same fight (${keys.map((n) => `${n.kind} t${n.tier} x${n.garrison.length}`).join(" vs ")})`,
+  );
 }
 ok(KIND_ROLL.length > 0, "there is something for a cell to roll into");
 say("map      thrones enclosed, board whole and point-symmetric, over 8 seeds");
+
+// Ground you hold watches on its own, and a tower watches far. Handing the same
+// cell to the player twice, as a hamlet and as a tower, is the only honest way to
+// read the difference: same board, same links, one column changed.
+{
+  const g = newGame(1, 1);
+  // Link distance from the hero, so the perch and its mark are a known way apart
+  const far = new Map([[g.you.at, 0]]);
+  for (const queue = [g.you.at]; queue.length; ) {
+    const cur = queue.shift()!;
+    for (const o of g.nodes[cur].links) {
+      if (far.has(o)) continue;
+      far.set(o, far.get(cur)! + 1);
+      queue.push(o);
+    }
+  }
+  const perch = [...far].find(([, d]) => d === 3)![0];
+  const mark = [...far].find(([, d]) => d === 5)![0];
+  g.nodes[perch].owner = "player";
+  g.nodes[perch].kind = "hamlet";
+  const near = inSight(g, mark);
+  g.nodes[perch].kind = "tower";
+  const wide = inSight(g, mark);
+  say(`sight    holding node ${perch}: as a hamlet it ${near ? "reaches" : "misses"} node ${mark}, as a tower it ${wide ? "reaches" : "misses"} it`);
+  ok(!near && wide, "a tower watches further than the ground beside it");
+  ok(KINDS.tower.sight > TUNING.sight, "a tower watches further than the hero carrying it");
+}
 
 // ------------------------------------------------------------------ the probes
 

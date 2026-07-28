@@ -3,10 +3,9 @@ import { bend, crtFilter } from "./gfx/crt.ts";
 import { loadGlyphs } from "./gfx/glyphs.ts";
 import { Grid } from "./gfx/grid.ts";
 import { computeLayout } from "./layout.ts";
-import { drawBattle } from "./screens/battle.ts";
+import { RISE_TICKS, drawBattle } from "./screens/battle.ts";
 import { centerOn, clampCam, drawMap } from "./screens/map.ts";
 import { drawPanel, shownPanel, type Ui } from "./screens/panels.ts";
-import { LORE } from "./sim/lore.ts";
 import { SPELLS, type CreatureId, type Point, type SpellId } from "./sim/data.ts";
 import {
   advance,
@@ -64,7 +63,6 @@ const LEVELS = [0.7, 1.0, 1.4, 2.0];
 const DRAG_SLOP = 10;
 const SAVE_EVERY = 4000;
 // Characters a second for a piece of the story arriving on screen
-const TYPE_CPS = 26;
 
 const host = document.getElementById("stage")!;
 const safe = document.getElementById("safe")!;
@@ -101,8 +99,6 @@ async function main() {
     speed: 1,
     watch: false,
     unit: 0,
-    typed: 0,
-    loreId: null,
     spell: null,
     picking: null,
   };
@@ -303,11 +299,6 @@ async function main() {
         if (ui.picking) ui.picking = null;
         else ui.panel = "";
         break;
-      case "ok":
-        // A tap while it is still arriving brings the rest of it at once
-        if (ui.loreId !== null && ui.typed < LORE[ui.loreId].body.length) ui.typed = 1e9;
-        else g.loreQueue.shift();
-        break;
       case "speed":
         ui.speed = SPEEDS[(SPEEDS.indexOf(ui.speed) + 1) % SPEEDS.length];
         break;
@@ -368,9 +359,10 @@ async function main() {
 
   app.ticker.add((t) => {
     // The rules are turns. This clock only ever draws what a turn looks like:
-    // a token crossing a cell, and blows landing. Nothing else moves on it, so
-    // there is nothing to run while the board is simply waiting on you.
-    const busy = g.phase === "fight" || g.you.route.length > 0;
+    // a token crossing a cell, blows landing, and the dead getting up - which is
+    // the one thing that still moves while the board is being held for you.
+    const rising = g.risen !== null && g.view - g.risen.at <= RISE_TICKS;
+    const busy = g.phase === "fight" || g.you.route.length > 0 || rising;
     const running = busy && ui.speed > 0 && !g.over && !shownPanel(g, ui);
     if (running) {
       owed += (t.deltaMS * ui.speed) / TICK_MS;
@@ -389,25 +381,6 @@ async function main() {
     } else {
       owed = 0;
     }
-    // The story arrives a letter at a time, on its own clock, because the game
-    // clock is stopped while you are reading it
-    const showing = shownPanel(g, ui);
-    if (showing === "lore") {
-      const id = g.loreQueue[0];
-      if (ui.loreId !== id) {
-        ui.loreId = id;
-        ui.typed = 0;
-      }
-      if (ui.typed < LORE[id].body.length) {
-        const was = ui.typed;
-        ui.typed += (t.deltaMS * TYPE_CPS) / 1000;
-        // Every other letter. One a letter is a machine gun.
-        if (Math.floor(ui.typed / 2) !== Math.floor(was / 2)) sfx("type");
-        dirty = true;
-      }
-    } else {
-      ui.loreId = null;
-    }
     // A fight you walk into is a fight you are shown. Only on the edge, so
     // leaving it does not immediately drag you back in.
     const fighting = g.phase === "fight";
@@ -421,6 +394,14 @@ async function main() {
     if (ui.watch && !watching()) {
       ui.watch = false;
       recenter();
+      dirty = true;
+    }
+    // A turn is the ground you have left. With none of it left there is nothing
+    // to decide, so the turn passes by itself rather than making you tap END on
+    // an empty hand. Only once everything has stopped moving and nothing is up:
+    // a sheet you are reading, or a fight you are still being shown, is a turn
+    // that has not finished happening yet.
+    if (!busy && !ui.watch && g.you.moves <= 0 && !shownPanel(g, ui) && endTurn(g)) {
       dirty = true;
     }
     hear();

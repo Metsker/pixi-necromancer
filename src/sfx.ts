@@ -25,7 +25,6 @@ const SOUNDS = {
   // Shuffling a line is done over and over, so it gets a dry tick with no pitch
   // in it: a blip you hear eight times running is a blip you come to hate.
   move: [{ f: 300, to: 160, dur: 0.03, gain: 0.1, q: 1.2 }],
-  type: [{ wave: "square", f: 1500, to: 1200, dur: 0.014, gain: 0.05 }],
   // the map
   step: [{ f: 260, to: 150, dur: 0.07, gain: 0.07, q: 1.4 }],
   send: [{ f: 1800, to: 380, dur: 0.28, gain: 0.09, q: 0.6 }],
